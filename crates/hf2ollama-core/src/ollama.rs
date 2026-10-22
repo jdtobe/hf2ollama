@@ -1,16 +1,17 @@
 //! Ollama HTTP API client: version, models, blobs, create and delete.
-#![allow(unused_variables, unused_imports, dead_code)] // RED stubs; removed by the implementation
 
 use crate::error::{Error, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const UPLOAD_STALL: Duration = Duration::from_secs(120);
 const CREATE_STALL: Duration = Duration::from_secs(600);
+const UPLOAD_CHUNK: usize = 64 * 1024;
 
 /// A model installed in Ollama, from `/api/tags`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,30 +51,228 @@ pub struct OllamaClient {
     create_stall: Duration,
 }
 
+#[derive(Serialize)]
+struct CreateWire<'a> {
+    model: &'a str,
+    files: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quantize: Option<&'a str>,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct Tags {
+    #[serde(default)]
+    models: Vec<RawModel>,
+}
+
+#[derive(Deserialize)]
+struct RawModel {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    modified_at: String,
+    #[serde(default)]
+    digest: String,
+    #[serde(default)]
+    details: RawDetails,
+}
+
+#[derive(Deserialize, Default)]
+struct RawDetails {
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    parameter_size: Option<String>,
+    #[serde(default)]
+    quantization_level: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawShow {
+    #[serde(default)]
+    details: RawDetails,
+    #[serde(default)]
+    model_info: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StreamLine {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn non_empty(s: Option<String>) -> Option<String> {
+    s.filter(|v| !v.is_empty())
+}
+
+fn map_send(e: reqwest::Error) -> Error {
+    if e.is_connect() {
+        Error::OllamaUnreachable
+    } else {
+        Error::Network(e.without_url().to_string())
+    }
+}
+
+fn io_err(e: std::io::Error) -> Error {
+    Error::Io(e.to_string())
+}
+
+/// `sha256:` plus exactly 64 lowercase hex characters.
+fn validate_digest(digest: &str) -> Result<()> {
+    let ok = digest.strip_prefix("sha256:").is_some_and(|h| {
+        h.len() == 64
+            && h.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    });
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Parse(
+            "digest must be sha256: followed by 64 lowercase hex characters".to_string(),
+        ))
+    }
+}
+
+/// The message of an Ollama `{"error":"..."}` body, if it is one.
+fn error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<StreamLine>(body)
+        .ok()
+        .and_then(|l| l.error)
+}
+
+/// Passes 2xx responses through; turns others into errors carrying Ollama's message.
+async fn check(resp: reqwest::Response) -> Result<reqwest::Response> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = resp.text().await.map_err(map_send)?;
+    match error_message(&body) {
+        Some(msg) => Err(Error::Ollama(msg)),
+        None => Err(Error::Http {
+            status: status.as_u16(),
+            body: body.chars().take(500).collect(),
+        }),
+    }
+}
+
 impl OllamaClient {
     pub fn new(base_url: &str) -> OllamaClient {
-        todo!()
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_default();
+        OllamaClient {
+            base_url: base_url.trim().trim_end_matches('/').to_string(),
+            http,
+            upload_stall: UPLOAD_STALL,
+            create_stall: CREATE_STALL,
+        }
     }
 
     /// Overrides both the upload and the create stall timeouts.
-    pub fn with_stall_timeout(self, stall: Duration) -> OllamaClient {
-        todo!()
+    pub fn with_stall_timeout(mut self, stall: Duration) -> OllamaClient {
+        self.upload_stall = stall;
+        self.create_stall = stall;
+        self
+    }
+
+    fn url(&self, path: &str) -> Result<reqwest::Url> {
+        let url = reqwest::Url::parse(&format!("{}{path}", self.base_url))
+            .map_err(|e| Error::Parse(format!("invalid Ollama URL: {e}")))?;
+        match url.scheme() {
+            "http" | "https" => Ok(url),
+            other => Err(Error::Parse(format!("unsupported URL scheme: {other}"))),
+        }
+    }
+
+    /// Sends a short request with the total timeout and checks the status.
+    async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        let resp = req
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+            .map_err(map_send)?;
+        check(resp).await
     }
 
     pub async fn version(&self) -> Result<String> {
-        todo!()
+        #[derive(Deserialize)]
+        struct V {
+            version: String,
+        }
+        let resp = self.send(self.http.get(self.url("/api/version")?)).await?;
+        let v: V = resp.json().await.map_err(|e| Error::Parse(e.to_string()))?;
+        Ok(v.version)
     }
 
     pub async fn list(&self) -> Result<Vec<InstalledModel>> {
-        todo!()
+        let resp = self.send(self.http.get(self.url("/api/tags")?)).await?;
+        let tags: Tags = resp.json().await.map_err(|e| Error::Parse(e.to_string()))?;
+        Ok(tags
+            .models
+            .into_iter()
+            .map(|m| InstalledModel {
+                name: m.name,
+                size: m.size,
+                params: non_empty(m.details.parameter_size),
+                quant: non_empty(m.details.quantization_level),
+                family: non_empty(m.details.family),
+                modified: m.modified_at,
+                digest: m.digest,
+            })
+            .collect())
     }
 
     pub async fn show(&self, name: &str) -> Result<ModelDetails> {
-        todo!()
+        let req = self
+            .http
+            .post(self.url("/api/show")?)
+            .json(&serde_json::json!({ "model": name }));
+        let resp = self.send(req).await?;
+        let raw: RawShow = resp.json().await.map_err(|e| Error::Parse(e.to_string()))?;
+        let context = raw
+            .model_info
+            .iter()
+            .find(|(k, _)| k.ends_with(".context_length"))
+            .and_then(|(_, v)| v.as_u64());
+        Ok(ModelDetails {
+            family: raw.details.family.unwrap_or_default(),
+            context,
+            capabilities: raw.capabilities.unwrap_or_default(),
+            digest: raw.digest.unwrap_or_default(),
+            template: raw.template,
+        })
     }
 
     pub async fn has_blob(&self, digest: &str) -> Result<bool> {
-        todo!()
+        validate_digest(digest)?;
+        let url = self.url(&format!("/api/blobs/{digest}"))?;
+        let resp = self
+            .http
+            .head(url)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+            .map_err(map_send)?;
+        match resp.status().as_u16() {
+            404 => Ok(false),
+            _ => {
+                check(resp).await?;
+                Ok(true)
+            }
+        }
     }
 
     pub async fn upload_blob(
@@ -82,7 +281,56 @@ impl OllamaClient {
         path: &Path,
         on_progress: &mut (dyn FnMut(u64, u64) + Send),
     ) -> Result<()> {
-        todo!()
+        validate_digest(digest)?;
+        let url = self.url(&format!("/api/blobs/{digest}"))?;
+        let file = tokio::fs::File::open(path).await.map_err(io_err)?;
+        let total = file.metadata().await.map_err(io_err)?.len();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+        let stream =
+            futures_util::stream::unfold((file, 0u64, tx), |(mut file, sent, tx)| async move {
+                let mut buf = vec![0u8; UPLOAD_CHUNK];
+                match file.read(&mut buf).await {
+                    Ok(0) => None,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        let sent = sent + n as u64;
+                        let _ = tx.send(sent);
+                        Some((Ok::<Vec<u8>, std::io::Error>(buf), (file, sent, tx)))
+                    }
+                    Err(e) => Some((Err(e), (file, sent, tx))),
+                }
+            });
+        let send = self
+            .http
+            .post(url)
+            .header(reqwest::header::CONTENT_LENGTH, total)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send();
+        tokio::pin!(send);
+        let stall = self.upload_stall;
+        let mut deadline = tokio::time::Instant::now() + stall;
+        let resp = loop {
+            tokio::select! {
+                r = &mut send => break r.map_err(map_send)?,
+                Some(done) = rx.recv() => {
+                    on_progress(done, total);
+                    deadline = tokio::time::Instant::now() + stall;
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err(Error::Network("ollama stalled".to_string()));
+                }
+            }
+        };
+        let mut last = 0;
+        while let Ok(done) = rx.try_recv() {
+            on_progress(done, total);
+            last = done;
+        }
+        check(resp).await?;
+        if last != total {
+            on_progress(total, total);
+        }
+        Ok(())
     }
 
     pub async fn create(
@@ -90,12 +338,96 @@ impl OllamaClient {
         req: &CreateRequest,
         on_status: &mut (dyn FnMut(&str) + Send),
     ) -> Result<()> {
-        todo!()
+        let url = self.url("/api/create")?;
+        let wire = CreateWire {
+            model: &req.model,
+            files: &req.files,
+            quantize: req.quantize.as_deref(),
+            stream: true,
+        };
+        let stall = self.create_stall;
+        let stalled = || Error::Network("ollama stalled".to_string());
+        let mut resp = tokio::time::timeout(stall, async {
+            let r = self
+                .http
+                .post(url)
+                .json(&wire)
+                .send()
+                .await
+                .map_err(map_send)?;
+            check(r).await
+        })
+        .await
+        .map_err(|_| stalled())??;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut success = false;
+        loop {
+            let chunk = tokio::time::timeout(stall, resp.chunk())
+                .await
+                .map_err(|_| stalled())?
+                .map_err(map_send_mid_stream)?;
+            let eof = chunk.is_none();
+            if let Some(c) = chunk {
+                buf.extend_from_slice(&c);
+            }
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=pos).collect();
+                handle_line(&line, on_status, &mut success)?;
+            }
+            if eof {
+                if !buf.is_empty() {
+                    handle_line(&buf, on_status, &mut success)?;
+                }
+                break;
+            }
+        }
+        if success {
+            Ok(())
+        } else {
+            Err(Error::Ollama("create ended without success".to_string()))
+        }
     }
 
     pub async fn delete(&self, name: &str) -> Result<()> {
-        todo!()
+        if name.trim().is_empty() {
+            return Err(Error::InvalidName("model name is empty".to_string()));
+        }
+        let req = self
+            .http
+            .delete(self.url("/api/delete")?)
+            .json(&serde_json::json!({ "model": name }));
+        self.send(req).await?;
+        Ok(())
     }
+}
+
+/// Connection loss while reading a stream is a network error, never "unreachable".
+fn map_send_mid_stream(e: reqwest::Error) -> Error {
+    Error::Network(e.without_url().to_string())
+}
+
+fn handle_line(
+    line: &[u8],
+    on_status: &mut (dyn FnMut(&str) + Send),
+    success: &mut bool,
+) -> Result<()> {
+    let text = String::from_utf8_lossy(line);
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    let parsed: StreamLine = serde_json::from_str(text).map_err(|e| Error::Parse(e.to_string()))?;
+    if let Some(msg) = parsed.error {
+        return Err(Error::Ollama(msg));
+    }
+    if let Some(status) = parsed.status {
+        on_status(&status);
+        // Safetensors imports finish with "successfully imported ...".
+        if status == "success" || status.starts_with("successfully imported") {
+            *success = true;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
