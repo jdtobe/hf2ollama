@@ -24,9 +24,16 @@ All 18 planned tasks plus the model-card tab are implemented and reviewed. The F
 - None of the workflows has ever run. Expect fixes on the first runs. This is also the first build on Linux and Windows.
 - Builds are unsigned (macOS/Windows will warn; the release notes say how to proceed).
 
+## GitHub state (2026-10-22)
+
+- PR #3 (draft): `ci/release-workflow` into `main`. Do not merge until the user says the whole effort is done; the merge publishes the first release.
+- PR #4: `fix/windows-staging-test` into `main`, a one-test fix. The first CI run found that `settings::state::tests::staging_validation_uses_the_real_folder_rules` used a path without a drive letter, which fails on Windows. With the fix, CI is green on Linux, macOS and Windows. Once #4 is merged, merge `main` into `ci/release-workflow` (do not rebase; the history is shared) so PR #3 picks the fix up.
+- PRs #1 and #2 are Dependabot bumps of `actions/checkout` and `actions/upload-artifact` to newer majors. They were red only because of the same Windows test; ask Dependabot to rebase (`@dependabot rebase`) after #4 is merged. Pinning actions to SHAs (below) will touch the same lines.
+- No release, tag or release workflow run exists yet. `release.yml` is not on `main`.
+
 ## Not finished, in the order I would do it
 
-1. Watch the first CI run on the PR and fix what the Linux and Windows builds turn up.
+1. Done: the first CI run on all three systems passed apart from the one Windows test above. Still untried: the release build matrix (macOS x86_64 cross build, Windows and Linux release builds, packaging, the publish job). It only runs on a merge to `main`, so test it by running `release.yml` by hand with `workflow_dispatch` from the PR branch only if the user agrees to a throwaway release.
 2. Pin every GitHub Action to a full commit SHA (a TODO is in `ci.yml`; Dependabot is configured for Actions).
 3. On GitHub: make `main` the default branch, turn on branch protection requiring the CI checks, turn on private vulnerability reporting (`SECURITY.md` assumes it), check Settings > Actions > Workflow permissions.
 4. Visual verification that is still owed: see the list in `acceptance.md` (Installed, Settings, About tab, dock, both themes, a side-by-side against `docs/design/ui-mockup.html`). Only the Browse Files tab has been captured since the display was unlocked.
