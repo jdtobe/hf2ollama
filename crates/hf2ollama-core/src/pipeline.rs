@@ -12,10 +12,11 @@ use crate::names::validate_model_name;
 use crate::ollama::{CreateRequest, OllamaClient};
 use crate::staging::JobDir;
 use crate::staging::Staging;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -320,23 +321,182 @@ impl Run<'_> {
     }
 }
 
+struct Queued {
+    id: JobId,
+    req: ImportRequest,
+    ctl: JobControl,
+}
+
+#[derive(Default)]
+struct State {
+    running: HashMap<JobId, JobControl>,
+    queued: VecDeque<Queued>,
+}
+
+struct Shared {
+    ctx: Arc<PipelineCtx>,
+    tx: Sender<JobEvent>,
+    handle: tokio::runtime::Handle,
+    last_id: AtomicU64,
+    state: Mutex<State>,
+}
+
 /// Accepts import commands and runs at most `settings.max_parallel` jobs at
 /// once; the rest wait in a FIFO queue.
-pub struct JobManager {}
+pub struct JobManager {
+    shared: Arc<Shared>,
+}
 
-#[allow(unused_variables)]
+impl Shared {
+    fn max_parallel(&self) -> usize {
+        usize::from(self.ctx.settings.max_parallel).max(1)
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        // A poisoned lock only means another thread panicked mid-update of
+        // plain collections; the data is still usable.
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn logger(&self, id: JobId) -> Logger {
+        Logger::new(id, self.tx.clone(), &self.ctx.log_dir)
+    }
+}
+
+/// Runs `job` on the runtime, then starts the next queued job.
+fn launch(shared: &Arc<Shared>, job: Queued) {
+    let shared = Arc::clone(shared);
+    let runtime = shared.handle.clone();
+    runtime.spawn(async move {
+        let Queued { id, req, ctl } = job;
+        let (ctx, tx) = (Arc::clone(&shared.ctx), shared.tx.clone());
+        // A separate task, so a panic is observed here instead of vanishing.
+        let joined = shared
+            .handle
+            .spawn(async move { run_import(&ctx, id, req, ctl, tx).await })
+            .await;
+        if let Err(e) = joined {
+            if e.is_panic() {
+                let _ = shared.tx.send(JobEvent::Failed {
+                    id,
+                    error: "internal error: the import task panicked".to_string(),
+                });
+            }
+        }
+        let next = {
+            let mut state = shared.state();
+            state.running.remove(&id);
+            if state.running.len() < shared.max_parallel() {
+                state.queued.pop_front().inspect(|q| {
+                    state.running.insert(q.id, q.ctl.clone());
+                })
+            } else {
+                None
+            }
+        };
+        if let Some(next) = next {
+            launch(&shared, next);
+        }
+    });
+}
+
 impl JobManager {
     pub fn new(
         ctx: PipelineCtx,
         tx: Sender<JobEvent>,
         handle: tokio::runtime::Handle,
     ) -> JobManager {
-        todo!()
+        // Seeded from the clock so ids never collide with job directories
+        // that earlier runs left in the staging root.
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        JobManager {
+            shared: Arc::new(Shared {
+                ctx: Arc::new(ctx),
+                tx,
+                handle,
+                last_id: AtomicU64::new(seed),
+                state: Mutex::new(State::default()),
+            }),
+        }
     }
 
     /// `StartImport` returns the new job's id; the other commands return `None`.
     pub fn handle(&self, cmd: Command) -> Option<JobId> {
-        todo!()
+        let shared = &self.shared;
+        match cmd {
+            Command::StartImport(req) => {
+                let id = JobId(shared.last_id.fetch_add(1, Ordering::SeqCst) + 1);
+                let job = Queued {
+                    id,
+                    req,
+                    ctl: JobControl::new(),
+                };
+                let _ = shared.tx.send(JobEvent::Stage {
+                    id,
+                    stage: Stage::Queued,
+                });
+                let start = {
+                    let mut state = shared.state();
+                    if state.running.len() < shared.max_parallel() {
+                        state.running.insert(id, job.ctl.clone());
+                        Some(job)
+                    } else {
+                        state.queued.push_back(job);
+                        None
+                    }
+                };
+                match start {
+                    Some(job) => launch(shared, job),
+                    None => shared.logger(id).log("queued: waiting for a free slot"),
+                }
+                Some(id)
+            }
+            Command::Pause(id) => {
+                if let Some(ctl) = self.control_of(id).filter(|c| !c.is_paused()) {
+                    ctl.pause();
+                    let _ = shared.tx.send(JobEvent::Paused { id });
+                    shared.logger(id).log("paused");
+                }
+                None
+            }
+            Command::Resume(id) => {
+                if let Some(ctl) = self.control_of(id).filter(|c| c.is_paused()) {
+                    ctl.resume();
+                    let _ = shared.tx.send(JobEvent::Resumed { id });
+                    shared.logger(id).log("resumed");
+                }
+                None
+            }
+            Command::Cancel(id) => {
+                let queued = {
+                    let mut state = shared.state();
+                    let pos = state.queued.iter().position(|q| q.id == id);
+                    pos.and_then(|p| state.queued.remove(p))
+                };
+                if queued.is_some() {
+                    shared.logger(id).log("cancelled before it started");
+                    let _ = shared.tx.send(JobEvent::Cancelled { id });
+                } else if let Some(ctl) = self.control_of(id) {
+                    // The running job emits its own Cancelled event.
+                    ctl.cancel();
+                }
+                None
+            }
+        }
+    }
+
+    fn control_of(&self, id: JobId) -> Option<JobControl> {
+        let state = self.shared.state();
+        state.running.get(&id).cloned().or_else(|| {
+            state
+                .queued
+                .iter()
+                .find(|q| q.id == id)
+                .map(|q| q.ctl.clone())
+        })
     }
 }
 
