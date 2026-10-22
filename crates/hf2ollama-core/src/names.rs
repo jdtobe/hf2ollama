@@ -9,7 +9,33 @@ const MAX_PART: usize = 64;
 /// lowercase ASCII letters, digits, `_`, `-` or `.`, and neither starts nor
 /// ends with `.` or `-`.
 pub fn validate_model_name(name: &str) -> Result<()> {
-    todo!("{name}")
+    let bad = || Error::InvalidName(name.to_string());
+    if name.len() > MAX_TOTAL {
+        return Err(bad());
+    }
+    let (path, tag) = match name.split_once(':') {
+        Some((path, tag)) => (path, Some(tag)),
+        None => (name, None),
+    };
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() > 2 {
+        return Err(bad());
+    }
+    if segments.into_iter().chain(tag).all(valid_part) {
+        Ok(())
+    } else {
+        Err(bad())
+    }
+}
+
+fn valid_part(part: &str) -> bool {
+    let edge_ok = |c: Option<char>| c.is_some_and(|c| c != '.' && c != '-');
+    part.len() <= MAX_PART
+        && part
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.'))
+        && edge_ok(part.chars().next())
+        && edge_ok(part.chars().next_back())
 }
 
 #[cfg(test)]
