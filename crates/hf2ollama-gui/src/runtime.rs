@@ -1226,4 +1226,29 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].label, "job-5");
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn job_accepted_total_saturates_for_absurd_sizes() {
+        use hf2ollama_core::model::RepoFile;
+        let h = harness("http://127.0.0.1:1", "http://127.0.0.1:9");
+        let file = |path: &str| RepoFile {
+            path: path.into(),
+            size: u64::MAX,
+            sha256: None,
+            blob_id: None,
+        };
+        h.tx.send(BackendRequest::Core(Command::StartImport(ImportRequest {
+            repo_id: "a/b".into(),
+            files: vec![file("a.gguf"), file("b.gguf")],
+            model_name: "huge".into(),
+            quantize: None,
+            overwrite: false,
+        })))
+        .unwrap();
+        let total = wait_for(&h.rx, |e| match e {
+            UiEvent::JobAccepted { total_bytes, .. } => Some(*total_bytes),
+            _ => None,
+        });
+        assert_eq!(total, u64::MAX);
+    }
 }

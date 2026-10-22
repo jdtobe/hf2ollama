@@ -301,4 +301,16 @@ mod tests {
     fn bundled_list_contains_mistral() {
         assert!(bundled_supported().contains(&"MistralForCausalLM".to_string()));
     }
+
+    #[test]
+    fn shard_totals_saturate_instead_of_overflowing() {
+        let files = vec![
+            f("m-00001-of-00002.gguf", u64::MAX),
+            f("m-00002-of-00002.gguf", u64::MAX),
+        ];
+        match classify(&files, None, &supported()) {
+            Compat::Gguf { options } => assert_eq!(options[0].total_bytes, u64::MAX),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }

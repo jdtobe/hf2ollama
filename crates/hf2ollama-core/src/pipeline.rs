@@ -1984,4 +1984,24 @@ mod tests {
             "a model named tiny already exists in Ollama: choose another name or delete it first in Installed"
         );
     }
+
+    #[tokio::test]
+    async fn absurd_remote_sizes_saturate_and_fail_as_insufficient_space() {
+        let env = Env::new().await;
+        env.ollama_basics(&[]).await;
+        let big = |name: &str| RepoFile {
+            path: name.to_string(),
+            size: u64::MAX,
+            sha256: None,
+            blob_id: None,
+        };
+        let err = env
+            .run(1, request("tiny", vec![big("a.gguf"), big("b.gguf")]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InsufficientSpace { needed, .. } if needed == u64::MAX),
+            "{err:?}"
+        );
+    }
 }

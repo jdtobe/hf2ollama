@@ -1636,4 +1636,23 @@ mod tests {
         st.set_machine(machine(256.0, Some(160.0)));
         assert_eq!(st.visible_len(), 1, "it fits 160 GB of VRAM");
     }
+
+    #[test]
+    fn plan_totals_saturate_for_absurd_remote_sizes() {
+        let id = "o/huge";
+        let files = vec![
+            file("model-00001-of-00002.safetensors", u64::MAX),
+            file("model-00002-of-00002.safetensors", u64::MAX),
+            file("config.json", 600),
+            file("tokenizer.json", 3_000_000),
+            file("tokenizer_config.json", 100_000),
+            file("model.safetensors.index.json", 24_000),
+        ];
+        let st = loaded(
+            machine(32.0, Some(16.0)),
+            (id, info(id, files, Some("MistralForCausalLM"))),
+        );
+        let plan = st.plan().expect("plan");
+        assert_eq!(plan.rows[0].size_bytes, u64::MAX);
+    }
 }
