@@ -13,10 +13,67 @@ pub struct ModelCard {
     pub truncated: bool,
 }
 
+/// Removes a leading `---` ... `---` YAML block (LF or CRLF line ends).
+fn strip_front_matter(text: &str) -> &str {
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
+        return text;
+    };
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end_matches(['\r', '\n']) == "---" {
+            return &rest[offset..];
+        }
+    }
+    text
+}
+
 impl HfClient {
-    /// Fetches `README.md`. `Ok(None)` when the repo has no card (404).
-    pub async fn model_card(&self, _repo_id: &str) -> Result<Option<ModelCard>> {
-        Err(Error::Parse("not implemented".to_string()))
+    /// Fetches `README.md`. `Ok(None)` when the repo has no card (404). The
+    /// body is read up to `MAX_CARD_BYTES`; the rest is dropped.
+    pub async fn model_card(&self, repo_id: &str) -> Result<Option<ModelCard>> {
+        let parts: Vec<&str> = repo_id.split('/').collect();
+        if repo_id.is_empty() || parts.iter().any(|p| p.is_empty()) {
+            return Err(Error::Parse(format!("invalid repository id: {repo_id:?}")));
+        }
+        let mut segments = parts;
+        segments.extend(["raw", "main", "README.md"]);
+        let req = self.get(self.url(&segments)?);
+        let mut resp = match tokio::time::timeout(
+            self.stall_timeout,
+            self.send_checked(req, Some(repo_id)),
+        )
+        .await
+        {
+            Err(_) => return Err(Error::Network("request stalled".to_string())),
+            Ok(Err(Error::Http { status: 404, .. })) => return Ok(None),
+            Ok(r) => r?,
+        };
+        let mut body: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        loop {
+            let chunk = match tokio::time::timeout(self.stall_timeout, resp.chunk()).await {
+                Err(_) => return Err(Error::Network("request stalled".to_string())),
+                Ok(Err(e)) => return Err(Error::Network(e.without_url().to_string())),
+                Ok(Ok(None)) => break,
+                Ok(Ok(Some(c))) => c,
+            };
+            let room = MAX_CARD_BYTES - body.len();
+            if chunk.len() > room {
+                body.extend_from_slice(&chunk[..room]);
+                truncated = true;
+                break;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8_lossy(&body);
+        Ok(Some(ModelCard {
+            markdown: strip_front_matter(&text).to_string(),
+            truncated,
+        }))
     }
 }
 
