@@ -194,7 +194,7 @@ pub fn options_table(
     let pill_w = fits
         .iter()
         .map(|f| measure(fit_pill_label(*f), FontId::proportional(12.0)) + 16.0)
-        .fold(0.0, f32::max);
+        .fold(measure("ON YOUR MACHINE", semibold(11.0)), f32::max);
     let quality_w = w - (TABLE_PAD * 4.0 + name_w + size_w + pill_w);
     let wide = quality_w >= BAR_W + 10.0 + NOTE_MIN;
 

@@ -138,6 +138,18 @@ impl App {
     }
 }
 
+impl App {
+    /// Screenshot helper: pre-fills the search box and selects a repository.
+    pub fn preset(&mut self, query: Option<String>, select: Option<String>) {
+        if let Some(q) = query {
+            self.state.query = q;
+        }
+        if let Some(id) = select {
+            self.state.browse.select_repo(&id);
+        }
+    }
+}
+
 /// Red for the "not reachable" dot; the spec palette has no error token.
 fn bad(dark: bool) -> Color32 {
     if dark {
@@ -204,8 +216,10 @@ impl App {
 
                     if self.state.view == View::Browse {
                         ui.add_space(8.0);
+                        // Leave room for the status pill on narrow windows.
+                        let field_w = (ui.available_width() - 270.0).clamp(140.0, 360.0);
                         ui.add_sized(
-                            vec2(360.0, 32.0),
+                            vec2(field_w, 32.0),
                             egui::TextEdit::singleline(&mut self.state.query)
                                 .hint_text("Search Hugging Face models")
                                 .margin(Margin::symmetric(10, 7)),

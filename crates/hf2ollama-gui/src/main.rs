@@ -18,6 +18,23 @@ fn theme_override() -> Option<ThemeChoice> {
     }
 }
 
+/// `HF2O_SIZE=WxH` overrides the initial window size, e.g. `900x820`. Only
+/// meant for taking screenshots at several widths.
+fn size_override() -> Option<[f32; 2]> {
+    let raw = std::env::var("HF2O_SIZE").ok()?;
+    let (w, h) = raw.split_once('x')?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+}
+
+/// `HF2O_QUERY=text` fills the search box and `HF2O_SELECT=owner/name`
+/// selects a repository at startup. Only meant for screenshots.
+fn preset() -> (Option<String>, Option<String>) {
+    (
+        std::env::var("HF2O_QUERY").ok(),
+        std::env::var("HF2O_SELECT").ok(),
+    )
+}
+
 fn main() -> eframe::Result<()> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -36,7 +53,7 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 820.0])
+            .with_inner_size(size_override().unwrap_or([1180.0, 820.0]))
             .with_title("hf2ollama"),
         ..Default::default()
     };
@@ -47,13 +64,10 @@ fn main() -> eframe::Result<()> {
             theme::install(&cc.egui_ctx);
             theme::apply_choice(&cc.egui_ctx, theme_override().unwrap_or(settings.theme));
             let (tx, rx) = runtime::Backend::spawn(cc.egui_ctx.clone(), settings.clone(), paths);
-            Ok(Box::new(app::App::new(
-                &settings,
-                staging_dir,
-                machine,
-                tx,
-                rx,
-            )))
+            let mut app = app::App::new(&settings, staging_dir, machine, tx, rx);
+            let (query, select) = preset();
+            app.preset(query, select);
+            Ok(Box::new(app))
         }),
     )
 }

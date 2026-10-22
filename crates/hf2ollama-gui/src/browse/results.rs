@@ -231,16 +231,15 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
                                 }
                             }
                         });
-                        ui.label(
-                            RichText::new(format!(
-                                "↓ {}  ·  {} likes  ·  {}",
-                                compact_count(m.downloads),
-                                compact_count(m.likes),
-                                relative_age(&m.updated, now)
-                            ))
-                            .size(12.0)
-                            .color(t.fg3),
+                        let mut stats = format!(
+                            "↓ {}  ·  {} likes",
+                            compact_count(m.downloads),
+                            compact_count(m.likes)
                         );
+                        if parse_iso(&m.updated).is_some() {
+                            stats.push_str(&format!("  ·  {}", relative_age(&m.updated, now)));
+                        }
+                        ui.label(RichText::new(stats).size(12.0).color(t.fg3));
                     },
                 );
                 if resp.clicked() {
