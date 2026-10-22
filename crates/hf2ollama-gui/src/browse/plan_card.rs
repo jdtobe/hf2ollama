@@ -158,7 +158,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
         None => "Download & import".to_string(),
     };
 
-    egui::Frame::new()
+    let card = egui::Frame::new()
         .fill(t.surface2)
         .stroke(Stroke::new(1.0, t.line))
         .corner_radius(8.0)
@@ -219,7 +219,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                     ui.label(val(format!("{est}{:.2} GB", gb(final_bytes))));
                 });
             }
-        });
+        })
+        .response
+        .rect;
+    #[cfg(test)]
+    {
+        app.browse.probe.card = Some(card);
+    }
+    #[cfg(not(test))]
+    let _ = card;
 }
 
 #[cfg(test)]

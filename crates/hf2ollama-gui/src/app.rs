@@ -113,6 +113,10 @@ pub fn pill_size(text_width: f32) -> egui::Vec2 {
     vec2(2.0 * PILL_PAD_X + PILL_DOT + PILL_GAP + text_width, 24.0)
 }
 
+/// Space kept between the search field and the status pill.
+const SEARCH_PILL_GAP: f32 = 16.0;
+/// Narrowest useful search field; below this the field is hidden.
+const SEARCH_MIN_W: f32 = 120.0;
 const PILL_PAD_X: f32 = 10.0;
 const PILL_DOT: f32 = 8.0;
 const PILL_GAP: f32 = 6.0;
@@ -189,6 +193,16 @@ impl App {
         let t = tokens(ui);
         let dark = ui.visuals().dark_mode;
 
+        let (dot, label) = match &self.state.ollama {
+            Some(Some(v)) => (t.ok, format!("Ollama {v} · {}", self.state.ollama_host)),
+            Some(None) => (bad(dark), "Ollama not reachable".to_string()),
+            None => (t.fg3, "Checking Ollama…".to_string()),
+        };
+        let galley = ui
+            .painter()
+            .layout_no_wrap(label, egui::FontId::proportional(12.0), t.fg2);
+        let pill_w = pill_size(galley.size().x).x;
+
         egui::Panel::top("top")
             .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
             .show(ui, |ui| {
@@ -219,30 +233,27 @@ impl App {
 
                     if self.state.view == View::Browse {
                         ui.add_space(8.0);
-                        // Leave room for the status pill on narrow windows.
-                        let field_w = (ui.available_width() - 270.0).clamp(140.0, 360.0);
-                        ui.add_sized(
-                            vec2(field_w, 32.0),
-                            egui::TextEdit::singleline(&mut self.state.query)
-                                .hint_text("Search Hugging Face models")
-                                .margin(Margin::symmetric(10, 7)),
-                        );
+                        // Whatever is left after the pill and a gap; hidden
+                        // rather than overlapping when there is no room.
+                        let room = ui.available_width() - pill_w - SEARCH_PILL_GAP - 8.0;
+                        let field_w = room.min(360.0);
+                        if field_w >= SEARCH_MIN_W {
+                            let r = ui.add_sized(
+                                vec2(field_w, 32.0),
+                                egui::TextEdit::singleline(&mut self.state.query)
+                                    .hint_text("Search Hugging Face models")
+                                    .margin(Margin::symmetric(10, 7)),
+                            );
+                            self.state.search_rect = Some(r.rect);
+                        } else {
+                            self.state.search_rect = None;
+                        }
+                    } else {
+                        self.state.search_rect = None;
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (dot, label) = match &self.state.ollama {
-                            Some(Some(v)) => {
-                                (t.ok, format!("Ollama {v} · {}", self.state.ollama_host))
-                            }
-                            Some(None) => (bad(dark), "Ollama not reachable".to_string()),
-                            None => (t.fg3, "Checking Ollama…".to_string()),
-                        };
                         // Hand-painted at an exact size so no layout can stretch it.
-                        let galley = ui.painter().layout_no_wrap(
-                            label,
-                            egui::FontId::proportional(12.0),
-                            t.fg2,
-                        );
                         let (rect, _) =
                             ui.allocate_exact_size(pill_size(galley.size().x), Sense::hover());
                         self.state.pill_rect = Some(rect);

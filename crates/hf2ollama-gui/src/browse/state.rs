@@ -596,6 +596,10 @@ impl BrowseState {
     }
 }
 
+/// Shown when a repository loads fine but is marked gated; importing is
+/// still allowed because the user may already hold a token.
+pub const GATED_REPO_WARNING: &str = "This repo is gated. Accept its license on huggingface.co and add a Hugging Face access token in Settings before importing.";
+
 pub const GATED_MESSAGE: &str = "This repo needs a Hugging Face access token. Add one in Settings.";
 
 /// `Error::GatedRepo` renders as "gated repository: ..."; some servers also

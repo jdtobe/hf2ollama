@@ -3,7 +3,7 @@
 use super::options::{gb, OptionRow};
 use super::plan_card;
 use super::results::{compact_count, format_size, relative_age};
-use super::state::{is_gated_error, PlanKind, SearchStatus, GATED_MESSAGE};
+use super::state::{is_gated_error, PlanKind, SearchStatus, GATED_MESSAGE, GATED_REPO_WARNING};
 use crate::app::AppState;
 use crate::runtime::BackendRequest;
 use crate::theme::{mono, semibold, tokens};
@@ -14,14 +14,6 @@ use eframe::egui::{
 use hf2ollama_core::fit::{fit, Machine};
 use hf2ollama_core::hf::ModelInfo;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Where one metadata value was drawn (read by the layout tests).
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct MetaCell {
-    pub label: String,
-    pub value: egui::Rect,
-}
 
 /// Share of the spare width each metadata column gets when everything fits
 /// on one row, so long architecture names get the most room.
@@ -39,10 +31,10 @@ const META_GAP: f32 = 24.0;
 const META_ROW_GAP: f32 = 10.0;
 
 /// Draws the metadata strip (label over value, "—" for unknown values) and
-/// returns where each value went. Values never wrap: columns are at least as
+/// returns the label and painted rectangle of each value. Values never wrap: columns are at least as
 /// wide as their content, and when they do not all fit on one row they flow
 /// onto further rows instead.
-pub fn meta_strip(ui: &mut egui::Ui, items: &[(&str, String)]) -> Vec<MetaCell> {
+pub fn meta_strip(ui: &mut egui::Ui, items: &[(&str, String)]) -> Vec<(String, Rect)> {
     let t = tokens(ui);
     let mut cells = Vec::new();
     egui::Frame::new()
@@ -111,10 +103,7 @@ pub fn meta_strip(ui: &mut egui::Ui, items: &[(&str, String)]) -> Vec<MetaCell> 
                 };
                 let rect = Rect::from_min_size(value_pos, galley.size());
                 ui.painter().galley(value_pos, galley, t.fg);
-                cells.push(MetaCell {
-                    label: items[i].0.to_string(),
-                    value: rect,
-                });
+                cells.push((items[i].0.to_string(), rect));
             }
         });
     cells
@@ -170,6 +159,8 @@ pub fn options_table(
     rows: &[OptionRow],
     selected: Option<usize>,
     machine: &Machine,
+    scroll_to_selected: bool,
+    selected_rect: &mut Option<Rect>,
 ) -> Option<usize> {
     let t = tokens(ui);
     let w = ui.available_width();
@@ -247,6 +238,10 @@ pub fn options_table(
         bottom = row.max.y;
         let sel = selected == Some(i);
         if sel {
+            *selected_rect = Some(row);
+            if scroll_to_selected {
+                ui.scroll_to_rect(row, Some(egui::Align::Center));
+            }
             ui.painter().rect_filled(row, 0.0, t.accent_soft);
             ui.painter().rect_filled(
                 Rect::from_min_size(row.min, vec2(3.0, row.height())),
@@ -376,9 +371,36 @@ fn metadata(info: &ModelInfo) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The detail pane: header, metadata, options and the import card.
+/// Smallest height the scrolling part of the pane keeps when the pinned
+/// import card is tall (narrow windows wrap its chips).
+const MIN_SCROLL_H: f32 = 200.0;
+
+/// The detail pane: scrolling header, metadata and options, with the import
+/// card pinned below so the primary action is always visible.
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
+    let selected = app.browse.selected_id().map(str::to_string);
+    let card_visible = selected.as_deref().is_some_and(|id| {
+        matches!(app.browse.info_for(id), Some(Ok(_))) || app.browse.selected_is_gated()
+    });
+    if card_visible {
+        let max_h = (ui.available_height() - MIN_SCROLL_H).max(120.0);
+        egui::Panel::bottom("plan_card")
+            .resizable(false)
+            .max_size(max_h)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.surface)
+                    .stroke(Stroke::new(1.0, t.line))
+                    .inner_margin(Margin {
+                        left: 24,
+                        right: 24,
+                        top: 12,
+                        bottom: 12,
+                    }),
+            )
+            .show(ui, |ui| plan_card::show(ui, app, out));
+    }
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
@@ -386,14 +408,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 .inner_margin(Margin::symmetric(24, 20)),
         )
         .show(ui, |ui| {
-            let Some(id) = app.browse.selected_id().map(str::to_string) else {
+            let Some(id) = selected else {
                 ui.label(
                     RichText::new("Pick a model from the list to see its files and import it.")
                         .color(t.fg3),
                 );
                 return;
             };
-            egui::ScrollArea::vertical()
+            let scroll = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
@@ -410,20 +432,27 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                                 ui.label(RichText::new("Loading the file list…").color(t.fg3));
                             });
                         }
-                        Some(Err(e)) if is_gated_error(&e) => {
-                            callout(ui, true, GATED_MESSAGE);
-                            ui.add_space(8.0);
-                            plan_card::show(ui, app, out);
-                        }
                         Some(Err(e)) => {
-                            callout(ui, true, &crate::browse::state::friendly_error(&e));
+                            let text = if is_gated_error(&e) {
+                                GATED_MESSAGE.to_string()
+                            } else {
+                                crate::browse::state::friendly_error(&e)
+                            };
+                            callout(ui, true, &text);
                             if small_button(ui, "Retry") {
                                 app.browse.retry_info(&id);
                             }
                         }
-                        Some(Ok(info)) => ready(ui, app, &info, out),
+                        Some(Ok(info)) => ready(ui, app, &info),
                     }
                 });
+            #[cfg(test)]
+            {
+                app.browse.probe.viewport = Some(scroll.inner_rect);
+                app.browse.probe.scroll_offset = scroll.state.clamped_offset().y;
+            }
+            #[cfg(not(test))]
+            let _ = scroll;
         });
 }
 
@@ -449,8 +478,15 @@ fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
     ui.add_space(10.0);
 }
 
-fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo, out: &mut Vec<BackendRequest>) {
-    let t = tokens(ui);
+fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
+    if app.browse.selected_info_gated() {
+        callout(ui, true, GATED_REPO_WARNING);
+        ui.hyperlink_to(
+            RichText::new("Open on huggingface.co ↗").size(12.0),
+            format!("https://huggingface.co/{}", info.id),
+        );
+        ui.add_space(6.0);
+    }
     meta_strip(ui, &metadata(info));
     ui.add_space(12.0);
 
@@ -458,11 +494,21 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo, out: &mut Vec<
         return;
     };
     let selected = app.browse.selected_option();
+    let scroll = app.browse.take_scroll_request();
+    let mut selected_rect = None;
     let mut clicked = None;
     match &plan.kind {
         PlanKind::Gguf(_) => {
             caption(ui, "Choose a file");
-            clicked = options_table(ui, "File", &plan.rows, selected, &app.machine);
+            clicked = options_table(
+                ui,
+                "File",
+                &plan.rows,
+                selected,
+                &app.machine,
+                scroll,
+                &mut selected_rect,
+            );
         }
         PlanKind::Safetensors(_) => {
             let source = plan.rows.first().map_or(0, |r| r.size_bytes);
@@ -476,7 +522,15 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo, out: &mut Vec<
             );
             ui.add_space(6.0);
             caption(ui, "Choose a quantization");
-            clicked = options_table(ui, "Quantization", &plan.rows, selected, &app.machine);
+            clicked = options_table(
+                ui,
+                "Quantization",
+                &plan.rows,
+                selected,
+                &app.machine,
+                scroll,
+                &mut selected_rect,
+            );
         }
         PlanKind::Unsupported(reason) => {
             callout(
@@ -488,12 +542,15 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo, out: &mut Vec<
             related(ui, app);
         }
     }
+    #[cfg(test)]
+    {
+        app.browse.probe.selected_row = selected_rect;
+    }
+    #[cfg(not(test))]
+    let _ = selected_rect;
     if let Some(i) = clicked {
         app.browse.select_option(i);
     }
-    ui.add_space(14.0);
-    plan_card::show(ui, app, out);
-    let _ = t;
 }
 
 /// Clickable related GGUF repositories for an unsupported one.
@@ -509,6 +566,9 @@ fn related(ui: &mut egui::Ui, app: &mut AppState) {
         }
         SearchStatus::Failed(msg) => {
             ui.label(RichText::new(msg).color(t.fg3));
+            if small_button(ui, "Retry") {
+                app.browse.retry_related();
+            }
         }
         SearchStatus::Done => {
             let repos = app.browse.related_repos().to_vec();
@@ -590,22 +650,22 @@ mod tests {
                 assert_eq!(cells.len(), 6, "dark={dark} width={width}");
                 let arch = cells
                     .iter()
-                    .find(|c| c.label == "Architecture")
+                    .find(|c| c.0 == "Architecture")
                     .expect("architecture cell");
                 assert!(
-                    (arch.value.width() - natural.x).abs() < 1.0,
+                    (arch.1.width() - natural.x).abs() < 1.0,
                     "dark={dark} width={width}: arch {} vs natural {}",
-                    arch.value.width(),
+                    arch.1.width(),
                     natural.x
                 );
                 assert!(
-                    arch.value.height() < natural.y * 1.5,
+                    arch.1.height() < natural.y * 1.5,
                     "dark={dark} width={width}: arch wrapped, height {}",
-                    arch.value.height()
+                    arch.1.height()
                 );
                 // Nothing may spill past the available width.
-                let right = cells.iter().map(|c| c.value.max.x).fold(0.0, f32::max);
-                let left = cells.iter().map(|c| c.value.min.x).fold(f32::MAX, f32::min);
+                let right = cells.iter().map(|c| c.1.max.x).fold(0.0, f32::max);
+                let left = cells.iter().map(|c| c.1.min.x).fold(f32::MAX, f32::min);
                 assert!(right - left <= width + 0.5, "dark={dark} width={width}");
             }
         }
