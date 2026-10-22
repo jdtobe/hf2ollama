@@ -13,6 +13,7 @@ use crate::ollama::{CreateRequest, OllamaClient};
 use crate::staging::JobDir;
 use crate::staging::Staging;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -92,6 +93,51 @@ fn is_gguf(req: &ImportRequest) -> bool {
             .all(|f| f.path.to_ascii_lowercase().ends_with(".gguf"))
 }
 
+/// Drops the in-flight future as soon as the job is cancelled.
+async fn raced<T>(ctl: &JobControl, fut: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::select! {
+        r = fut => r,
+        () = ctl.cancelled() => Err(Error::Cancelled),
+    }
+}
+
+/// Owns the job directory until the job explicitly settles it. If the job
+/// panics or its future is dropped, the directory is discarded.
+struct JobSlot {
+    dir: Option<JobDir>,
+}
+
+impl Drop for JobSlot {
+    fn drop(&mut self) {
+        if let Some(dir) = self.dir.take() {
+            let _ = dir.discard();
+        }
+    }
+}
+
+impl JobSlot {
+    /// Settles the directory after a failed or cancelled job. Cancellation and
+    /// hash mismatches never leave files behind; other failures keep them for
+    /// the partial-file TTL when the user asked for that.
+    fn settle_failure(&mut self, err: &Error, keep_partials: bool, log: &Logger) {
+        let Some(dir) = self.dir.take() else {
+            return;
+        };
+        let keep = keep_partials && !matches!(err, Error::Cancelled | Error::HashMismatch { .. });
+        let result = if keep {
+            match dir.mark_partial() {
+                Ok(()) => Ok(()),
+                Err(e) => dir.discard().and(Err(e)),
+            }
+        } else {
+            dir.discard()
+        };
+        if let Err(e) = result {
+            log.log(&format!("cleanup warning: {e}"));
+        }
+    }
+}
+
 struct Run<'a> {
     ctx: &'a PipelineCtx,
     id: JobId,
@@ -120,8 +166,11 @@ pub async fn run_import(
         tx: &tx,
         log: &log,
     };
-    let mut job: Option<JobDir> = None;
+    let mut job = JobSlot { dir: None };
     let outcome = run.steps(&req, &ctl, &mut job).await;
+    if let Err(e) = &outcome {
+        job.settle_failure(e, ctx.settings.keep_partials, &log);
+    }
     let terminal = match &outcome {
         Ok(()) => JobEvent::Finished { id },
         Err(Error::Cancelled) => {
@@ -141,20 +190,15 @@ pub async fn run_import(
 }
 
 impl Run<'_> {
-    async fn steps(
-        &self,
-        req: &ImportRequest,
-        ctl: &JobControl,
-        job: &mut Option<JobDir>,
-    ) -> Result<()> {
+    async fn steps(&self, req: &ImportRequest, ctl: &JobControl, job: &mut JobSlot) -> Result<()> {
         let ctx = self.ctx;
         validate_model_name(&req.model_name)?;
         ctl.checkpoint().await?;
-        let version = ctx.ollama.version().await?;
+        let version = raced(ctl, ctx.ollama.version()).await?;
         self.log.log(&format!("Ollama {version} is reachable"));
         if !req.overwrite {
             let want = normalized(&req.model_name);
-            let installed = ctx.ollama.list().await?;
+            let installed = raced(ctl, ctx.ollama.list()).await?;
             if installed.iter().any(|m| normalized(&m.name) == want) {
                 return Err(Error::NameCollision(req.model_name.clone()));
             }
@@ -163,7 +207,7 @@ impl Run<'_> {
         let total: u64 = req.files.iter().map(|f| f.size).sum();
         let dir = ctx.staging.create_job(self.id, total)?;
         let dir_path = dir.path().to_path_buf();
-        *job = Some(dir);
+        job.dir = Some(dir);
 
         self.stage(
             Stage::Downloading,
@@ -179,16 +223,18 @@ impl Run<'_> {
             ctl.checkpoint().await?;
             let (id, tx) = (self.id, self.tx);
             let offset = base;
-            let d = ctx
-                .hf
-                .download(&req.repo_id, file, &dir_path, ctl, &mut |done, _| {
-                    let _ = tx.send(JobEvent::Progress {
-                        id,
-                        done: offset + done,
-                        total,
-                    });
-                })
-                .await?;
+            let d = raced(
+                ctl,
+                ctx.hf
+                    .download(&req.repo_id, file, &dir_path, ctl, &mut |done, _| {
+                        let _ = tx.send(JobEvent::Progress {
+                            id,
+                            done: offset + done,
+                            total,
+                        });
+                    }),
+            )
+            .await?;
             base += file.size;
             let _ = self.tx.send(JobEvent::Progress {
                 id,
@@ -213,13 +259,15 @@ impl Run<'_> {
         for (rel, d) in &downloaded {
             ctl.checkpoint().await?;
             let digest = format!("sha256:{}", d.sha256);
-            if ctx.ollama.has_blob(&digest).await? {
+            if raced(ctl, ctx.ollama.has_blob(&digest)).await? {
                 self.log
                     .log(&format!("{rel}: blob already on Ollama, skipping upload"));
             } else {
-                ctx.ollama
-                    .upload_blob(&digest, &d.path, &mut |_, _| {})
-                    .await?;
+                raced(
+                    ctl,
+                    ctx.ollama.upload_blob(&digest, &d.path, &mut |_, _| {}),
+                )
+                .await?;
                 self.log.log(&format!("{rel}: uploaded blob {digest}"));
             }
             files.insert(rel.clone(), digest);
@@ -240,13 +288,16 @@ impl Run<'_> {
             },
         };
         let log = self.log;
-        ctx.ollama
-            .create(&create, &mut |s| log.log(&format!("ollama: {s}")))
-            .await?;
+        raced(
+            ctl,
+            ctx.ollama
+                .create(&create, &mut |s| log.log(&format!("ollama: {s}"))),
+        )
+        .await?;
 
         self.stage(Stage::CleaningUp, "cleaning up");
         self.record_history(req);
-        if let Some(dir) = job.take() {
+        if let Some(dir) = job.dir.take() {
             if let Err(e) = dir.finish(!ctx.settings.delete_after_import) {
                 self.log.log(&format!("cleanup warning: {e}"));
             }
@@ -921,5 +972,19 @@ mod tests {
         assert!(run_and_cancel(&env, 3, req).await.is_err());
         assert_foreign_intact(&env.root());
         assert!(!env.root().join("job-3").exists());
+    }
+
+    #[test]
+    fn job_slot_discards_the_dir_when_dropped_e_g_on_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = Staging::new(tmp.path().join("staging"));
+        let dir = staging.create_job(JobId(1), 0).unwrap();
+        let p = dir.path().to_path_buf();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _slot = JobSlot { dir: Some(dir) };
+            panic!("boom");
+        }));
+        assert!(result.is_err());
+        assert!(!p.exists());
     }
 }
