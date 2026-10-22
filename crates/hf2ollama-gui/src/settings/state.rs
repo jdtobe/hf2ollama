@@ -1209,7 +1209,16 @@ mod tests {
     fn staging_validation_uses_the_real_folder_rules() {
         // Guards that `edit_staging` goes through `validate_staging_dir`.
         let (_s, mut st) = fresh();
-        st.staging_text = "/definitely/not/here/at/all".into();
+        // Built from a real folder so the path is absolute on every platform
+        // ("/definitely/..." has no drive letter on Windows).
+        let dir = tempfile::tempdir().unwrap();
+        st.staging_text = dir
+            .path()
+            .join("not")
+            .join("here")
+            .join("at-all")
+            .display()
+            .to_string();
         st.edit_staging();
         assert!(st
             .staging_error
