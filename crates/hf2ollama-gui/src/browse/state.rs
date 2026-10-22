@@ -659,15 +659,20 @@ impl BrowseState {
     }
 
     /// Remembers that an import under `name` was just sent.
-    pub fn mark_import_pending(&mut self, _name: &str) {}
+    pub fn mark_import_pending(&mut self, name: &str) {
+        self.pending_names
+            .insert(crate::dock::jobs::normalize_name(name));
+    }
 
     /// The backend answered for `name` (accepted or failed).
     pub fn clear_import_pending(&mut self, name: &str) {
-        self.pending_names.remove(name);
+        self.pending_names
+            .remove(&crate::dock::jobs::normalize_name(name));
     }
 
-    pub fn is_import_pending(&self, _name: &str) -> bool {
-        false
+    pub fn is_import_pending(&self, name: &str) -> bool {
+        self.pending_names
+            .contains(&crate::dock::jobs::normalize_name(name))
     }
 
     /// Why the import button is disabled, if it is.

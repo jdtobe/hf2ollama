@@ -366,6 +366,19 @@ impl Run<'_> {
         if ctl.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        if !req.overwrite {
+            // The name was free when the job started, but the download took a
+            // while: look again right before anything is created.
+            let want = normalized(&req.model_name);
+            let installed = raced(ctl, ctx.ollama.list()).await?;
+            if installed.iter().any(|m| normalized(&m.name) == want) {
+                log.log(&format!(
+                    "a model named {} appeared in Ollama during the download; not creating it",
+                    req.model_name
+                ));
+                return Err(Error::NameCollision(req.model_name.clone()));
+            }
+        }
         let mut noted = false;
         ctx.ollama
             .create(&create, &mut |s| {

@@ -109,6 +109,15 @@ impl JobRow {
     }
 }
 
+/// `tiny` and `tiny:latest` name the same Ollama model.
+pub fn normalize_name(name: &str) -> String {
+    if name.contains(':') {
+        name.to_string()
+    } else {
+        format!("{name}:latest")
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct JobsState {
     /// Newest first (highest id first).
@@ -149,8 +158,11 @@ impl JobsState {
 
     /// True while a queued, running or paused job imports under `name`
     /// (`tiny` and `tiny:latest` are the same model).
-    pub fn has_unsettled_job_named(&self, _name: &str) -> bool {
-        false
+    pub fn has_unsettled_job_named(&self, name: &str) -> bool {
+        let want = normalize_name(name);
+        self.rows
+            .iter()
+            .any(|r| !r.status.is_settled() && normalize_name(&r.name) == want)
     }
 
     pub fn apply(&mut self, ev: &JobEvent, now: Instant) {

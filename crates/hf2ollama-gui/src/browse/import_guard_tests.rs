@@ -105,8 +105,8 @@ fn import_button_is_blocked_while_an_unsettled_job_has_the_same_name() {
     assert_eq!(st.import_block_reason(), None);
     let name = st.browse.name.clone();
     assert!(!name.is_empty());
-    // Queued, running and paused all count; `name` and `name:latest` match.
-    st.jobs.accept(JobId(1), format!("{name}:latest"), 10);
+    // Queued, running and paused all count.
+    st.jobs.accept(JobId(1), name.clone(), 10);
     let why = st.import_block_reason().expect("blocked");
     assert_eq!(why, format!("A download for {name} is already running"));
     st.jobs.apply(
@@ -121,8 +121,11 @@ fn import_button_is_blocked_while_an_unsettled_job_has_the_same_name() {
         .apply(&JobEvent::Paused { id: JobId(1) }, Instant::now());
     assert!(st.import_block_reason().is_some());
     assert!(st.jobs.has_unsettled_job_named(&name));
-    assert!(st.jobs.has_unsettled_job_named(&format!("{name}:latest")));
     assert!(!st.jobs.has_unsettled_job_named("other"));
+    // `tiny` and `tiny:latest` are the same model.
+    st.jobs.accept(JobId(2), "tiny".into(), 10);
+    assert!(st.jobs.has_unsettled_job_named("tiny:latest"));
+    assert!(st.jobs.has_unsettled_job_named("tiny"));
 }
 
 #[test]

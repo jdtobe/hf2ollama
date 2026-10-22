@@ -20,7 +20,7 @@ pub enum Error {
     Io(String),
     #[error("parse error: {0}")]
     Parse(String),
-    #[error("model name already exists: {0}")]
+    #[error("a model named {0} already exists in Ollama: choose another name or delete it first in Installed")]
     NameCollision(String),
     #[error("invalid model name: {0}")]
     InvalidName(String),
