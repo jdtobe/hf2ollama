@@ -5,7 +5,7 @@ use crate::dock::jobs::JobsState;
 use crate::dock::{self, DockAction, DockUi};
 use crate::runtime::{BackendRequest, UiEvent};
 use crate::theme::{mono, semibold, tokens};
-use crate::widgets::segmented_nav;
+use crate::widgets::{ellipsize_middle, segmented_nav};
 use eframe::egui::{self, vec2, Color32, Margin, RichText, Sense, Stroke};
 use hf2ollama_core::config::{AutoDismiss, Settings};
 use hf2ollama_core::events::{Command, JobEvent};
@@ -344,18 +344,32 @@ impl App {
             .show(ui, |ui| {
                 let row = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
+                    let gap = ui.spacing().item_spacing.x;
+                    let path = self.state.staging_dir.display().to_string();
+                    let measure = |text: &str, font: egui::FontId| {
+                        ui.painter()
+                            .layout_no_wrap(text.to_string(), font, t.fg3)
+                            .size()
+                            .x
+                    };
+                    let small = egui::FontId::proportional(12.0);
+                    let note = "(files deleted after each import)";
+                    let label_w = measure("Staging folder", small.clone());
+                    let path_w = measure(&path, mono(11.5));
+                    let note_w = measure(note, small);
+                    let room = ui.available_width() - label_w - gap;
+                    // The note is the first thing to give way, then the path
+                    // loses its middle (the end is the part people look for).
+                    let show_note = self.state.delete_after_import && path_w + gap + note_w <= room;
+                    let path_room = if show_note { path_w } else { room };
+                    let shown = ellipsize_middle(ui, &path, mono(11.5), path_room);
                     ui.label(RichText::new("Staging folder").size(12.0).color(t.fg3));
-                    ui.label(
-                        RichText::new(self.state.staging_dir.display().to_string())
-                            .font(mono(11.5))
-                            .color(t.fg2),
-                    );
-                    if self.state.delete_after_import {
-                        ui.label(
-                            RichText::new("(files deleted after each import)")
-                                .size(12.0)
-                                .color(t.fg3),
-                        );
+                    let r = ui.label(RichText::new(&shown).font(mono(11.5)).color(t.fg2));
+                    if shown != path {
+                        r.on_hover_text(path);
+                    }
+                    if show_note {
+                        ui.label(RichText::new(note).size(12.0).color(t.fg3));
                     }
                 });
                 self.state.status_rect = Some(row.response.rect);

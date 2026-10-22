@@ -53,6 +53,40 @@ pub fn fit_text(
     ui.painter().layout_job(job)
 }
 
+/// Shortens `text` in the middle with an ellipsis until it measures at most
+/// `max_width` in `font`; the tail keeps the larger share.
+pub fn ellipsize_middle(ui: &egui::Ui, text: &str, font: FontId, max_width: f32) -> String {
+    let width = |s: &str| {
+        ui.painter()
+            .layout_no_wrap(s.to_string(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    };
+    if width(text) <= max_width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let build = |keep: usize| {
+        let head = keep / 3;
+        let tail = keep - head;
+        let mut out: String = chars[..head].iter().collect();
+        out.push('…');
+        out.extend(&chars[chars.len() - tail..]);
+        out
+    };
+    // Largest `keep` that still fits; width grows with it.
+    let (mut lo, mut hi) = (0, chars.len().saturating_sub(1));
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if width(&build(mid)) <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    build(lo)
+}
+
 /// Foreground and background colours of a fit pill.
 pub fn pill_colors(t: &crate::theme::Tokens, kind: PillKind) -> (Color32, Color32) {
     match kind {
