@@ -3,6 +3,7 @@
 use crate::browse::state::BrowseState;
 use crate::dock::jobs::JobsState;
 use crate::dock::{self, DockAction, DockUi};
+use crate::installed::state::{InstalledState, ListStatus};
 use crate::runtime::{BackendRequest, UiEvent};
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::{ellipsize_middle, segmented_nav};
@@ -38,7 +39,8 @@ pub struct AppState {
     pub query: String,
     /// `None` until the first poll answers; then the version if reachable.
     pub ollama: Option<Option<String>>,
-    pub installed_count: Option<usize>,
+    pub installed: InstalledState,
+    pub installed_ui: crate::installed::InstalledUi,
     pub ollama_host: String,
     pub staging_dir: PathBuf,
     pub delete_after_import: bool,
@@ -63,7 +65,8 @@ impl AppState {
             view: View::Browse,
             query: String::new(),
             ollama: None,
-            installed_count: None,
+            installed: InstalledState::new(),
+            installed_ui: Default::default(),
             ollama_host: String::new(),
             staging_dir: PathBuf::new(),
             delete_after_import: true,
@@ -96,10 +99,6 @@ impl AppState {
                     v.is_some() && self.ollama.as_ref().is_none_or(|o| o.is_none());
                 self.ollama = Some(v.clone());
                 became_reachable.then_some(BackendRequest::ListInstalled)
-            }
-            UiEvent::InstalledLoaded(Ok(models)) => {
-                self.installed_count = Some(models.len());
-                None
             }
             UiEvent::SearchDone(q, r) => {
                 self.browse.on_search_done(q, r.clone());
@@ -281,7 +280,8 @@ impl App {
                     let badges: Vec<Option<String>> = View::ALL
                         .iter()
                         .map(|v| match v {
-                            View::Installed => self.state.installed_count.map(|n| n.to_string()),
+                            View::Installed => (self.state.installed.status == ListStatus::Loaded)
+                                .then(|| self.state.installed.rows().len().to_string()),
                             _ => None,
                         })
                         .collect();
@@ -387,6 +387,12 @@ impl App {
         if self.state.view == View::Browse {
             let mut requests = Vec::new();
             crate::browse::show(ui, &mut self.state, &mut requests);
+            for r in requests {
+                let _ = self.tx.send(r);
+            }
+        } else if self.state.view == View::Installed {
+            let mut requests = Vec::new();
+            crate::installed::show(ui, &mut self.state, &mut requests);
             for r in requests {
                 let _ = self.tx.send(r);
             }
@@ -716,5 +722,80 @@ mod tests {
             );
             assert!(r.width() > 300.0, "dark={dark}: path vanished: {r:?}");
         }
+    }
+
+    // ---- installed wiring ----
+
+    fn entry(name: &str, size: u64, repo: Option<&str>) -> crate::runtime::InstalledEntry {
+        crate::runtime::InstalledEntry {
+            model: hf2ollama_core::ollama::InstalledModel {
+                name: name.into(),
+                size,
+                params: None,
+                quant: None,
+                family: None,
+                modified: "2026-10-20T09:30:00Z".into(),
+                digest: "sha256:x".into(),
+            },
+            source_repo: repo.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn installed_events_fold_into_state_and_nav_badge() {
+        let mut s = AppState::new();
+        let loaded = UiEvent::InstalledLoaded(Ok(vec![
+            entry("a:1", 10, None),
+            entry("b:2", 20, Some("o/b")),
+        ]));
+        assert!(s.on_event(&loaded).is_none());
+        assert_eq!(s.installed.rows().len(), 2);
+        assert_eq!(s.installed.status, ListStatus::Loaded);
+        let details = UiEvent::InstalledDetails(
+            "a:1".into(),
+            Ok(hf2ollama_core::ollama::ModelDetails {
+                family: "llama".into(),
+                context: None,
+                capabilities: vec![],
+                digest: "sha256:x".into(),
+                template: None,
+            }),
+        );
+        s.installed.toggle_expanded("a:1");
+        assert!(s.on_event(&details).is_none());
+        assert!(matches!(
+            s.installed.details_of("a:1"),
+            Some(crate::installed::state::DetailsState::Loaded(_))
+        ));
+    }
+
+    #[test]
+    fn backend_delete_installed_is_followed_by_list_refresh_request() {
+        let mut s = AppState::new();
+        s.on_event(&UiEvent::InstalledLoaded(Ok(vec![entry("a:1", 10, None)])));
+        let ok = UiEvent::DeleteDone("a:1".into(), Ok(()));
+        assert!(matches!(
+            s.on_event(&ok),
+            Some(BackendRequest::ListInstalled)
+        ));
+        assert!(s.installed.rows().is_empty());
+        let failed = UiEvent::DeleteDone("b:2".into(), Err("no".into()));
+        assert!(s.on_event(&failed).is_none());
+    }
+
+    #[test]
+    fn unreachable_ollama_turns_a_pending_list_into_an_error() {
+        let mut s = AppState::new();
+        assert_eq!(s.installed.status, ListStatus::Loading);
+        s.on_event(&UiEvent::OllamaStatus(None));
+        assert!(matches!(s.installed.status, ListStatus::Error(_)));
+        // Coming back asks for the list again and shows it as loading.
+        let req = s.on_event(&UiEvent::OllamaStatus(Some("0.9".into())));
+        assert!(matches!(req, Some(BackendRequest::ListInstalled)));
+        assert_eq!(s.installed.status, ListStatus::Loading);
+        // A list that was already loaded stays on screen while unreachable.
+        s.on_event(&UiEvent::InstalledLoaded(Ok(vec![entry("a:1", 10, None)])));
+        s.on_event(&UiEvent::OllamaStatus(None));
+        assert_eq!(s.installed.status, ListStatus::Loaded);
     }
 }
