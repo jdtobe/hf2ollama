@@ -276,7 +276,7 @@ fn assert_buttons_visible(kinds: &[Kind], label: &str) {
             );
             for b in &probe.buttons {
                 assert!(
-                    inside(*b, view) && inside(*b, window),
+                    inside(*b, view) && inside(*b, window) && inside(*b, panel),
                     "{label} {size:?} dark={dark}: button {b:?} clipped by {view:?}"
                 );
                 assert!(b.width() >= 40.0, "{label}: button {b:?} too narrow");
@@ -388,7 +388,10 @@ fn click_at(
             |ui| app.show(ui),
         );
     }
-    harness.frame(vec2(w, h), vec![], |ui| app.show(ui));
+    // The dock grows upward and settles over a few frames.
+    for _ in 0..40 {
+        harness.frame(vec2(w, h), vec![], |ui| app.show(ui));
+    }
     sent.try_iter().collect()
 }
 
@@ -418,6 +421,43 @@ fn dock_buttons_respond_while_a_log_is_open() {
                     ))
                 )),
                 "{size:?} dark={dark}: clicking Cancel on the queued row sent {sent:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dock_buttons_respond_after_a_log_was_opened_by_click() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let (mut app, sent) = browse_app_chan(false);
+            add_job(&mut app, 1, Kind::Running, 0);
+            add_job(&mut app, 2, Kind::Paused, 3);
+            add_job(&mut app, 3, Kind::Queued, 0);
+            let mut harness = Harness::new(dark);
+            for _ in 0..10 {
+                harness.frame(vec2(size.0, size.1), vec![], |ui| app.show(ui));
+            }
+            // Recorded rightmost first: queued (Log, Cancel), paused (Log,
+            // Cancel, Resume), running (Log, Cancel, Pause). Log of job 2 is #2.
+            let probe = app.state_mut().dock.probe.clone();
+            let log_of_2 = probe.buttons[2].center();
+            click_at(&mut app, &sent, &mut harness, size, log_of_2);
+            assert!(
+                app.state_mut().dock.open_logs.contains(&JobId(2)),
+                "{size:?} dark={dark}: the Log click did not open the log"
+            );
+            let probe = app.state_mut().dock.probe.clone();
+            let cancel_queued = probe.buttons[1].center();
+            let sent = click_at(&mut app, &sent, &mut harness, size, cancel_queued);
+            assert!(
+                sent.iter().any(|r| matches!(
+                    r,
+                    crate::runtime::BackendRequest::Core(hf2ollama_core::events::Command::Cancel(
+                        JobId(3)
+                    ))
+                )),
+                "{size:?} dark={dark}: Cancel after opening a log sent {sent:?}"
             );
         }
     }
