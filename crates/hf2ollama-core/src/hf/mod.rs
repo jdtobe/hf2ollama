@@ -79,6 +79,9 @@ pub struct ModelInfo {
     pub likes: u64,
     pub updated: String,
     pub gated: bool,
+    pub pipeline_tag: Option<String>,
+    pub languages: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -250,6 +253,9 @@ impl From<RawModel> for ModelInfo {
             likes: m.likes,
             updated: m.last_modified,
             gated,
+            pipeline_tag: None,
+            languages: Vec::new(),
+            tags: Vec::new(),
         }
     }
 }
@@ -575,6 +581,50 @@ mod tests {
         assert!(info.gated);
         assert_eq!(info.license.as_deref(), Some("llama3.2"));
         assert_eq!(info.params.as_deref(), Some("1.2B"));
+    }
+
+    #[tokio::test]
+    async fn model_info_extracts_pipeline_tag_languages_and_tags() {
+        let server = model_server("meta-llama/Llama-3.2-1B", GATED).await;
+        let info = HfClient::new(&server.uri(), None)
+            .model_info("meta-llama/Llama-3.2-1B")
+            .await
+            .unwrap();
+        assert_eq!(info.pipeline_tag.as_deref(), Some("text-generation"));
+        assert_eq!(
+            info.languages,
+            ["en", "de", "fr", "it", "pt", "hi", "es", "th"]
+        );
+        assert!(info.tags.iter().any(|t| t == "llama"));
+
+        let server = model_server("ggml-org/tiny-llamas", GGUF).await;
+        let info = HfClient::new(&server.uri(), None)
+            .model_info("ggml-org/tiny-llamas")
+            .await
+            .unwrap();
+        assert_eq!(info.pipeline_tag, None);
+        assert!(info.languages.is_empty());
+        assert_eq!(info.tags, ["gguf", "endpoints_compatible", "region:us"]);
+    }
+
+    #[tokio::test]
+    async fn model_info_language_may_be_a_string_or_a_surprise() {
+        let body = r#"{"id":"a/b","cardData":{"language":"en"}}"#;
+        let server = model_server("a/b", body).await;
+        let info = HfClient::new(&server.uri(), None)
+            .model_info("a/b")
+            .await
+            .unwrap();
+        assert_eq!(info.languages, ["en"]);
+        let body = r#"{"id":"a/b","pipeline_tag":7,"tags":"x","cardData":{"language":{"a":1}}}"#;
+        let server = model_server("a/b", body).await;
+        let info = HfClient::new(&server.uri(), None)
+            .model_info("a/b")
+            .await
+            .unwrap();
+        assert!(info.languages.is_empty());
+        assert_eq!(info.pipeline_tag, None);
+        assert!(info.tags.is_empty());
     }
 
     #[tokio::test]

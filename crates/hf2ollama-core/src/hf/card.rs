@@ -42,16 +42,14 @@ impl HfClient {
         let mut segments = parts;
         segments.extend(["raw", "main", "README.md"]);
         let req = self.get(self.url(&segments)?);
-        let mut resp = match tokio::time::timeout(
-            self.stall_timeout,
-            self.send_checked(req, Some(repo_id)),
-        )
-        .await
-        {
-            Err(_) => return Err(Error::Network("request stalled".to_string())),
-            Ok(Err(Error::Http { status: 404, .. })) => return Ok(None),
-            Ok(r) => r?,
-        };
+        let mut resp =
+            match tokio::time::timeout(self.stall_timeout, self.send_checked(req, Some(repo_id)))
+                .await
+            {
+                Err(_) => return Err(Error::Network("request stalled".to_string())),
+                Ok(Err(Error::Http { status: 404, .. })) => return Ok(None),
+                Ok(r) => r?,
+            };
         let mut body: Vec<u8> = Vec::new();
         let mut truncated = false;
         loop {
