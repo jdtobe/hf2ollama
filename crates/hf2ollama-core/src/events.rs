@@ -14,7 +14,7 @@ pub enum Stage {
     Done,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobEvent {
     Stage { id: JobId, stage: Stage },
     Progress { id: JobId, done: u64, total: u64 },
@@ -24,13 +24,6 @@ pub enum JobEvent {
     Finished { id: JobId },
     Failed { id: JobId, error: String },
     Cancelled { id: JobId },
-}
-
-// Placeholder so the test below fails on an assertion path, not a build error.
-impl PartialEq for JobEvent {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
