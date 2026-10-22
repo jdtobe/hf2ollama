@@ -10,6 +10,13 @@ pub const MAX_INPUT_BYTES: usize = 256 * 1024;
 pub const MAX_DEPTH: usize = 8;
 /// Leaf blocks kept; the rest is cut and reported as truncated.
 pub const MAX_BLOCKS: usize = 400;
+/// Spans kept in one paragraph or heading; the rest is dropped.
+pub const MAX_SPANS_PER_BLOCK: usize = 2000;
+/// Table columns and rows kept; the rest is dropped.
+pub const MAX_TABLE_COLS: usize = 20;
+pub const MAX_TABLE_ROWS: usize = 200;
+/// Spans plus table cells kept in a whole document.
+pub const MAX_DOC_ITEMS: usize = 5000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Span {
@@ -959,5 +966,101 @@ mod tests {
         let (p, more) = preview(&blocks, COLLAPSED);
         assert!(more);
         assert!(leaf_count(&p) <= 12 && leaf_count(&p) > 0);
+    }
+
+    /// Spans and cells in a block tree.
+    fn items(blocks: &[Block]) -> usize {
+        blocks
+            .iter()
+            .map(|b| match b {
+                Block::Heading(_, s) | Block::Paragraph(s) => s.len(),
+                Block::List { items: it, .. } => it.iter().map(|i| items(i)).sum(),
+                Block::Quote(c) => items(c),
+                Block::Table(rows) => {
+                    rows.iter().map(|r| r.len()).sum::<usize>()
+                        + rows.iter().flatten().map(Vec::len).sum::<usize>()
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_table_of_100k_cells_is_bounded_and_flagged() {
+        let md = format!("|a|b|\n|-|-|\n{}", "|||\n".repeat(50_000));
+        let (b, cut) = parse_capped(&md);
+        assert!(cut);
+        match &b[0] {
+            Block::Table(rows) => {
+                assert_eq!(rows.len(), MAX_TABLE_ROWS);
+                assert!(rows.iter().all(|r| r.len() <= MAX_TABLE_COLS));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_table_wider_than_the_column_cap_is_cut_and_flagged() {
+        let row = |c: &str| format!("|{}\n", c.repeat(100));
+        let md = format!("{}{}{}", row("h|"), row("-|"), row("x|"));
+        let (b, cut) = parse_capped(&md);
+        assert!(cut);
+        match &b[0] {
+            Block::Table(rows) => assert!(rows.iter().all(|r| r.len() == MAX_TABLE_COLS)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_paragraph_of_120k_spans_is_bounded_and_flagged() {
+        let (b, cut) = parse_capped(&"*a* ".repeat(60_000));
+        assert!(cut);
+        match &b[0] {
+            Block::Paragraph(s) => assert_eq!(s.len(), MAX_SPANS_PER_BLOCK),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_whole_document_is_bounded_in_spans_and_cells() {
+        let para = format!("{}\n\n", "*a* ".repeat(900));
+        let (b, cut) = parse_capped(&para.repeat(30));
+        assert!(cut);
+        assert!(items(&b) <= MAX_DOC_ITEMS, "{}", items(&b));
+        assert!(items(&b) > MAX_DOC_ITEMS / 2);
+    }
+
+    #[test]
+    fn ten_thousand_tiny_paragraphs_and_one_huge_line_stay_bounded() {
+        let md: String = (0..10_000).map(|i| format!("p{i}\n\n")).collect();
+        let (b, cut) = parse_capped(&md);
+        assert!(cut);
+        assert_eq!(leaf_count(&b), MAX_BLOCKS);
+        let (b, _) = parse_capped(&"a".repeat(MAX_INPUT_BYTES));
+        assert_eq!(items(&b), 1);
+    }
+
+    #[test]
+    fn preview_caps_cells_per_row() {
+        let cell = vec![Span::default()];
+        let table = Block::Table(vec![vec![cell; 100]]);
+        let (p, _) = preview(&[table], COLLAPSED);
+        match &p[0] {
+            Block::Table(rows) => assert_eq!(rows[0].len(), MAX_TABLE_COLS),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_html_is_linear_in_the_number_of_script_tags() {
+        let html = "<script>a</script>".repeat(20_000);
+        let start = std::time::Instant::now();
+        let out = strip_html(&html);
+        assert!(out.is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 }
