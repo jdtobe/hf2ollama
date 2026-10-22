@@ -77,7 +77,7 @@ One job per import. States: `Queued → Downloading → Verifying → Uploading 
 
 1. **Plan.** Resolve the selected file or files. Compute download size and final size. Check free space in the staging folder. Check Ollama is reachable. Refuse with a clear message if space is insufficient.
 2. **Download** into `<staging>/<job-id>/`. Resume with HTTP Range. Hash with SHA-256 while streaming. Use the Hugging Face token for gated repos.
-3. **Verify** each file against the SHA-256 published by Hugging Face. A mismatch fails the job and deletes the bad file.
+3. **Verify** each file against the SHA-256 published by Hugging Face for LFS files. Small non-LFS files (config, tokenizer) publish only a git blob SHA-1, so verify that instead. The app also computes the SHA-256 of every file locally, because Ollama's blob upload needs it. A mismatch fails the job and deletes the bad file.
 4. **Upload** each file to Ollama as a blob (`HEAD /api/blobs/:digest` to skip if present, else `POST`). The digest is the file's SHA-256.
 5. **Create** the model with `POST /api/create`, mapping file names to blob digests. For safetensors the request includes every needed file (weights, config, tokenizer files) and a `quantize` value chosen by the user.
 6. **Clean up** per settings (section 6). A successful job records an entry in `history`.
@@ -96,7 +96,7 @@ Controls:
 | Repo contents | Result |
 |---|---|
 | One or more `.gguf` files | Importable. Show each file as an option. Split GGUF shards are grouped and treated as one option. |
-| `*.safetensors` plus `config.json` and tokenizer files, architecture in the supported list | Importable. User picks a quantization (`f16`, `q8_0`, `q4_K_M`, `q4_0`, and others Ollama accepts). |
+| `*.safetensors` plus `config.json` and tokenizer files, architecture in the supported list | Importable. User picks a quantization from the values Ollama accepts for safetensors (verified on Ollama 0.40.8: none, `int8`, `int4`; kept as bundled data, see `docs/superpowers/notes/api-verification.md`). |
 | Safetensors with an unsupported architecture | Not importable. Explain why. |
 | PyTorch `.bin`, ONNX, or other formats only | Not importable. Explain why. |
 
@@ -221,6 +221,8 @@ Errors are shown in plain language with the next step, and every failure has a l
 4. **Supported architectures.** Build the initial supported list from Ollama's documented safetensors support, and verify with test imports.
 5. **egui limits.** Weaker accessibility than native toolkits. Narrow-window behavior needs real wrapping of step chips and long names. Both are tracked as UI requirements.
 6. **Windows and Linux rendering.** The spike was checked on macOS only.
+7. **Orphan blobs in Ollama.** Ollama has no blob-delete API, so a failed import after upload can leave an unused blob in its store (observed: 4 MB). Ollama prunes unreferenced blobs on restart, so this is documented in the UI and README, not worked around.
+8. **Safetensors `quantize` values were verified on macOS only** (Ollama 0.40.8: `int4`, `int8`, runner `mlx`). Linux and Windows behavior is unverified. The quantization list is bundled data, and an Ollama rejection is shown as-is.
 
 ## 12. Acceptance criteria for v1
 
