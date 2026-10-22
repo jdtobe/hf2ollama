@@ -84,6 +84,8 @@ Limits of this run: pause and resume was tested through `JobControl` (job starte
 
 ## Visual verification still owed (needs an unlocked display)
 
+Update: with the display unlocked, the Browse Files tab was captured at 1180x820 (light) and 900x640 (dark), after the pinned-tabs change. Both looked right, and the minimum-window capture caught a clipped import card, which was fixed. Everything in the list below is still owed.
+
 1. Downloads dock at 900x640 with many rows (dark and light), and with one log open (dark and light).
 2. Light theme at 1180 wide: dock with finished rows and finished-with-log.
 3. Every Installed view capture (both themes, 900 and 1180): empty, loaded, filtered, expanded details, armed delete, toast, Ollama unreachable.
