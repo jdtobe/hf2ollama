@@ -69,10 +69,20 @@ pub fn startup(exe_dir: &Path, os: OsDirs) -> Startup {
 /// line, which is also appended to `<log_dir>/startup.log`. Never fails.
 pub fn sweep_staging(staging_dir: &Path, log_dir: &Path, now: SystemTime) -> String {
     let line = match Staging::new(staging_dir.to_path_buf()).sweep(now, PARTIAL_TTL) {
-        Ok(r) => format!(
-            "staging sweep: removed {} orphan and {} expired job folders, kept {} partial, freed {} bytes",
-            r.removed_orphans, r.removed_expired, r.kept_partials, r.freed_bytes
-        ),
+        Ok(r) => {
+            let mut line = format!(
+                "staging sweep: removed {} orphan and {} expired job folders, kept {} partial, freed {} bytes",
+                r.removed_orphans, r.removed_expired, r.kept_partials, r.freed_bytes
+            );
+            if r.failed > 0 {
+                line.push_str(&format!(
+                    "; {} could not be removed ({})",
+                    r.failed,
+                    r.errors.join("; ")
+                ));
+            }
+            line
+        }
         Err(e) => format!("staging sweep failed: {e}"),
     };
     append_log(log_dir, &line);

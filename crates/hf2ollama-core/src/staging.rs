@@ -154,7 +154,11 @@ impl Staging {
                 false
             };
             let bytes = dir_size(&job);
-            remove_job_dir(&job)?;
+            if let Err(e) = remove_job_dir(&job) {
+                report.failed += 1;
+                report.errors.push(format!("{}: {e}", job.display()));
+                continue;
+            }
             report.freed_bytes = report.freed_bytes.saturating_add(bytes);
             if expired {
                 report.removed_expired += 1;
@@ -185,14 +189,19 @@ impl Staging {
     }
 
     /// Removes kept (finished with keep) and failed (`.partial`) job directories and
-    /// returns the bytes freed. A directory with neither marker may belong to a running
-    /// job and is never touched.
+    /// reports what was freed and what could not be removed. A directory with neither
+    /// marker may belong to a running job and is never touched. One stubborn directory
+    /// does not stop the others.
     pub fn clear_cached_report(&self) -> Result<ClearReport> {
         let mut report = ClearReport::default();
         for job in self.jobs()? {
             if has_marker(&job, KEPT_MARKER) || has_marker(&job, PARTIAL_MARKER) {
                 let bytes = dir_size(&job);
-                remove_job_dir(&job)?;
+                if let Err(e) = remove_job_dir(&job) {
+                    report.failed += 1;
+                    report.errors.push(format!("{}: {e}", job.display()));
+                    continue;
+                }
                 report.freed_bytes = report.freed_bytes.saturating_add(bytes);
                 report.removed += 1;
             }
@@ -200,16 +209,14 @@ impl Staging {
         Ok(report)
     }
 
+    /// Like `clear_cached_report`, returning the bytes freed; fails only when
+    /// something could not be removed and nothing at all was.
     pub fn clear_cached(&self) -> Result<u64> {
-        let mut freed = 0u64;
-        for job in self.jobs()? {
-            if has_marker(&job, KEPT_MARKER) || has_marker(&job, PARTIAL_MARKER) {
-                let bytes = dir_size(&job);
-                remove_job_dir(&job)?;
-                freed = freed.saturating_add(bytes);
-            }
+        let report = self.clear_cached_report()?;
+        match report.errors.first() {
+            Some(first) if report.removed == 0 => Err(Error::Io(first.clone())),
+            _ => Ok(report.freed_bytes),
         }
-        Ok(freed)
     }
 }
 
