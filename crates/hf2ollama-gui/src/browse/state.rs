@@ -120,6 +120,7 @@ pub struct BrowseState {
     selected: Option<String>,
     plan: Option<Plan>,
     selected_option: Option<usize>,
+    scroll_pending: bool,
     pub name: String,
     pub name_edited: bool,
 }
@@ -203,6 +204,7 @@ impl BrowseState {
             selected: None,
             plan: None,
             selected_option: None,
+            scroll_pending: false,
             name: String::new(),
             name_edited: false,
         }
@@ -433,7 +435,9 @@ impl BrowseState {
         };
         let info = Arc::clone(info);
         let plan = match compat::classify(&info.files, info.arch.as_deref(), &self.supported) {
-            Compat::Gguf { options } => {
+            Compat::Gguf { mut options } => {
+                // Largest first, like the mockup; the sort is stable.
+                options.sort_by_key(|o| std::cmp::Reverse(o.total_bytes));
                 let rows = options::gguf_rows(&options, &self.machine);
                 Plan {
                     kind: PlanKind::Gguf(options),
@@ -454,6 +458,7 @@ impl BrowseState {
             },
         };
         self.selected_option = plan.rows.iter().position(|r| r.recommended);
+        self.scroll_pending = self.selected_option.is_some();
         self.plan = Some(plan);
         self.rederive_name();
     }
@@ -549,8 +554,12 @@ impl BrowseState {
                     .to_string(),
             );
         }
-        if ollama == Some(false) {
-            return Some("Ollama is not reachable. Start Ollama, then try again.".to_string());
+        match ollama {
+            Some(false) => {
+                return Some("Ollama is not reachable. Start Ollama, then try again.".to_string())
+            }
+            None => return Some("Checking Ollama…".to_string()),
+            Some(true) => {}
         }
         None
     }
@@ -558,17 +567,20 @@ impl BrowseState {
     /// True once after a repository's plan was (re)built: the options table
     /// should scroll the recommended row into view.
     pub fn take_scroll_request(&mut self) -> bool {
-        unimplemented!()
+        std::mem::take(&mut self.scroll_pending)
     }
 
     /// True when the selected repository loaded but is marked gated.
     pub fn selected_info_gated(&self) -> bool {
-        unimplemented!()
+        matches!(
+            self.selected.as_ref().and_then(|id| self.infos.get(id)),
+            Some(Ok(info)) if info.gated
+        )
     }
 
     /// Asks for the related-GGUF search again (Retry button).
     pub fn retry_related(&mut self) {
-        unimplemented!()
+        self.related_for = None;
     }
 
     /// True when the selected repository failed with a gated-access error.
@@ -586,7 +598,10 @@ pub const GATED_MESSAGE: &str = "This repo needs a Hugging Face access token. Ad
 /// say "token" or "gated" in a plain HTTP body.
 pub fn is_gated_error(e: &str) -> bool {
     let e = e.to_lowercase();
-    e.contains("gated") || e.contains("access token")
+    e.contains("gated")
+        || e.contains("access token")
+        || e.contains("http 401")
+        || e.contains("http 403")
 }
 
 fn tag_of(label: &str) -> String {
