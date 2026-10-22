@@ -2,10 +2,11 @@
 //! Nothing here draws or touches the network.
 
 use super::filters::{self, Filters};
+use super::markdown::{self, Block};
 use super::options::{self, OptionRow};
 use hf2ollama_core::compat::{self, Compat, GgufOption};
 use hf2ollama_core::fit::Machine;
-use hf2ollama_core::hf::{FormatFilter, ModelInfo, ModelSummary, SearchQuery};
+use hf2ollama_core::hf::{FormatFilter, ModelCard, ModelInfo, ModelSummary, SearchQuery};
 use hf2ollama_core::model::{ImportRequest, RepoFile};
 use hf2ollama_core::names::validate_model_name;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -124,6 +125,9 @@ pub struct BrowseState {
     plan: Option<Plan>,
     selected_option: Option<usize>,
     scroll_frames_left: u8,
+    tab: DetailTab,
+    card_expanded: bool,
+    cards: CardStore,
     #[cfg(test)]
     pub probe: super::Probe,
     pub name: String,
@@ -210,6 +214,9 @@ impl BrowseState {
             plan: None,
             selected_option: None,
             scroll_frames_left: 0,
+            tab: DetailTab::Files,
+            card_expanded: false,
+            cards: CardStore::default(),
             #[cfg(test)]
             probe: Default::default(),
             name: String::new(),
@@ -480,6 +487,46 @@ impl BrowseState {
         }
     }
 
+    pub fn tab(&self) -> DetailTab {
+        self.tab
+    }
+
+    /// Switches the detail tab. Opening About for the first time asks for
+    /// the selected repository's model card.
+    pub fn set_tab(&mut self, tab: DetailTab) {
+        self.tab = tab;
+    }
+
+    pub fn card_expanded(&self) -> bool {
+        self.card_expanded
+    }
+
+    pub fn set_card_expanded(&mut self, expanded: bool) {
+        self.card_expanded = expanded;
+    }
+
+    /// The model-card lookups to start now (at most `MAX_CARD_IN_FLIGHT`
+    /// running at once).
+    pub fn next_card_requests(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Stores a model-card answer.
+    pub fn on_model_card(&mut self, _id: &str, _result: Result<Option<ModelCard>, String>) {}
+
+    /// The cached answer for `id`; `None` while it is not loaded.
+    pub fn card_for(&self, id: &str) -> Option<&CardResult> {
+        self.cards.results.get(id)
+    }
+
+    /// True while the card of `id` was asked for but not answered.
+    pub fn card_pending(&self, _id: &str) -> bool {
+        false
+    }
+
+    /// Forgets a failed card lookup so it is asked for again (Retry button).
+    pub fn retry_card(&mut self, _id: &str) {}
+
     /// Selects a repository by id, picking its recommended option.
     pub fn select_repo(&mut self, id: &str) {
         if self.selected.as_deref() == Some(id) {
@@ -609,6 +656,42 @@ impl BrowseState {
             Some(Err(e)) if is_gated_error(e)
         )
     }
+}
+
+/// Which part of the detail pane's scroll area is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailTab {
+    #[default]
+    Files,
+    About,
+}
+
+/// At most this many model-card downloads run at once.
+pub const MAX_CARD_IN_FLIGHT: usize = 2;
+
+pub const CARD_GATED_MESSAGE: &str =
+    "This model card needs a Hugging Face access token. Add one in Settings.";
+
+/// A parsed model card, ready to draw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardView {
+    pub full: Vec<Block>,
+    pub preview: Vec<Block>,
+    /// The collapsed preview leaves content out.
+    pub more: bool,
+    /// The card was cut: by the download cap or by the block cap.
+    pub truncated: bool,
+}
+
+/// `Ok(None)` means the repository has no model card.
+pub type CardResult = Result<Option<std::sync::Arc<CardView>>, String>;
+
+#[derive(Default)]
+struct CardStore {
+    requested: HashSet<String>,
+    queued: VecDeque<String>,
+    in_flight: HashSet<String>,
+    results: HashMap<String, CardResult>,
 }
 
 /// Shown when a repository loads fine but is marked gated; importing is
@@ -1255,5 +1338,152 @@ mod tests {
         st.name_edited = true;
         st.select_option(1);
         assert_eq!(st.name, "mine");
+    }
+
+    // ---- model card ----
+
+    fn two_repos() -> BrowseState {
+        let mut st = BrowseState::new(machine(32.0, None));
+        let (id, i) = gguf_repo();
+        st.on_model_info(id, Ok(i));
+        let (id, i) = st_repo();
+        st.on_model_info(id, Ok(i));
+        st
+    }
+
+    fn card(md: &str) -> Result<Option<ModelCard>, String> {
+        Ok(Some(ModelCard {
+            markdown: md.to_string(),
+            truncated: false,
+        }))
+    }
+
+    #[test]
+    fn no_card_request_until_about_is_opened() {
+        let mut st = two_repos();
+        st.select_repo(gguf_repo().0);
+        assert_eq!(st.tab(), DetailTab::Files);
+        assert!(st.next_card_requests().is_empty());
+    }
+
+    #[test]
+    fn about_tab_requests_card_once() {
+        let mut st = two_repos();
+        let id = gguf_repo().0;
+        st.select_repo(id);
+        st.set_tab(DetailTab::About);
+        assert_eq!(st.next_card_requests(), vec![id.to_string()]);
+        assert!(st.card_pending(id));
+        assert!(st.next_card_requests().is_empty());
+        st.set_tab(DetailTab::Files);
+        st.set_tab(DetailTab::About);
+        assert!(st.next_card_requests().is_empty());
+        st.on_model_card(id, card("# Hi"));
+        assert!(!st.card_pending(id));
+        st.set_tab(DetailTab::Files);
+        st.set_tab(DetailTab::About);
+        assert!(st.next_card_requests().is_empty(), "never refetched");
+    }
+
+    #[test]
+    fn retry_card_clears_cached_error_and_requeues() {
+        let mut st = two_repos();
+        let id = gguf_repo().0;
+        st.select_repo(id);
+        st.set_tab(DetailTab::About);
+        st.next_card_requests();
+        st.on_model_card(id, Err("network error: down".into()));
+        assert!(matches!(st.card_for(id), Some(Err(_))));
+        st.retry_card(id);
+        assert!(st.card_for(id).is_none());
+        assert!(st.card_pending(id));
+        assert_eq!(st.next_card_requests(), vec![id.to_string()]);
+    }
+
+    #[test]
+    fn card_cache_is_per_repo() {
+        let mut st = two_repos();
+        let (a, b) = (gguf_repo().0, st_repo().0);
+        st.on_model_card(a, card("# A"));
+        st.on_model_card(b, Ok(None));
+        let view = |st: &BrowseState, id: &str| match st.card_for(id) {
+            Some(Ok(Some(v))) => Some(v.full.len()),
+            _ => None,
+        };
+        assert_eq!(view(&st, a), Some(1));
+        assert_eq!(view(&st, b), None);
+        assert!(matches!(st.card_for(b), Some(Ok(None))));
+    }
+
+    #[test]
+    fn tab_resets_to_files_on_new_selection() {
+        let mut st = two_repos();
+        st.select_repo(gguf_repo().0);
+        st.set_tab(DetailTab::About);
+        st.set_card_expanded(true);
+        st.select_repo(st_repo().0);
+        assert_eq!(st.tab(), DetailTab::Files);
+        assert!(!st.card_expanded());
+    }
+
+    #[test]
+    fn card_in_flight_is_bounded_to_2() {
+        let mut st = BrowseState::new(machine(32.0, None));
+        let ids = ["a/one", "a/two", "a/three"];
+        for id in ids {
+            st.select_repo(id);
+            st.set_tab(DetailTab::About);
+        }
+        let first = st.next_card_requests();
+        assert_eq!(first, vec!["a/one".to_string(), "a/two".to_string()]);
+        assert!(st.next_card_requests().is_empty());
+        st.on_model_card("a/one", card("x"));
+        assert_eq!(st.next_card_requests(), vec!["a/three".to_string()]);
+    }
+
+    #[test]
+    fn card_answers_are_parsed_and_previewed() {
+        let mut st = two_repos();
+        let id = gguf_repo().0;
+        let long: String = (0..40).map(|i| format!("para {i}\n\n")).collect();
+        st.on_model_card(id, card(&long));
+        match st.card_for(id) {
+            Some(Ok(Some(v))) => {
+                assert_eq!(v.full.len(), 40);
+                assert!(v.more);
+                assert!(v.preview.len() < v.full.len());
+                assert!(!v.truncated);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn download_truncation_is_carried_to_the_view() {
+        let mut st = two_repos();
+        let id = gguf_repo().0;
+        st.on_model_card(
+            id,
+            Ok(Some(ModelCard {
+                markdown: "hi".into(),
+                truncated: true,
+            })),
+        );
+        assert!(matches!(st.card_for(id), Some(Ok(Some(v))) if v.truncated));
+    }
+
+    #[test]
+    fn card_errors_are_plain_language_and_gated_points_to_settings() {
+        let mut st = two_repos();
+        let id = gguf_repo().0;
+        for raw in ["gated repository: a/b", "HTTP 403: Forbidden"] {
+            st.on_model_card(id, Err(raw.into()));
+            assert!(
+                matches!(st.card_for(id), Some(Err(m)) if m == CARD_GATED_MESSAGE),
+                "{raw}"
+            );
+        }
+        st.on_model_card(id, Err("network error: boom".into()));
+        assert!(matches!(st.card_for(id), Some(Err(m)) if m.contains("Could not reach")));
     }
 }
