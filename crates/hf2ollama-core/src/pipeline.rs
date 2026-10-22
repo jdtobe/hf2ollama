@@ -277,6 +277,7 @@ mod tests {
     use crate::model::RepoFile;
     use serde_json::json;
     use sha2::{Digest, Sha256};
+    use std::path::Path;
     use std::sync::mpsc::{self, Receiver};
     use wiremock::matchers::{body_bytes, body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -715,5 +716,210 @@ mod tests {
         let events = env.events();
         assert_eq!(events.iter().filter(|e| is_terminal(e)).count(), 1);
         assert!(is_terminal(events.last().unwrap()));
+    }
+
+    /// Downloads fine, then Ollama rejects the create.
+    async fn rejecting_env() -> (Env, ImportRequest) {
+        let env = Env::new().await;
+        let data = payload(4000, 5);
+        env.serve_hf("tiny.gguf", &data).await;
+        env.ollama_basics(&[]).await;
+        env.blob(&data, 404).await;
+        Mock::given(method("POST"))
+            .and(path("/api/create"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string("{\"error\":\"unknown architecture\"}"),
+            )
+            .expect(1)
+            .mount(&env.ol)
+            .await;
+        let req = request("tiny", vec![lfs_file("tiny.gguf", &data)]);
+        (env, req)
+    }
+
+    /// The served bytes do not match the declared SHA-256.
+    async fn mismatch_env() -> (Env, ImportRequest) {
+        let env = Env::new().await;
+        let data = payload(4000, 6);
+        env.serve_hf("tiny.gguf", &data).await;
+        env.ollama_basics(&[]).await;
+        let mut file = lfs_file("tiny.gguf", &data);
+        file.sha256 = Some(sha256_hex(b"something else"));
+        (env, request("tiny", vec![file]))
+    }
+
+    /// Hugging Face answers only after 30 s, so the job must be cancelled.
+    async fn slow_env() -> (Env, ImportRequest) {
+        let env = Env::new().await;
+        let data = payload(4000, 7);
+        Mock::given(method("GET"))
+            .and(path(format!("/{REPO}/resolve/main/tiny.gguf")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(data.clone())
+                    .set_delay(std::time::Duration::from_secs(30)),
+            )
+            .expect(1)
+            .mount(&env.hf)
+            .await;
+        env.ollama_basics(&[]).await;
+        (env, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+    }
+
+    async fn run_and_cancel(env: &Env, id: u64, req: ImportRequest) -> Result<()> {
+        let ctl = JobControl::new();
+        let canceller = ctl.clone();
+        let (res, ()) = tokio::join!(
+            run_import(&env.ctx, JobId(id), req, ctl, env.tx.clone()),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                canceller.cancel();
+            }
+        );
+        res
+    }
+
+    #[tokio::test]
+    async fn failure_marks_partial_when_keep_partials_on_and_deletes_when_off() {
+        let (mut env, req) = rejecting_env().await;
+        env.ctx.settings.keep_partials = true;
+        assert!(env.run(1, req).await.is_err());
+        let cached = env.ctx.staging.list_cached().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].label, "job-1");
+        assert!(cached[0].partial);
+        assert!(env.root().join("job-1").join("tiny.gguf").is_file());
+
+        let (mut env, req) = rejecting_env().await;
+        env.ctx.settings.keep_partials = false;
+        assert!(env.run(1, req).await.is_err());
+        assert!(!env.root().join("job-1").exists());
+        assert!(env.ctx.staging.list_cached().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_always_deletes_partial_files() {
+        let (mut env, req) = slow_env().await;
+        env.ctx.settings.keep_partials = true;
+        env.ctx.settings.delete_after_import = false;
+        let err = run_and_cancel(&env, 1, req).await.unwrap_err();
+        assert_eq!(err, Error::Cancelled);
+        assert!(!env.root().join("job-1").exists());
+        let events = env.events();
+        assert_eq!(events.last(), Some(&JobEvent::Cancelled { id: JobId(1) }));
+        assert_eq!(events.iter().filter(|e| is_terminal(e)).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn insufficient_space_fails_before_any_download() {
+        let env = Env::new().await;
+        env.ollama_basics(&[]).await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&env.hf)
+            .await;
+        let mut file = lfs_file("big.gguf", b"x");
+        file.size = u64::MAX;
+        let err = env.run(1, request("tiny", vec![file])).await.unwrap_err();
+        assert!(matches!(err, Error::InsufficientSpace { .. }), "{err:?}");
+        let events = env.events();
+        assert!(stages(&events).is_empty(), "{events:?}");
+        assert!(matches!(events.last(), Some(JobEvent::Failed { .. })));
+        assert!(!env.root().join("job-1").exists());
+    }
+
+    #[tokio::test]
+    async fn hash_mismatch_fails_and_cleans() {
+        let (mut env, req) = mismatch_env().await;
+        env.ctx.settings.keep_partials = true;
+        let err = env.run(1, req).await.unwrap_err();
+        assert_eq!(
+            err,
+            Error::HashMismatch {
+                file: "tiny.gguf".to_string()
+            }
+        );
+        assert!(!env.root().join("job-1").exists());
+        let events = env.events();
+        assert!(matches!(events.last(), Some(JobEvent::Failed { .. })));
+        assert!(!stages(&events).contains(&Stage::Uploading));
+    }
+
+    #[tokio::test]
+    async fn ollama_create_rejection_surfaces_message_and_cleans() {
+        let (mut env, req) = rejecting_env().await;
+        env.ctx.settings.keep_partials = false;
+        let err = env.run(1, req).await.unwrap_err();
+        assert_eq!(err, Error::Ollama("unknown architecture".to_string()));
+        let events = env.events();
+        match events.last() {
+            Some(JobEvent::Failed { error, .. }) => {
+                assert!(error.contains("unknown architecture"), "{error}")
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(!env.root().join("job-1").exists());
+        assert!(env
+            .ctx
+            .history
+            .lock()
+            .unwrap()
+            .source_of("tiny:latest")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn event_sequence_has_exactly_one_terminal_event_on_failure_and_cancel() {
+        let (env, req) = rejecting_env().await;
+        assert!(env.run(1, req).await.is_err());
+        let events = env.events();
+        assert_eq!(events.iter().filter(|e| is_terminal(e)).count(), 1);
+        assert!(is_terminal(events.last().unwrap()));
+
+        let (env, req) = slow_env().await;
+        assert!(run_and_cancel(&env, 1, req).await.is_err());
+        let events = env.events();
+        assert_eq!(events.iter().filter(|e| is_terminal(e)).count(), 1);
+        assert!(is_terminal(events.last().unwrap()));
+    }
+
+    fn plant_foreign(root: &Path) {
+        std::fs::create_dir_all(root.join("photos")).unwrap();
+        std::fs::write(root.join("photos").join("a.jpg"), b"jpg").unwrap();
+        std::fs::write(root.join("notes.txt"), b"notes").unwrap();
+        std::fs::create_dir_all(root.join("job-9")).unwrap();
+        std::fs::write(root.join("job-9").join("mine.txt"), b"mine").unwrap();
+    }
+
+    fn assert_foreign_intact(root: &Path) {
+        assert_eq!(std::fs::read(root.join("photos/a.jpg")).unwrap(), b"jpg");
+        assert_eq!(std::fs::read(root.join("notes.txt")).unwrap(), b"notes");
+        assert_eq!(std::fs::read(root.join("job-9/mine.txt")).unwrap(), b"mine");
+    }
+
+    #[tokio::test]
+    async fn foreign_files_in_staging_root_survive_every_outcome() {
+        // success with delete on
+        let (mut env, data) = gguf_env().await;
+        env.ctx.settings.delete_after_import = true;
+        plant_foreign(&env.root());
+        env.run(1, gguf_request(&data)).await.unwrap();
+        assert_foreign_intact(&env.root());
+
+        // failure with partials discarded
+        let (mut env, req) = mismatch_env().await;
+        env.ctx.settings.keep_partials = false;
+        plant_foreign(&env.root());
+        assert!(env.run(2, req).await.is_err());
+        assert_foreign_intact(&env.root());
+
+        // cancel
+        let (mut env, req) = slow_env().await;
+        env.ctx.settings.delete_after_import = true;
+        plant_foreign(&env.root());
+        assert!(run_and_cancel(&env, 3, req).await.is_err());
+        assert_foreign_intact(&env.root());
+        assert!(!env.root().join("job-3").exists());
     }
 }
