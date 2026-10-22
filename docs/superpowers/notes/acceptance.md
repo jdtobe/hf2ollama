@@ -7,12 +7,13 @@ Rule for this file: PASS only where something was actually run; everything else 
 ## Real Ollama run
 
 - Server: a separate throwaway server started with `OLLAMA_HOST=127.0.0.1:11555 OLLAMA_MODELS=<temp dir>/models /Applications/Ollama.app/Contents/Resources/ollama serve`. `GET /api/version` returned `{"version":"0.40.8"}`. The temp models directory is a non-default `OLLAMA_MODELS` (the store the server logged was that temp path). The server was stopped afterwards by its own PID and the directory deleted.
-- The user's own Ollama was not running during the run, and no request was ever sent to port 11434 (the tests also refuse that port unless `HF2OLLAMA_E2E_ALLOW_DEFAULT=1`; confirmed by running a test against `:11434`, which panicked on the guard before any request).
+- Safety guard (`e2e_environment()` in the test file, run by every test): the tests skip with a printed reason unless the URL variable is set, is http(s) on a loopback host (`HF2OLLAMA_E2E_ALLOW_REMOTE=1` allows another host), has a port other than 11434 (`HF2OLLAMA_E2E_CONFIRM_DISPOSABLE=1` allows it), and `GET /api/tags` shows the server is empty or holds only `hf2o-e2e-*` models (no override). Every delete goes through a wrapper that panics on any other name, and a drop guard deletes a test's models even when an assertion fails. Pure rules are unit-tested in the normal test run (`guard_tests`). Running a test against `http://127.0.0.1:11434` printed `SKIPPED: refusing ... port 11434 is Ollama's default` without sending a request. No request was ever sent to port 11434.
+- The user's own Ollama was not running during the runs.
 - Binary choice: the app bundle's `ollama` 0.40.8 is the version the API behavior was verified against (see `api-verification.md`). The Homebrew client at `/opt/homebrew/bin/ollama` is 0.40.5 and was not used, so there is no 0.40.5 behavior to report; the run matches the previously verified 0.40.8 behavior with no differences found.
 - Hugging Face: public API only, no token. Models: `ggml-org/tiny-llamas` (`stories260K.gguf`, 1.2 MB; `stories15M.gguf`, 98 MB for the cancel test) and `hf-internal-testing/tiny-random-LlamaForCausalLM` (safetensors, 4 MB weights).
 - Command: `HF2OLLAMA_E2E_OLLAMA_URL=http://127.0.0.1:11555 cargo test -p hf2ollama-core --test e2e_real_ollama -- --ignored --test-threads=1 --nocapture`
 
-Verbatim result:
+Verbatim result (re-run after the guard fix, fresh server on 11555 with a new temp `OLLAMA_MODELS`, version 0.40.8; the first run before the fix gave the same 8 passes):
 
 ```
 running 8 tests
@@ -29,8 +30,20 @@ hf2o-e2e-st-none: /api/show details.format = "safetensors"
 ok
 test unsupported_repositories_are_classified_not_imported ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.64s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 11.94s
 ```
+
+Forced failure (`HF2OLLAMA_E2E_FORCE_FAIL=1`, which makes the GGUF test fail after the model exists), then `/api/tags`:
+
+```
+test gguf_import_deletes_staging_and_records_history ... FAILED
+thread 'gguf_import_deletes_staging_and_records_history' (8778684) panicked at crates/hf2ollama-core/tests/e2e_real_ollama.rs:456:5:
+HF2OLLAMA_E2E_FORCE_FAIL=1: failing on purpose; the cleanup guard must still delete the model
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 1.22s
+{"models":[]}
+```
+
+The cleanup guard removed the model although the test failed; `/api/tags` was empty afterwards, and also empty after the full run.
 
 What each test proves (file `crates/hf2ollama-core/tests/e2e_real_ollama.rs`):
 
