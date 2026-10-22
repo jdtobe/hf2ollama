@@ -96,6 +96,7 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
             if jobs.rows().is_empty() {
                 idle_line(ui, &t, jobs);
             } else {
+                ui.spacing_mut().item_spacing.y = 2.0;
                 header(ui, &t, jobs, st, &mut actions);
                 rows(ui, cap, &t, jobs, st, &mut actions);
             }
