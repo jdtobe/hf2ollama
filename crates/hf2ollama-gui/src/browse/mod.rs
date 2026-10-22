@@ -51,6 +51,8 @@ pub mod about;
 mod about_tests;
 pub mod detail;
 pub mod filters;
+#[cfg(test)]
+mod import_guard_tests;
 pub mod markdown;
 pub mod options;
 pub mod plan_card;

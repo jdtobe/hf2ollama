@@ -69,6 +69,20 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Why the Download button is disabled, if it is: the browse reasons, then a
+    /// job already importing under the same name.
+    pub fn import_block_reason(&self) -> Option<String> {
+        let reachable = self.ollama.as_ref().map(|o| o.is_some());
+        if let Some(why) = self.browse.import_block_reason(reachable) {
+            return Some(why);
+        }
+        let name = &self.browse.name;
+        if self.jobs.has_unsettled_job_named(name) || self.browse.is_import_pending(name) {
+            return Some(format!("A download for {name} is already running"));
+        }
+        None
+    }
+
     pub fn new() -> AppState {
         AppState {
             view: View::Browse,
@@ -206,6 +220,7 @@ impl AppState {
                 total_bytes,
             } => {
                 self.jobs.accept(*id, model_name.clone(), *total_bytes);
+                self.browse.clear_import_pending(model_name);
                 None
             }
             UiEvent::Job(job) => {

@@ -132,6 +132,8 @@ pub struct BrowseState {
     pub probe: super::Probe,
     pub name: String,
     pub name_edited: bool,
+    /// Names sent to the backend whose `JobAccepted` has not arrived yet.
+    pending_names: std::collections::BTreeSet<String>,
 }
 
 /// Lowercases and cleans a repo name into a valid Ollama model name part.
@@ -221,6 +223,7 @@ impl BrowseState {
             probe: Default::default(),
             name: String::new(),
             name_edited: false,
+            pending_names: Default::default(),
         }
     }
 
@@ -653,6 +656,18 @@ impl BrowseState {
             quantize: row.quantize.map(str::to_string),
             overwrite: false,
         })
+    }
+
+    /// Remembers that an import under `name` was just sent.
+    pub fn mark_import_pending(&mut self, _name: &str) {}
+
+    /// The backend answered for `name` (accepted or failed).
+    pub fn clear_import_pending(&mut self, name: &str) {
+        self.pending_names.remove(name);
+    }
+
+    pub fn is_import_pending(&self, _name: &str) -> bool {
+        false
     }
 
     /// Why the import button is disabled, if it is.

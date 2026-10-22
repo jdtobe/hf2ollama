@@ -133,8 +133,7 @@ pub fn step_chips(ui: &mut egui::Ui, labels: &[&str]) -> Vec<egui::Rect> {
 /// reason scroll inside whatever height is left.
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>, budget: f32) {
     let t = tokens(ui);
-    let reachable = app.ollama.as_ref().map(|o| o.is_some());
-    let reason = app.browse.import_block_reason(reachable);
+    let reason = app.import_block_reason();
     let delete_after = app.delete_after_import;
 
     // (is_gguf, quantize chosen, download bytes, final bytes, final is an estimate)
@@ -223,8 +222,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 }
                 clicked = b.clicked();
             }
-            if clicked {
+            if clicked && reason.is_none() {
                 if let Some(req) = app.browse.import_request() {
+                    app.browse.mark_import_pending(&req.model_name);
                     out.push(BackendRequest::Core(Command::StartImport(req)));
                 }
             }

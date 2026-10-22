@@ -1869,4 +1869,106 @@ mod tests {
         };
         assert_eq!(retry_wait(&huge, 1, base), Some(Duration::from_secs(30)));
     }
+
+    // ---- name collision re-check ----
+
+    /// `/api/tags` answers empty once, then lists `tiny:latest`.
+    async fn tags_empty_then_taken(env: &Env) {
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"version": "0.40.8"})))
+            .mount(&env.ol)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": []})))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&env.ol)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+                {"name": "tiny:latest", "size": 1, "modified_at": "x", "digest": "d", "details": {}}
+            ]})))
+            .with_priority(5)
+            .mount(&env.ol)
+            .await;
+    }
+
+    async fn requests_to(server: &MockServer, p: &str) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.url.path() == p)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn create_is_not_sent_when_the_name_appears_during_the_download() {
+        let env = Env::new().await;
+        let data = payload(5000, 0);
+        env.serve_hf("tiny.gguf", &data).await;
+        tags_empty_then_taken(&env).await;
+        env.blob(&data, 404).await;
+        let err = env
+            .run(1, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+            .await
+            .unwrap_err();
+        assert_eq!(err, Error::NameCollision("tiny".to_string()));
+        assert_eq!(requests_to(&env.ol, "/api/create").await, 0);
+        assert_eq!(requests_to(&env.ol, "/api/tags").await, 2);
+        let events = env.events();
+        assert!(matches!(events.last(), Some(JobEvent::Failed { .. })));
+        assert!(
+            log_lines(&events)
+                .iter()
+                .any(|l| l.contains("already exists")),
+            "{:?}",
+            log_lines(&events)
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrite_true_skips_the_recheck() {
+        let env = Env::new().await;
+        let data = payload(5000, 0);
+        env.serve_hf("tiny.gguf", &data).await;
+        env.ollama_basics(&["tiny:latest"]).await;
+        env.blob(&data, 404).await;
+        env.create_ok(json!({
+            "model": "tiny",
+            "files": {"tiny.gguf": digest_of(&data)},
+            "stream": true
+        }))
+        .await;
+        let mut req = gguf_request(&data);
+        req.overwrite = true;
+        env.run(1, req).await.unwrap();
+        assert_eq!(requests_to(&env.ol, "/api/tags").await, 0);
+    }
+
+    #[tokio::test]
+    async fn collision_failure_message_is_readable() {
+        let env = Env::new().await;
+        env.ollama_basics(&["tiny:latest"]).await;
+        let data = payload(100, 3);
+        env.run(1, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+            .await
+            .unwrap_err();
+        let failed = env
+            .events()
+            .into_iter()
+            .find_map(|e| match e {
+                JobEvent::Failed { error, .. } => Some(error),
+                _ => None,
+            })
+            .expect("a Failed event");
+        assert_eq!(
+            failed,
+            "a model named tiny already exists in Ollama: choose another name or delete it first in Installed"
+        );
+    }
 }

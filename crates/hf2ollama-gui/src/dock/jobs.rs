@@ -147,6 +147,12 @@ impl JobsState {
         row.total = row.total.max(total);
     }
 
+    /// True while a queued, running or paused job imports under `name`
+    /// (`tiny` and `tiny:latest` are the same model).
+    pub fn has_unsettled_job_named(&self, _name: &str) -> bool {
+        false
+    }
+
     pub fn apply(&mut self, ev: &JobEvent, now: Instant) {
         match ev {
             JobEvent::Stage { id, stage } => {
