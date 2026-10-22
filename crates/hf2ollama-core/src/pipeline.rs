@@ -1358,4 +1358,103 @@ mod tests {
         );
         // slow_env expects exactly one GET: only job A reached Hugging Face.
     }
+
+    // ---- cancel versus create ----
+
+    #[tokio::test]
+    async fn cancel_before_create_request_discards_and_reports_cancelled() {
+        let mut env = Env::new().await;
+        let data = payload(3000, 11);
+        env.ctx.settings.keep_partials = true;
+        env.serve_hf("tiny.gguf", &data).await;
+        env.ollama_basics(&[]).await;
+        Mock::given(method("HEAD"))
+            .and(path(format!("/api/blobs/{}", digest_of(&data))))
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(400)),
+            )
+            .mount(&env.ol)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/create"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&env.ol)
+            .await;
+        let req = request("tiny", vec![lfs_file("tiny.gguf", &data)]);
+        let err = run_and_cancel(&env, 1, req).await.unwrap_err();
+        assert_eq!(err, Error::Cancelled);
+        let events = env.events();
+        assert_eq!(events.last(), Some(&JobEvent::Cancelled { id: JobId(1) }));
+        assert_eq!(events.iter().filter(|e| is_terminal(e)).count(), 1);
+        assert!(!env.root().join("job-1").exists());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_create_lets_create_finish_and_reports_finished() {
+        let mut env = Env::new().await;
+        env.ctx.settings.delete_after_import = false;
+        let data = payload(3000, 12);
+        env.serve_hf("tiny.gguf", &data).await;
+        env.ollama_basics(&[]).await;
+        env.blob(&data, 404).await;
+        Mock::given(method("POST"))
+            .and(path("/api/create"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(
+                        "{\"status\":\"writing manifest\"}\n{\"status\":\"success\"}\n",
+                    )
+                    .set_delay(std::time::Duration::from_millis(600)),
+            )
+            .expect(1)
+            .mount(&env.ol)
+            .await;
+        let req = request("tiny", vec![lfs_file("tiny.gguf", &data)]);
+        let ctl = JobControl::new();
+        let canceller = ctl.clone();
+        let ol = &env.ol;
+        let (res, ()) = tokio::join!(
+            run_import(&env.ctx, JobId(1), req, ctl, env.tx.clone()),
+            async move {
+                for _ in 0..500 {
+                    let seen = ol
+                        .received_requests()
+                        .await
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|r| r.url.path() == "/api/create");
+                    if seen {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                canceller.cancel();
+            }
+        );
+        assert_eq!(res, Ok(()));
+        let events = env.events();
+        assert_eq!(events.iter().filter(|e| is_terminal(e)).count(), 1);
+        assert_eq!(events.last(), Some(&JobEvent::Finished { id: JobId(1) }));
+        assert!(log_lines(&events)
+            .iter()
+            .any(|l| l.contains("cancel requested during create")));
+        assert_eq!(
+            env.ctx.history.lock().unwrap().source_of("tiny:latest"),
+            Some(REPO)
+        );
+        let cached = env.ctx.staging.list_cached().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert!(!cached[0].partial);
+    }
+
+    #[tokio::test]
+    async fn completed_create_wins_over_simultaneous_cancel() {
+        for _ in 0..50 {
+            let ctl = JobControl::new();
+            ctl.cancel();
+            let r = raced(&ctl, async { Ok::<u32, Error>(7) }).await;
+            assert_eq!(r, Ok(7));
+        }
+    }
 }
