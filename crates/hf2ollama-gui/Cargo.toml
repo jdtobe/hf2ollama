@@ -3,6 +3,10 @@ name = "hf2ollama-gui"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Screenshot and trial hooks (in-memory token store). Off in release builds.
+dev-hooks = []
+
 [dependencies]
 eframe = "0.37"
 egui_extras = "0.37"

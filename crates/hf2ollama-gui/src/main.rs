@@ -56,25 +56,37 @@ fn view_override() -> Option<app::View> {
     }
 }
 
-/// `HF2O_MEMORY_TOKEN_STORE=1` keeps the Hugging Face token in memory
-/// instead of the system keychain, starting with `HF2O_MEMORY_TOKEN` when
-/// set. Only meant for screenshots and trials that must not touch the real
-/// keychain; inert unless set.
 /// Only the exact value `1` enables the in-memory token store.
+// Always compiled so it is tested in every build; only dev-hooks builds call it.
+#[cfg_attr(not(feature = "dev-hooks"), allow(dead_code))]
 fn dev_memory_store_enabled(value: Option<&str>) -> bool {
-    let _ = value;
-    false
+    value == Some("1")
 }
 
+/// Dev-hooks builds only: `HF2O_MEMORY_TOKEN_STORE=1` keeps the Hugging Face
+/// token in memory instead of the system keychain, starting with
+/// `HF2O_MEMORY_TOKEN` when set. For screenshots and trials that must not
+/// touch the real keychain. Without the `dev-hooks` feature this does not
+/// exist, so a release binary cannot be switched to it.
+#[cfg(feature = "dev-hooks")]
 fn memory_token_store() -> Option<std::sync::Arc<dyn hf2ollama_core::secrets::TokenStore>> {
     use hf2ollama_core::secrets::{MemoryStore, TokenStore};
-    std::env::var("HF2O_MEMORY_TOKEN_STORE").ok()?;
+    let value = std::env::var("HF2O_MEMORY_TOKEN_STORE").ok();
+    if !dev_memory_store_enabled(value.as_deref()) {
+        return None;
+    }
+    eprintln!("hf2ollama: dev-hooks: using an in-memory token store; the token will not be saved");
     let store = MemoryStore::default();
     if let Ok(token) = std::env::var("HF2O_MEMORY_TOKEN") {
         // Best effort: the in-memory store cannot fail.
         let _ = store.set(&token);
     }
     Some(std::sync::Arc::new(store))
+}
+
+#[cfg(not(feature = "dev-hooks"))]
+fn memory_token_store() -> Option<std::sync::Arc<dyn hf2ollama_core::secrets::TokenStore>> {
+    None
 }
 
 fn main() -> eframe::Result<()> {
@@ -112,7 +124,10 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
             theme::apply_choice(&cc.egui_ctx, theme_override().unwrap_or(settings.theme));
-            let (tx, rx) = match memory_token_store() {
+            let store = memory_token_store();
+            #[cfg(feature = "dev-hooks")]
+            let dev_store = store.is_some();
+            let (tx, rx) = match store {
                 Some(store) => runtime::Backend::spawn_with(
                     cc.egui_ctx.clone(),
                     settings.clone(),
@@ -122,6 +137,8 @@ fn main() -> eframe::Result<()> {
                 None => runtime::Backend::spawn(cc.egui_ctx.clone(), settings.clone(), paths),
             };
             let mut app = app::App::new(&settings, staging_dir, machine, tx, rx);
+            #[cfg(feature = "dev-hooks")]
+            app.set_dev_memory_store(dev_store);
             app.set_environment(default_staging, detected);
             let (query, select) = preset();
             app.preset(query, select);

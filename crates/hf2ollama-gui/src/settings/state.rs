@@ -193,6 +193,7 @@ pub struct SettingsState {
     pending: Vec<BackendRequest>,
     /// The change being saved moved the staging folder.
     staging_moved: bool,
+    dev_memory_store: bool,
 }
 
 impl SettingsState {
@@ -231,6 +232,7 @@ impl SettingsState {
             detected,
             pending: Vec::new(),
             staging_moved: false,
+            dev_memory_store: false,
         }
     }
 
@@ -239,13 +241,14 @@ impl SettingsState {
     }
 
     /// Marks that the token store is in memory only (dev-hooks builds).
+    #[cfg(any(test, feature = "dev-hooks"))]
     pub fn set_dev_memory_store(&mut self, on: bool) {
-        let _ = on;
+        self.dev_memory_store = on;
     }
 
     /// A note shown next to the token status in dev-hooks runs.
     pub fn token_note(&self) -> Option<&'static str> {
-        None
+        self.dev_memory_store.then_some("dev: token not persisted")
     }
 
     /// Requests queued for the backend since the last call.

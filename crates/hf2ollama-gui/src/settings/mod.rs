@@ -698,6 +698,12 @@ fn hugging_face_card(
                         }
                     });
                     token_badge_ui(ui, cx, state, w);
+                    if let Some(note) = state.token_note() {
+                        ui.add(
+                            egui::Label::new(RichText::new(note).size(11.5).color(cx.t.warn))
+                                .wrap(),
+                        );
+                    }
                 });
             },
         );

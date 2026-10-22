@@ -102,3 +102,21 @@ To re-record, request the same endpoints (for Hugging Face, `GET /api/models/<re
 ## Updating dependencies
 
 Dependabot proposes cargo and GitHub Actions updates weekly. Dependencies must keep the tree free of OpenSSL and native-tls and within the license allow-list in `deny.toml`.
+
+## Screenshot and test hooks
+
+These environment variables only change how the GUI starts, and are always available:
+
+- `HF2O_THEME=light|dark` overrides the saved theme.
+- `HF2O_SIZE=WxH` sets the initial window size (not below 900x640).
+- `HF2O_VIEW=browse|installed|settings` starts on that view.
+
+The token hooks exist only when the GUI is built with the `dev-hooks` cargo feature (off by default, so release binaries cannot contain them):
+
+```
+HF2O_MEMORY_TOKEN_STORE=1 HF2O_MEMORY_TOKEN=hf_example \
+  cargo run -p hf2ollama-gui --release --features dev-hooks
+```
+
+- `HF2O_MEMORY_TOKEN_STORE=1` (exactly `1`) keeps the Hugging Face token in memory instead of the system keychain. The app prints a warning at startup and Settings shows "dev: token not persisted".
+- `HF2O_MEMORY_TOKEN` is the token the in-memory store starts with.

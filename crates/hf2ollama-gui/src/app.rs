@@ -308,6 +308,12 @@ impl App {
         state.settings_view = SettingsView::new(&state.settings, default_staging, Some(detected));
     }
 
+    /// Dev-hooks runs: the token store is in memory, say so in Settings.
+    #[cfg(feature = "dev-hooks")]
+    pub fn set_dev_memory_store(&mut self, on: bool) {
+        self.state.settings_view.state.set_dev_memory_store(on);
+    }
+
     /// Screenshot helper: starts on the given view.
     pub fn preset_view(&mut self, view: View) {
         self.state.view = view;
