@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+mod app;
 mod runtime;
 mod theme;
 mod widgets;
