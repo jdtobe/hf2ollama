@@ -356,6 +356,11 @@ impl HfClient {
         Ok(info)
     }
 
+    /// The account name the token belongs to (`/api/whoami-v2`).
+    pub async fn whoami(&self) -> Result<String> {
+        Err(Error::Parse("whoami is not implemented".to_string()))
+    }
+
     /// Sends a request and maps non-2xx statuses to errors. With `gated_id`
     /// set, 401 and 403 become `Error::GatedRepo`. The token never appears in
     /// an error.
@@ -704,6 +709,90 @@ mod tests {
                 body: "bad token".to_string()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn whoami_returns_account_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/whoami-v2"))
+            .and(header("authorization", "Bearer hf_secret"))
+            .respond_with(json(r#"{"type":"user","name":"jdtobe","email":"x@y.z"}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let name = HfClient::new(&server.uri(), Some("hf_secret".to_string()))
+            .whoami()
+            .await
+            .unwrap();
+        assert_eq!(name, "jdtobe");
+    }
+
+    #[tokio::test]
+    async fn whoami_401_maps_to_invalid_token_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Invalid credentials"))
+            .mount(&server)
+            .await;
+        let err = HfClient::new(&server.uri(), Some("hf_secret".to_string()))
+            .whoami()
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(matches!(err, Error::Http { status: 401, .. }), "{text}");
+        assert!(text.contains("token"), "{text}");
+        assert!(
+            text.contains("invalid") || text.contains("rejected"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn whoami_sends_bearer_only_when_token_set() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(json(r#"{"name":"anon"}"#))
+            .mount(&server)
+            .await;
+        HfClient::new(&server.uri(), None).whoami().await.unwrap();
+        HfClient::new(&server.uri(), Some("hf_secret".to_string()))
+            .whoami()
+            .await
+            .unwrap();
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert!(!reqs[0].headers.contains_key("authorization"));
+        assert_eq!(
+            reqs[1]
+                .headers
+                .get("authorization")
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("Bearer hf_secret")
+        );
+    }
+
+    #[tokio::test]
+    async fn whoami_error_never_contains_the_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("upstream echoed Bearer hf_secret"),
+            )
+            .mount(&server)
+            .await;
+        let err = HfClient::new(&server.uri(), Some("hf_secret".to_string()))
+            .whoami()
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().contains("hf_secret"), "{err}");
+        assert!(!format!("{err:?}").contains("hf_secret"), "{err:?}");
+        // A connection failure must not leak it either.
+        let err = HfClient::new("http://127.0.0.1:1", Some("hf_secret".to_string()))
+            .whoami()
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().contains("hf_secret"), "{err}");
     }
 
     #[tokio::test]
