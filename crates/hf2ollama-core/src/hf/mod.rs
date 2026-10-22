@@ -1,12 +1,15 @@
 //! Hugging Face Hub client: model search and repository metadata.
-#![allow(dead_code)] // RED-phase stubs only
 
 mod search;
 
-#[cfg(test)]
-use crate::error::Error;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::RepoFile;
+use reqwest::{RequestBuilder, Response, StatusCode, Url};
+use serde::Deserialize;
+use std::time::Duration;
+
+const API_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_ERROR_BODY_CHARS: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatFilter {
@@ -21,6 +24,18 @@ pub enum SortKey {
     Likes,
     Trending,
     Updated,
+}
+
+impl SortKey {
+    /// The Hugging Face `sort=` value.
+    fn api_value(self) -> &'static str {
+        match self {
+            SortKey::Downloads => "downloads",
+            SortKey::Likes => "likes",
+            SortKey::Trending => "trendingScore",
+            SortKey::Updated => "lastModified",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,22 +82,251 @@ pub struct HfClient {
     http: reqwest::Client,
 }
 
+#[derive(Deserialize)]
+struct RawModel {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    likes: u64,
+    #[serde(default, rename = "lastModified")]
+    last_modified: String,
+    #[serde(default)]
+    gated: serde_json::Value,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default, rename = "cardData")]
+    card_data: Option<RawCardData>,
+    #[serde(default)]
+    config: Option<RawConfig>,
+    #[serde(default)]
+    gguf: Option<RawGguf>,
+    #[serde(default)]
+    safetensors: Option<RawSafetensors>,
+    #[serde(default)]
+    siblings: Vec<RawSibling>,
+}
+
+#[derive(Deserialize)]
+struct RawCardData {
+    license: Option<serde_json::Value>,
+    base_model: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct RawConfig {
+    #[serde(default)]
+    architectures: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RawGguf {
+    total: Option<u64>,
+    architecture: Option<String>,
+    context_length: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct RawSafetensors {
+    total: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct RawSibling {
+    rfilename: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default, rename = "blobId")]
+    blob_id: Option<String>,
+    #[serde(default)]
+    lfs: Option<RawLfs>,
+}
+
+#[derive(Deserialize)]
+struct RawLfs {
+    sha256: Option<String>,
+}
+
+/// First string of a JSON string or array of strings.
+fn first_string(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Array(a) => a.iter().find_map(first_string),
+        _ => None,
+    }
+}
+
+fn tag_value(tags: &[String], prefix: &str) -> Option<String> {
+    tags.iter()
+        .find_map(|t| t.strip_prefix(prefix))
+        .filter(|v| !v.contains(':'))
+        .map(str::to_string)
+}
+
+/// Formats a parameter count as e.g. "24.4M" or "1.2B".
+fn format_params(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1e9)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1e6)
+    } else {
+        n.to_string()
+    }
+}
+
+impl From<RawModel> for ModelInfo {
+    fn from(m: RawModel) -> Self {
+        let arch = m
+            .gguf
+            .as_ref()
+            .and_then(|g| g.architecture.clone())
+            .or_else(|| {
+                m.config
+                    .as_ref()
+                    .and_then(|c| c.architectures.first().cloned())
+            });
+        let params = m
+            .gguf
+            .as_ref()
+            .and_then(|g| g.total)
+            .or_else(|| m.safetensors.as_ref().and_then(|s| s.total))
+            .map(format_params);
+        let license = m
+            .card_data
+            .as_ref()
+            .and_then(|c| c.license.as_ref())
+            .and_then(first_string)
+            .or_else(|| tag_value(&m.tags, "license:"));
+        let base_model = m
+            .card_data
+            .as_ref()
+            .and_then(|c| c.base_model.as_ref())
+            .and_then(first_string)
+            .or_else(|| tag_value(&m.tags, "base_model:"));
+        let gated = match &m.gated {
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::String(s) => !s.is_empty() && s != "false",
+            _ => false,
+        };
+        ModelInfo {
+            id: m.id,
+            files: m
+                .siblings
+                .into_iter()
+                .map(|s| RepoFile {
+                    path: s.rfilename,
+                    size: s.size,
+                    sha256: s.lfs.and_then(|l| l.sha256),
+                    blob_id: s.blob_id,
+                })
+                .collect(),
+            arch,
+            params,
+            context: m.gguf.as_ref().and_then(|g| g.context_length),
+            license,
+            base_model,
+            downloads: m.downloads,
+            likes: m.likes,
+            updated: m.last_modified,
+            gated,
+        }
+    }
+}
+
 impl HfClient {
-    pub fn new(_endpoint: &str, _token: Option<String>) -> HfClient {
-        todo!()
+    pub fn new(endpoint: &str, token: Option<String>) -> HfClient {
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+        HfClient {
+            endpoint: endpoint.trim_end_matches('/').to_string(),
+            token: token.filter(|t| !t.is_empty()),
+            http,
+        }
     }
 
-    pub async fn model_info(&self, _repo_id: &str) -> Result<ModelInfo> {
-        todo!()
+    /// Builds `<endpoint>/<segments...>`; each segment is percent-encoded
+    /// separately, so a `/` between owner and name stays a path separator.
+    pub(crate) fn url(&self, segments: &[&str]) -> Result<Url> {
+        let mut url = Url::parse(&self.endpoint)
+            .map_err(|e| Error::Parse(format!("invalid Hugging Face endpoint: {e}")))?;
+        url.path_segments_mut()
+            .map_err(|_| Error::Parse("invalid Hugging Face endpoint".to_string()))?
+            .pop_if_empty()
+            .extend(segments);
+        Ok(url)
     }
 
-    /// Sends a request and maps non-2xx statuses to errors.
+    /// A GET request carrying the bearer token when one is set.
+    pub(crate) fn get(&self, url: Url) -> RequestBuilder {
+        let req = self.http.get(url);
+        match &self.token {
+            Some(t) => req.bearer_auth(t),
+            None => req,
+        }
+    }
+
+    pub async fn model_info(&self, repo_id: &str) -> Result<ModelInfo> {
+        let parts: Vec<&str> = repo_id.split('/').collect();
+        if repo_id.is_empty() || parts.iter().any(|p| p.is_empty()) {
+            return Err(Error::Parse(format!("invalid repository id: {repo_id:?}")));
+        }
+        let mut segments = vec!["api", "models"];
+        segments.extend(parts);
+        let mut url = self.url(&segments)?;
+        url.query_pairs_mut().append_pair("blobs", "true");
+        let req = self.get(url).timeout(API_TIMEOUT);
+        let resp = self.send_checked(req, Some(repo_id)).await?;
+        let raw: RawModel = resp
+            .json()
+            .await
+            .map_err(|e| Error::Parse(format!("invalid model response: {}", e.without_url())))?;
+        let mut info = ModelInfo::from(raw);
+        if info.id.is_empty() {
+            info.id = repo_id.to_string();
+        }
+        Ok(info)
+    }
+
+    /// Sends a request and maps non-2xx statuses to errors. With `gated_id`
+    /// set, 401 and 403 become `Error::GatedRepo`. The token never appears in
+    /// an error.
     pub(crate) async fn send_checked(
         &self,
-        _req: reqwest::RequestBuilder,
-        _gated_id: Option<&str>,
-    ) -> Result<reqwest::Response> {
-        todo!()
+        req: RequestBuilder,
+        gated_id: Option<&str>,
+    ) -> Result<Response> {
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.without_url().to_string()))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        if let (Some(id), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) = (gated_id, status) {
+            return Err(Error::GatedRepo(id.to_string()));
+        }
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let body = resp.text().await.unwrap_or_default();
+        let body = if status == StatusCode::TOO_MANY_REQUESTS {
+            match retry_after {
+                Some(s) => format!("rate limited, retry after {s}s"),
+                None => "rate limited, retry later".to_string(),
+            }
+        } else {
+            body.chars().take(MAX_ERROR_BODY_CHARS).collect()
+        };
+        Err(Error::Http {
+            status: status.as_u16(),
+            body,
+        })
     }
 }
 
