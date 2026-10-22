@@ -325,7 +325,8 @@ mod tests {
                 screen_rect: Some(screen),
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.show(ui));
+            ctx.run_ui(input, |ui| app.show(ui))
+                .drop_without_applying_deltas();
         }
         let label = "Ollama 0.9.2 · localhost:11434";
         let w = ctx.fonts_mut(|f| {
