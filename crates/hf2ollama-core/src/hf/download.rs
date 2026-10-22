@@ -223,8 +223,13 @@ impl HfClient {
                     break Err(io_err(e));
                 }
                 hashers.update(&chunk);
-                done += chunk.len() as u64;
+                done = done.saturating_add(chunk.len() as u64);
                 on_progress(done, file.size);
+                if file.size > 0 && done > file.size {
+                    // More than announced: stop reading; the size check below
+                    // deletes the partial file and reports the mismatch.
+                    break Ok(());
+                }
             };
             let flushed = f.flush().await.map_err(io_err);
             streamed?;
