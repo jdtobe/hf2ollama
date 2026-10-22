@@ -1,5 +1,8 @@
 //! Hugging Face Hub client: model search and repository metadata.
 
+mod download;
+
+pub use download::{safe_join, Downloaded};
 mod search;
 
 use crate::error::{Error, Result};

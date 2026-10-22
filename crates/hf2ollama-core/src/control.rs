@@ -4,7 +4,6 @@ use crate::error::{Error, Result};
 use std::sync::Arc;
 use tokio::sync::watch;
 
-#[allow(dead_code)] // RED stub
 #[derive(Clone, Copy, Default)]
 struct State {
     paused: bool,
@@ -13,7 +12,6 @@ struct State {
 
 /// Cloneable control handle; all clones share one state.
 #[derive(Clone)]
-#[allow(dead_code)] // RED stub
 pub struct JobControl {
     tx: Arc<watch::Sender<State>>,
 }
@@ -26,27 +24,41 @@ impl Default for JobControl {
 
 impl JobControl {
     pub fn new() -> JobControl {
-        todo!()
+        JobControl {
+            tx: Arc::new(watch::channel(State::default()).0),
+        }
     }
     pub fn pause(&self) {
-        todo!()
+        self.tx.send_modify(|s| s.paused = true);
     }
     pub fn resume(&self) {
-        todo!()
+        self.tx.send_modify(|s| s.paused = false);
     }
     pub fn cancel(&self) {
-        todo!()
+        self.tx.send_modify(|s| s.cancelled = true);
     }
     pub fn is_paused(&self) -> bool {
-        todo!()
+        self.tx.borrow().paused
     }
     pub fn is_cancelled(&self) -> bool {
-        todo!()
+        self.tx.borrow().cancelled
     }
     /// `Err(Cancelled)` once cancelled; waits (without polling) while paused.
     pub async fn checkpoint(&self) -> Result<()> {
-        let _ = Error::Cancelled;
-        todo!()
+        let mut rx = self.tx.subscribe();
+        loop {
+            let state = *rx.borrow_and_update();
+            if state.cancelled {
+                return Err(Error::Cancelled);
+            }
+            if !state.paused {
+                return Ok(());
+            }
+            // The sender lives in `self`, so `changed` cannot fail here.
+            if rx.changed().await.is_err() {
+                return Ok(());
+            }
+        }
     }
 }
 
