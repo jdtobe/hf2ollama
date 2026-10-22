@@ -1,6 +1,7 @@
 mod app;
 mod browse;
 mod dock;
+mod installed;
 mod runtime;
 mod theme;
 mod widgets;
