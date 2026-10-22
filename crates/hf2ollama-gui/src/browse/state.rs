@@ -47,20 +47,23 @@ impl Debounce {
 
     /// Restarts the countdown.
     pub fn touch(&mut self, now: Instant) {
-        let _ = now;
-        unimplemented!()
+        self.due = Some(now + self.delay);
     }
 
     /// True exactly once after the countdown ran out.
     pub fn poll(&mut self, now: Instant) -> bool {
-        let _ = now;
-        unimplemented!()
+        match self.due {
+            Some(due) if now >= due => {
+                self.due = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Time left until the countdown fires, if one is running.
     pub fn remaining(&self, now: Instant) -> Option<Duration> {
-        let _ = now;
-        unimplemented!()
+        self.due.map(|d| d.saturating_duration_since(now))
     }
 }
 
@@ -74,8 +77,21 @@ pub enum SearchStatus {
 
 /// Plain-language text for a failed Hugging Face request.
 pub fn friendly_error(raw: &str) -> String {
-    let _ = raw;
-    unimplemented!()
+    if raw.contains("429") || raw.contains("rate limited") {
+        let wait = raw
+            .split_once("retry after ")
+            .map(|(_, rest)| rest.trim_end_matches('s').to_string())
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        return match wait {
+            Some(n) => format!("Hugging Face is rate limiting requests. Try again in {n} seconds."),
+            None => "Hugging Face is rate limiting requests. Try again later.".to_string(),
+        };
+    }
+    if raw.starts_with("network error") {
+        return "Could not reach Hugging Face. Check your internet connection, then press Retry."
+            .to_string();
+    }
+    raw.to_string()
 }
 
 pub struct BrowseState {
@@ -176,14 +192,41 @@ impl BrowseState {
     /// Call every frame with the search box text. Returns the query to send
     /// once the first frame has run or typing and filter changes have paused.
     pub fn tick(&mut self, text: &str, now: Instant) -> Option<SearchQuery> {
-        let _ = (text, now);
-        unimplemented!()
+        let key = (
+            text.to_string(),
+            self.filters.query_formats(),
+            self.filters.sort,
+        );
+        if self.seen_key.is_none() {
+            return Some(self.begin(text));
+        }
+        if self.seen_key.as_ref() != Some(&key) {
+            self.seen_key = Some(key.clone());
+            self.debounce.touch(now);
+        }
+        let already_sent = self
+            .current_query
+            .as_ref()
+            .is_some_and(|q| q.text == key.0 && q.formats == key.1 && q.sort == key.2);
+        (self.debounce.poll(now) && !already_sent).then(|| self.begin(text))
+    }
+
+    fn begin(&mut self, text: &str) -> SearchQuery {
+        let q = SearchQuery {
+            text: text.to_string(),
+            formats: self.filters.query_formats(),
+            sort: self.filters.sort,
+            limit: SEARCH_LIMIT,
+        };
+        self.seen_key = Some((q.text.clone(), q.formats.clone(), q.sort));
+        self.current_query = Some(q.clone());
+        self.search = SearchStatus::Loading;
+        q
     }
 
     /// Sends the current text and filters again (Retry button).
     pub fn search_now(&mut self, text: &str) -> SearchQuery {
-        let _ = text;
-        unimplemented!()
+        self.begin(text)
     }
 
     pub fn debounce_remaining(&self, now: Instant) -> Option<Duration> {
@@ -192,25 +235,46 @@ impl BrowseState {
 
     /// Folds a search answer in. Answers to other queries are ignored.
     pub fn on_search_done(&mut self, q: &SearchQuery, r: Result<Vec<ModelSummary>, String>) {
-        let _ = (q, r);
-        unimplemented!()
+        if self.current_query.as_ref() != Some(q) {
+            return;
+        }
+        match r {
+            Ok(list) => {
+                self.load_results(list);
+                self.search = SearchStatus::Done;
+            }
+            Err(e) => self.search = SearchStatus::Failed(friendly_error(&e)),
+        }
     }
 
     /// Replaces the loaded results.
     pub fn load_results(&mut self, list: Vec<ModelSummary>) {
-        let _ = list;
-        unimplemented!()
+        self.all = list;
+        self.apply_filters();
     }
 
     /// Recomputes which loaded results pass the filters.
     pub fn apply_filters(&mut self) {
-        unimplemented!()
+        let visible = self
+            .all
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| filters::passes(&self.enriched(s), &self.filters, &self.machine))
+            .map(|(i, _)| i)
+            .collect();
+        self.visible = visible;
     }
 
     /// Selects the `idx`-th visible result.
     pub fn select_model(&mut self, idx: usize) {
-        let _ = idx;
-        unimplemented!()
+        let id = self
+            .visible
+            .get(idx)
+            .and_then(|&i| self.all.get(i))
+            .map(|s| s.id.clone());
+        if let Some(id) = id {
+            self.select_repo(&id);
+        }
     }
 
     pub fn visible(&self) -> impl Iterator<Item = &ModelSummary> {
@@ -228,8 +292,12 @@ impl BrowseState {
     /// The summary of `id` with parameters and architecture filled from the
     /// cached repository info (the list endpoint does not report them).
     pub fn enriched(&self, summary: &ModelSummary) -> ModelSummary {
-        let _ = summary;
-        unimplemented!()
+        let mut s = summary.clone();
+        if let Some(Ok(info)) = self.infos.get(&summary.id) {
+            s.params = s.params.or_else(|| info.params.clone());
+            s.arch = s.arch.or_else(|| info.arch.clone());
+        }
+        s
     }
 
     pub fn selected_id(&self) -> Option<&str> {
@@ -251,6 +319,7 @@ impl BrowseState {
     /// Stores a repository answer and rebuilds the plan if it is selected.
     pub fn on_model_info(&mut self, id: &str, result: Result<ModelInfo, String>) {
         self.infos.insert(id.to_string(), result.map(Arc::new));
+        self.apply_filters();
         if self.selected.as_deref() == Some(id) {
             self.rebuild_plan();
         }

@@ -100,21 +100,81 @@ impl Filters {
 
 /// `7.6B` -> 7.6, `135M` -> 0.135, `1.2T` -> 1200.0. None if unparseable.
 pub fn parse_params_b(s: &str) -> Option<f64> {
-    let _ = s;
-    unimplemented!()
+    let s = s.trim();
+    let unit = s.chars().next_back()?;
+    let scale = match unit.to_ascii_uppercase() {
+        'B' => 1.0,
+        'M' => 1e-3,
+        'T' => 1e3,
+        'K' => 1e-6,
+        _ => return None,
+    };
+    let n: f64 = s.get(..s.len() - unit.len_utf8())?.trim().parse().ok()?;
+    (n.is_finite() && n >= 0.0).then_some(n * scale)
 }
 
 /// Summaries carry no pipeline tag, so the task is guessed from name tokens.
 pub fn task_of(name: &str) -> TaskKind {
-    let _ = name;
-    unimplemented!()
+    let lower = name.to_lowercase();
+    let mut tokens = lower.split(|c: char| !c.is_ascii_alphanumeric());
+    if tokens
+        .clone()
+        .any(|t| t.starts_with("embed") || matches!(t, "bge" | "gte" | "e5" | "minilm" | "mpnet"))
+    {
+        return TaskKind::Embeddings;
+    }
+    if tokens.any(|t| {
+        matches!(
+            t,
+            "vl" | "vlm" | "vision" | "llava" | "pixtral" | "paligemma" | "internvl" | "moondream"
+        )
+    }) {
+        return TaskKind::Vision;
+    }
+    TaskKind::Text
 }
 
 /// Whether `summary` is shown under filters `f` on `machine`.
+///
+/// "Only models that fit" is an estimate: a model with a known parameter
+/// count is hidden only when even a ~4-bit build (`billions * 0.6` GB plus
+/// 1.5 GB of runtime overhead) cannot fit in the larger of RAM and VRAM.
+/// Unknown parameter counts, and machines whose memory was not detected,
+/// never hide a model.
 pub fn passes(summary: &ModelSummary, f: &Filters, machine: &Machine) -> bool {
-    let _ = (summary, f, machine);
-    unimplemented!()
+    let format_ok = (summary.is_gguf && f.gguf)
+        || (summary.is_safetensors && f.safetensors)
+        || (!summary.is_gguf && !summary.is_safetensors && f.other);
+    if !format_ok {
+        return false;
+    }
+    let task_ok = match task_of(&summary.name) {
+        TaskKind::Text => f.text,
+        TaskKind::Embeddings => f.embeddings,
+        TaskKind::Vision => f.vision,
+    };
+    if !task_ok {
+        return false;
+    }
+    let Some(billions) = summary.params.as_deref().and_then(parse_params_b) else {
+        return true;
+    };
+    if !f.params.contains(billions) {
+        return false;
+    }
+    if f.only_fit {
+        let capacity = machine.ram_gb.max(machine.vram_gb.unwrap_or(0.0));
+        let four_bit_gb = billions as f32 * FOUR_BIT_GB_PER_B + FIT_OVERHEAD_GB;
+        if capacity > 0.0 && four_bit_gb > capacity {
+            return false;
+        }
+    }
+    true
 }
+
+/// Approximate size of a ~4-bit build per billion parameters.
+const FOUR_BIT_GB_PER_B: f32 = 0.6;
+const FIT_OVERHEAD_GB: f32 = 1.5;
 
 #[cfg(test)]
 mod tests {
