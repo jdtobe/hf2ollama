@@ -32,6 +32,36 @@ pub fn fit_pill_label(fit: Fit) -> &'static str {
     }
 }
 
+/// Single-row text galley that ends in an ellipsis instead of wrapping.
+pub fn fit_text(
+    ui: &egui::Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_string(),
+        egui::TextFormat::simple(font, color),
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: max_width.max(1.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    ui.painter().layout_job(job)
+}
+
+/// Foreground and background colours of a fit pill.
+pub fn pill_colors(t: &crate::theme::Tokens, kind: PillKind) -> (Color32, Color32) {
+    match kind {
+        PillKind::Ok => (t.ok, t.ok_soft),
+        PillKind::Warn => (t.warn, t.warn_soft),
+        PillKind::Neutral => (t.fg2, t.surface2),
+    }
+}
+
 /// Uppercase section caption.
 pub fn caption(ui: &mut egui::Ui, text: &str) {
     let t = tokens(ui);
