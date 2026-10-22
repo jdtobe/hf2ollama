@@ -123,7 +123,7 @@ pub struct BrowseState {
     selected: Option<String>,
     plan: Option<Plan>,
     selected_option: Option<usize>,
-    scroll_pending: bool,
+    scroll_frames_left: u8,
     #[cfg(test)]
     pub probe: super::Probe,
     pub name: String,
@@ -209,7 +209,7 @@ impl BrowseState {
             selected: None,
             plan: None,
             selected_option: None,
-            scroll_pending: false,
+            scroll_frames_left: 0,
             #[cfg(test)]
             probe: Default::default(),
             name: String::new(),
@@ -465,7 +465,11 @@ impl BrowseState {
             },
         };
         self.selected_option = plan.rows.iter().position(|r| r.recommended);
-        self.scroll_pending = self.selected_option.is_some();
+        self.scroll_frames_left = if self.selected_option.is_some() {
+            SCROLL_REQUEST_FRAMES
+        } else {
+            0
+        };
         self.plan = Some(plan);
         self.rederive_name();
     }
@@ -571,10 +575,12 @@ impl BrowseState {
         None
     }
 
-    /// True once after a repository's plan was (re)built: the options table
-    /// should scroll the recommended row into view.
+    /// True for the first few frames after a repository's plan was built:
+    /// the options table should scroll the recommended row into view.
     pub fn take_scroll_request(&mut self) -> bool {
-        std::mem::take(&mut self.scroll_pending)
+        let asked = self.scroll_frames_left > 0;
+        self.scroll_frames_left = self.scroll_frames_left.saturating_sub(1);
+        asked
     }
 
     /// True when the selected repository loaded but is marked gated.
