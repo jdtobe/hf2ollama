@@ -56,6 +56,10 @@ pub struct AppState {
     pub browse: BrowseState,
     pub jobs: JobsState,
     pub dock: DockUi,
+    /// Where the window-close confirmation stands.
+    pub quit: crate::quit::QuitState,
+    #[cfg(test)]
+    pub quit_probe: crate::quit::QuitProbe,
     /// Current auto-dismiss setting; applies to rows already settled.
     pub auto_dismiss: AutoDismiss,
     /// Where the status pill was last painted (for layout tests).
@@ -107,6 +111,9 @@ impl AppState {
             }),
             jobs: JobsState::new(),
             dock: DockUi::default(),
+            quit: crate::quit::QuitState::Idle,
+            #[cfg(test)]
+            quit_probe: Default::default(),
             auto_dismiss: AutoDismiss::Never,
             pill_rect: None,
             search_rect: None,
@@ -372,6 +379,13 @@ pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui:
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events();
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        for cmd in self.process_close(close_requested, Instant::now()) {
+            ctx.send_viewport_cmd(cmd);
+        }
+        if matches!(self.state.quit, crate::quit::QuitState::Cancelling { .. }) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         // Wake up again only when a settled row is waiting for its deadline.
         let now = Instant::now();
         if let Some(due) = self.state.jobs.tick(now, self.state.auto_dismiss) {
@@ -385,6 +399,16 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Decides what the window should do about a close request and about a
+    /// quit that is waiting for its jobs to cancel.
+    pub(crate) fn process_close(
+        &mut self,
+        close_requested: bool,
+        now: Instant,
+    ) -> Vec<egui::ViewportCommand> {
+        crate::quit::process_close(&mut self.state, close_requested, now)
+    }
+
     /// Folds every waiting backend event into the state and sends the
     /// requests that follow from them.
     pub(crate) fn pump_events(&mut self) {
@@ -584,6 +608,7 @@ impl App {
         }
         // Whatever the nav click or a button queued in the Settings state.
         self.flush_settings_requests();
+        crate::quit::show(ui, &mut self.state, &self.tx, Instant::now());
     }
 }
 

@@ -3,6 +3,9 @@ mod browse;
 mod confirm;
 mod dock;
 mod installed;
+mod quit;
+#[cfg(test)]
+mod quit_tests;
 mod runtime;
 mod settings;
 mod startup;

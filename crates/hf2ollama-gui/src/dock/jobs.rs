@@ -239,6 +239,16 @@ impl JobsState {
         self.rows.iter().any(|r| r.status.is_settled())
     }
 
+    /// Ids of queued, running and paused jobs.
+    #[allow(dead_code)] // used by the quit confirmation
+    pub fn unsettled_ids(&self) -> Vec<JobId> {
+        self.rows
+            .iter()
+            .filter(|r| !r.status.is_settled())
+            .map(|r| r.id)
+            .collect()
+    }
+
     fn active_count(&self) -> usize {
         self.rows.iter().filter(|r| !r.status.is_settled()).count()
     }
