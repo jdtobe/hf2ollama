@@ -8,7 +8,7 @@ use hf2ollama_core::fit::Machine;
 use hf2ollama_core::hf::{FormatFilter, ModelInfo, ModelSummary, SearchQuery};
 use hf2ollama_core::model::{ImportRequest, RepoFile};
 use hf2ollama_core::names::validate_model_name;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -94,8 +94,20 @@ pub fn friendly_error(raw: &str) -> String {
     raw.to_string()
 }
 
+/// At most this many repository lookups run at once.
+pub const MAX_INFO_IN_FLIGHT: usize = 4;
+/// Related GGUF repositories shown for an unsupported one.
+pub const RELATED_LIMIT: u32 = 5;
+
 pub struct BrowseState {
     pub filters: Filters,
+    requested: HashSet<String>,
+    queued: VecDeque<String>,
+    in_flight: HashSet<String>,
+    related_for: Option<String>,
+    related_query: Option<SearchQuery>,
+    pub related: SearchStatus,
+    related_list: Vec<ModelSummary>,
     all: Vec<ModelSummary>,
     visible: Vec<usize>,
     pub search: SearchStatus,
@@ -172,6 +184,13 @@ impl BrowseState {
     pub fn new(machine: Machine) -> BrowseState {
         BrowseState {
             filters: Filters::default(),
+            requested: HashSet::new(),
+            queued: VecDeque::new(),
+            in_flight: HashSet::new(),
+            related_for: None,
+            related_query: None,
+            related: SearchStatus::Idle,
+            related_list: Vec::new(),
             all: Vec::new(),
             visible: Vec::new(),
             search: SearchStatus::Idle,
@@ -235,6 +254,10 @@ impl BrowseState {
 
     /// Folds a search answer in. Answers to other queries are ignored.
     pub fn on_search_done(&mut self, q: &SearchQuery, r: Result<Vec<ModelSummary>, String>) {
+        if self.related_query.as_ref() == Some(q) {
+            let _ = r;
+            unimplemented!()
+        }
         if self.current_query.as_ref() != Some(q) {
             return;
         }
@@ -298,6 +321,39 @@ impl BrowseState {
             s.arch = s.arch.or_else(|| info.arch.clone());
         }
         s
+    }
+
+    /// Asks for the repository details of `id` once it is visible. Repos
+    /// already requested are never requested again.
+    pub fn want_info(&mut self, id: &str) {
+        let _ = id;
+        unimplemented!()
+    }
+
+    /// Takes the lookups to start now: FIFO, at most `MAX_INFO_IN_FLIGHT`
+    /// running at once.
+    pub fn next_info_requests(&mut self) -> Vec<String> {
+        unimplemented!()
+    }
+
+    /// True while the lookup of `id` has been asked for but not answered.
+    pub fn info_pending(&self, id: &str) -> bool {
+        self.requested.contains(id) && !self.infos.contains_key(id)
+    }
+
+    /// Forgets a failed lookup so it is asked for again (Retry button).
+    pub fn retry_info(&mut self, id: &str) {
+        let _ = id;
+        unimplemented!()
+    }
+
+    /// The related-GGUF search for an unsupported selection, sent once.
+    pub fn next_related_request(&mut self) -> Option<SearchQuery> {
+        unimplemented!()
+    }
+
+    pub fn related_repos(&self) -> &[ModelSummary] {
+        &self.related_list
     }
 
     pub fn selected_id(&self) -> Option<&str> {
@@ -689,6 +745,83 @@ mod tests {
         assert_eq!(ids, ["o/small"]);
         let e = st.enriched(&summary("o/big", None));
         assert_eq!(e.params.as_deref(), Some("70B"));
+    }
+
+    #[test]
+    fn lazy_info_requests_are_bounded_to_4_and_never_repeat() {
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        for i in 0..10 {
+            st.want_info(&format!("o/m{i}"));
+        }
+        st.want_info("o/m3");
+        let first = st.next_info_requests();
+        assert_eq!(first, ["o/m0", "o/m1", "o/m2", "o/m3"], "FIFO, 4 at a time");
+        assert!(st.next_info_requests().is_empty(), "4 are in flight");
+        st.on_model_info("o/m1", Ok(info("o/m1", vec![], None)));
+        assert_eq!(st.next_info_requests(), ["o/m4"]);
+        st.on_model_info("o/m0", Err("network error".into()));
+        st.on_model_info("o/m2", Ok(info("o/m2", vec![], None)));
+        assert_eq!(st.next_info_requests(), ["o/m5", "o/m6"]);
+        // Asking again for anything already requested, even a failed one, does nothing.
+        st.want_info("o/m0");
+        st.want_info("o/m1");
+        st.want_info("o/m6");
+        let mut all = vec![];
+        for _ in 0..10 {
+            st.on_model_info("o/m3", Ok(info("o/m3", vec![], None)));
+            all.extend(st.next_info_requests());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for id in first.iter().chain(&all) {
+            assert!(seen.insert(id.clone()), "{id} requested twice");
+        }
+    }
+
+    #[test]
+    fn selected_repo_jumps_the_info_queue_and_retry_requeues_it() {
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        for i in 0..6 {
+            st.want_info(&format!("o/m{i}"));
+        }
+        st.select_repo("o/m5");
+        assert_eq!(st.next_info_requests()[0], "o/m5");
+        assert!(st.info_pending("o/m5"));
+        st.on_model_info("o/m5", Err("network error: x".into()));
+        assert!(!st.info_pending("o/m5"));
+        st.retry_info("o/m5");
+        assert_eq!(st.next_info_requests(), ["o/m5"]);
+    }
+
+    #[test]
+    fn unsupported_repo_gets_one_related_gguf_search() {
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        assert!(st.next_related_request().is_none());
+        let (id, i) = gguf_repo();
+        st.on_model_info(id, Ok(i));
+        st.select_repo(id);
+        assert!(
+            st.next_related_request().is_none(),
+            "supported repos need none"
+        );
+        let bad = "EleutherAI/gpt-j-6b";
+        let files = vec![file("pytorch_model.bin", 1_000_000_000)];
+        st.on_model_info(bad, Ok(info(bad, files, None)));
+        st.select_repo(bad);
+        let q = st.next_related_request().expect("related query");
+        assert_eq!(q.text, "gpt-j-6b");
+        assert_eq!(q.formats, vec![FormatFilter::Gguf]);
+        assert_eq!(q.limit, RELATED_LIMIT);
+        assert_eq!(st.related, SearchStatus::Loading);
+        assert!(st.next_related_request().is_none(), "only once");
+        // Answers are kept apart from the main results.
+        st.on_search_done(
+            &q,
+            Ok(vec![summary("a/gpt-j-6b-GGUF", None), summary(bad, None)]),
+        );
+        assert_eq!(st.related, SearchStatus::Done);
+        let ids: Vec<&str> = st.related_repos().iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["a/gpt-j-6b-GGUF"]);
+        assert_eq!(st.visible_len(), 0);
     }
 
     #[test]
