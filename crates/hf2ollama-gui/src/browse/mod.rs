@@ -13,6 +13,10 @@ pub struct Probe {
     pub selected_row: Option<egui::Rect>,
     pub viewport: Option<egui::Rect>,
     pub scroll_offset: f32,
+    /// Rectangles of pinned notices (gated warning, errors, unsupported reason).
+    pub notices: Vec<egui::Rect>,
+    /// Content rectangle of the detail pane (inside its margins).
+    pub pane: Option<egui::Rect>,
 }
 
 pub mod detail;

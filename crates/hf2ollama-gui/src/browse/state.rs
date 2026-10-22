@@ -583,6 +583,12 @@ impl BrowseState {
         asked
     }
 
+    /// True while a scroll request is still running, so the UI keeps
+    /// repainting until it has completed.
+    pub fn scroll_request_pending(&self) -> bool {
+        false
+    }
+
     /// True when the selected repository loaded but is marked gated.
     pub fn selected_info_gated(&self) -> bool {
         matches!(
@@ -956,8 +962,10 @@ mod tests {
         // The pane layout settles over the first frames, so the request
         // lasts a few of them, then stops so manual scrolling is left alone.
         for frame in 0..SCROLL_REQUEST_FRAMES {
+            assert!(st.scroll_request_pending(), "frame {frame} still pending");
             assert!(st.take_scroll_request(), "frame {frame}");
         }
+        assert!(!st.scroll_request_pending());
         assert!(!st.take_scroll_request(), "then it stops");
         st.select_option(0);
         assert!(!st.take_scroll_request(), "user clicks never scroll");

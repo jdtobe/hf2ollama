@@ -672,7 +672,7 @@ mod tests {
         }
     }
 
-    fn many_options_app() -> AppState {
+    fn many_options_app(gated: bool) -> AppState {
         use hf2ollama_core::fit::Machine;
         use hf2ollama_core::model::RepoFile;
         let id = "o/many-GGUF";
@@ -710,7 +710,7 @@ mod tests {
                 downloads: 1,
                 likes: 1,
                 updated: String::new(),
-                gated: false,
+                gated,
             }),
         );
         app.browse.select_repo(id);
@@ -721,7 +721,7 @@ mod tests {
     fn recommended_row_is_scrolled_into_view_after_the_first_frames() {
         use crate::browse::test_util::Harness;
         for dark in [false, true] {
-            let mut app = many_options_app();
+            let mut app = many_options_app(false);
             let mut h = Harness::new(dark);
             for _ in 0..6 {
                 h.frame(vec2(1180.0, 820.0), vec![], |ui| {
@@ -741,7 +741,7 @@ mod tests {
     fn import_card_is_pinned_and_does_not_move_when_scrolling() {
         use crate::browse::test_util::Harness;
         for dark in [false, true] {
-            let mut app = many_options_app();
+            let mut app = many_options_app(false);
             let mut h = Harness::new(dark);
             let size = vec2(1180.0, 820.0);
             for _ in 0..6 {
@@ -775,5 +775,100 @@ mod tests {
             );
             assert_eq!(before, after, "dark={dark}: card moved while scrolling");
         }
+    }
+
+    /// Runs the pane for several frames, scrolls it with the mouse wheel and
+    /// checks that every pinned notice stays inside the pane, above the
+    /// scroll area, and does not move.
+    fn assert_notices_pinned(mut app: AppState, what: &str, expect_scroll: bool) {
+        use crate::browse::test_util::Harness;
+        for dark in [false, true] {
+            let mut h = Harness::new(dark);
+            let size = vec2(1180.0, 820.0);
+            let mut app2 = std::mem::replace(&mut app, AppState::new());
+            for _ in 0..8 {
+                h.frame(size, vec![], |ui| show(ui, &mut app2, &mut Vec::new()));
+            }
+            let before = app2.browse.probe.notices.clone();
+            let pane = app2.browse.probe.pane.expect("pane recorded");
+            let view = app2.browse.probe.viewport.expect("viewport recorded");
+            assert!(!before.is_empty(), "{what} dark={dark}: no notice painted");
+            for n in &before {
+                assert!(
+                    n.top() >= pane.top() - 0.5 && n.bottom() <= view.top() + 0.5,
+                    "{what} dark={dark}: notice {n:?} not inside pane {pane:?} above scroll area {view:?}"
+                );
+            }
+            let start = app2.browse.probe.scroll_offset;
+            let wheel = vec![
+                egui::Event::PointerMoved(egui::pos2(700.0, 500.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, 600.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                },
+            ];
+            h.frame(size, wheel, |ui| show(ui, &mut app2, &mut Vec::new()));
+            for _ in 0..12 {
+                h.frame(size, vec![], |ui| show(ui, &mut app2, &mut Vec::new()));
+            }
+            if expect_scroll {
+                assert!(
+                    (app2.browse.probe.scroll_offset - start).abs() > 5.0,
+                    "{what} dark={dark}: did not scroll"
+                );
+            }
+            assert_eq!(
+                before, app2.browse.probe.notices,
+                "{what} dark={dark}: notice moved"
+            );
+            app = app2;
+        }
+    }
+
+    #[test]
+    fn gated_warning_stays_inside_the_pane_and_does_not_scroll_away() {
+        assert_notices_pinned(many_options_app(true), "gated", true);
+    }
+
+    #[test]
+    fn unsupported_reason_stays_inside_the_pane() {
+        let id = "EleutherAI/gpt-j-6b";
+        let mut app = many_options_app(false);
+        app.browse.on_model_info(
+            id,
+            Ok(ModelInfo {
+                id: id.into(),
+                files: vec![hf2ollama_core::model::RepoFile {
+                    path: "pytorch_model.bin".into(),
+                    size: 1_000_000_000,
+                    sha256: None,
+                    blob_id: None,
+                }],
+                arch: None,
+                params: None,
+                context: None,
+                license: None,
+                base_model: None,
+                downloads: 1,
+                likes: 1,
+                updated: String::new(),
+                gated: false,
+            }),
+        );
+        app.browse.select_repo(id);
+        assert_notices_pinned(app, "unsupported", false);
+    }
+
+    #[test]
+    fn blocking_token_error_stays_inside_the_pane() {
+        let id = "meta-llama/Llama-3.2-1B";
+        let mut app = many_options_app(false);
+        app.browse
+            .on_model_info(id, Err("HTTP 403: Forbidden".into()));
+        app.browse.select_repo(id);
+        assert_notices_pinned(app, "403", false);
     }
 }
