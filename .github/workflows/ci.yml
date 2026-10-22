@@ -1,9 +1,19 @@
 name: CI
 
+# Push runs only on the default branch; every other branch is covered by its
+# pull request. This avoids running everything twice for a PR branch.
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+
+# Actions are pinned to major tags. TODO: pin each action to a full commit SHA
+# (a follow-up, tracked in docs/ROADMAP.md).
 jobs:
   check:
     strategy:
@@ -19,7 +29,56 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Linux GUI dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgtk-3-dev
+        # Windowing and graphics libraries for eframe/winit. The file dialog
+        # (rfd with xdg-portal) talks D-Bus in pure Rust and needs no GTK.
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  dev-hooks:
+    # The screenshot/trial hooks are compiled out by default; keep them
+    # building and tested.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux GUI dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+      - run: cargo clippy --workspace --all-targets --features hf2ollama-gui/dev-hooks -- -D warnings
+      - run: cargo test --workspace --features hf2ollama-gui/dev-hooks
+
+  release-build:
+    # Only on a manual run or a version tag.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: [check, dev-hooks]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
+      - run: cargo build --release -p hf2ollama-gui
+      - name: Collect the binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/release/hf2ollama-gui.exe dist/
+          else
+            cp target/release/hf2ollama-gui dist/
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hf2ollama-gui-${{ runner.os }}
+          path: dist/*
+          if-no-files-found: error
