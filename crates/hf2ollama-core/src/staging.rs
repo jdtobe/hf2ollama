@@ -21,6 +21,19 @@ pub struct SweepReport {
     pub removed_expired: u32,
     pub kept_partials: u32,
     pub freed_bytes: u64,
+    /// Directories that could not be removed.
+    pub failed: u32,
+    /// One message per failed directory.
+    pub errors: Vec<String>,
+}
+
+/// What `clear_cached_report` did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClearReport {
+    pub freed_bytes: u64,
+    pub removed: u32,
+    pub failed: u32,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +187,19 @@ impl Staging {
     /// Removes kept (finished with keep) and failed (`.partial`) job directories and
     /// returns the bytes freed. A directory with neither marker may belong to a running
     /// job and is never touched.
+    pub fn clear_cached_report(&self) -> Result<ClearReport> {
+        let mut report = ClearReport::default();
+        for job in self.jobs()? {
+            if has_marker(&job, KEPT_MARKER) || has_marker(&job, PARTIAL_MARKER) {
+                let bytes = dir_size(&job);
+                remove_job_dir(&job)?;
+                report.freed_bytes = report.freed_bytes.saturating_add(bytes);
+                report.removed += 1;
+            }
+        }
+        Ok(report)
+    }
+
     pub fn clear_cached(&self) -> Result<u64> {
         let mut freed = 0u64;
         for job in self.jobs()? {
@@ -407,6 +433,76 @@ mod tests {
         assert_eq!(s.list_cached().unwrap().len(), 1);
         s.clear_cached().unwrap();
         assert!(!p.exists());
+    }
+
+    /// Makes `job-1` undeletable (read-only with a file inside). Returns false
+    /// when permissions are not enforced (running as root).
+    #[cfg(unix)]
+    fn make_undeletable(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        write(&dir.join("stuck.bin"), 50);
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::write(dir.join("probe"), b"x").is_err()
+    }
+
+    #[cfg(unix)]
+    fn restore(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o755));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_continues_past_a_directory_that_cannot_be_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = staging(&tmp);
+        let stuck = s.create_job(JobId(1), 0).unwrap();
+        let stuck_path = stuck.path().to_path_buf();
+        stuck.finish(true).unwrap();
+        let ok = s.create_job(JobId(2), 0).unwrap();
+        write(&ok.path().join("a.bin"), 100);
+        let ok_path = ok.path().to_path_buf();
+        ok.mark_partial().unwrap();
+        if !make_undeletable(&stuck_path) {
+            restore(&stuck_path);
+            return;
+        }
+        let report = s.clear_cached_report().unwrap();
+        let single = s.clear_cached();
+        restore(&stuck_path);
+        assert!(!ok_path.exists(), "the other directory is still removed");
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.failed, 1, "{report:?}");
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.freed_bytes >= 100);
+        // Nothing removable is left, so the plain call reports the failure.
+        assert!(single.is_err(), "{single:?}");
+        assert!(stuck_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_continues_past_a_directory_that_cannot_be_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = staging(&tmp);
+        let stuck = s.create_job(JobId(1), 0).unwrap();
+        let stuck_path = stuck.path().to_path_buf();
+        std::mem::forget(stuck); // orphan: no markers
+        let orphan = s.create_job(JobId(2), 0).unwrap();
+        let orphan_path = orphan.path().to_path_buf();
+        std::mem::forget(orphan);
+        if !make_undeletable(&stuck_path) {
+            restore(&stuck_path);
+            return;
+        }
+        let report = s
+            .sweep(SystemTime::now(), Duration::from_secs(3600))
+            .unwrap();
+        restore(&stuck_path);
+        assert!(!orphan_path.exists());
+        assert_eq!(report.removed_orphans, 1);
+        assert_eq!(report.failed, 1, "{report:?}");
+        assert_eq!(report.errors.len(), 1);
     }
 
     #[cfg(unix)]
