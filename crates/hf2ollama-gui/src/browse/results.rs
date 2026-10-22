@@ -3,26 +3,68 @@
 
 /// `412300` -> `412k`, `1_900_000` -> `1.9M`, small numbers as they are.
 pub fn compact_count(n: u64) -> String {
-    let _ = n;
-    unimplemented!()
+    let scaled = |div: f64, unit: &str| {
+        let v = n as f64 / div;
+        if v >= 10.0 || (v - v.trunc()).abs() < 0.05 {
+            format!("{}{unit}", v.trunc())
+        } else {
+            format!("{v:.1}{unit}")
+        }
+    };
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => scaled(1e3, "k"),
+        _ => scaled(1e6, "M"),
+    }
 }
 
 /// Seconds since the Unix epoch for `2026-10-12T07:10:55.000Z`.
 pub fn parse_iso(s: &str) -> Option<i64> {
-    let _ = s;
-    unimplemented!()
+    let num = |range: std::ops::Range<usize>| -> Option<i64> { s.get(range)?.parse().ok() };
+    if s.as_bytes().get(10) != Some(&b'T') {
+        return None;
+    }
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19).unwrap_or(0));
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Days from civil date (proleptic Gregorian), after Howard Hinnant.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3_600 + mm * 60 + ss)
 }
 
 /// `3 weeks ago` style age of an ISO timestamp, or `—` if unparseable.
 pub fn relative_age(iso: &str, now_unix: i64) -> String {
-    let _ = (iso, now_unix);
-    unimplemented!()
+    let Some(then) = parse_iso(iso) else {
+        return "—".to_string();
+    };
+    let secs = (now_unix - then).max(0);
+    let plural = |n: i64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    let days = secs / 86_400;
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3_599 => format!("{} min ago", secs / 60),
+        3_600..=86_399 => plural(secs / 3_600, "hour"),
+        _ if days < 14 => plural(days, "day"),
+        _ if days < 60 => plural(days / 7, "week"),
+        _ if days < 365 => plural(days / 30, "month"),
+        _ => plural(days / 365, "year"),
+    }
 }
 
 /// `4.68 GB`, or `812 MB` below one gigabyte.
 pub fn format_size(bytes: u64) -> String {
-    let _ = bytes;
-    unimplemented!()
+    if bytes >= 1_000_000_000 {
+        format!("{:.2} GB", bytes as f64 / 1e9)
+    } else {
+        format!("{} MB", bytes / 1_000_000)
+    }
 }
 
 #[cfg(test)]
