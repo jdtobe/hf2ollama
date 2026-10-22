@@ -1,20 +1,26 @@
 name: Release
 
-# Every merge to main that changes code is tested, built for macOS, Windows and
-# Linux, and published as a GitHub release named YY.M.N (year without the
-# century, month without a leading zero, and the number of the release within
-# that month, counting from 0), for example v26.10.0. Docs-only merges do not release.
+# Run by hand from the Actions tab (Run workflow). It tests the code, builds
+# macOS, Windows and Linux, and, only when "publish" is ticked and the run is
+# on main, publishes a GitHub release named YY.M.N (year without the century,
+# month without a leading zero, and the number of the release within that
+# month, counting from 0), for example v26.10.0. Without "publish" it only
+# builds and keeps the archives as run artifacts: a dry run.
+#
+# To release automatically on every code merge later, add this under `on:`
+# and drop the `publish` condition on the publish job:
+#   push:
+#     branches: [main]
+#     paths-ignore: ["**.md", "docs/**", "LICENSE-*", ".github/ISSUE_TEMPLATE/**"]
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE-*"
-      - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub release (only honoured on main); leave unticked for a build-only dry run"
+        type: boolean
+        default: false
 
-# One release at a time, so two quick merges cannot pick the same number.
+# One run at a time, so two releases cannot pick the same number.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -95,6 +101,8 @@ jobs:
           if-no-files-found: error
 
   publish:
+    # A release comes only from main and only when asked for.
+    if: inputs.publish && github.ref == 'refs/heads/main'
     needs: [version, build]
     runs-on: ubuntu-latest
     permissions:

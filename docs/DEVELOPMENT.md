@@ -137,8 +137,12 @@ HF2O_MEMORY_TOKEN_STORE=1 HF2O_MEMORY_TOKEN=hf_example \
 
 ## Releases
 
-Merging code to `main` publishes a release automatically (`.github/workflows/release.yml`). Docs-only merges (Markdown, `docs/`, licences) do not. The workflow runs the full CI first, then builds for macOS (Apple Silicon and Intel), Windows and Linux, and creates a GitHub release with the archives and a `SHA256SUMS.txt`.
+Releases are manual for now (`.github/workflows/release.yml`, run from the Actions tab with **Run workflow**). The workflow runs the full CI, then builds for macOS (Apple Silicon and Intel), Windows and Linux. With **publish** ticked, and only when run on `main`, it creates a GitHub release with the archives and a `SHA256SUMS.txt`. With it unticked it is a dry run: the archives are kept as run artifacts and nothing is published.
 
-Versions are `YY.M.N`: the year without the century, the month without a leading zero, and the number of the release in that month, counting from 0. The first release of October 2026 is `26.10.0`, the next `26.10.1`, and the first of November `26.11.0`. The number is found by counting the existing `vYY.M.*` tags. The version is written into the crate manifests only inside the build, so the checked-in `Cargo.toml` files keep their own numbers. To release without a code change, run the workflow by hand from the Actions tab.
+GitHub only lists a manually run workflow once its file is on the default branch, so the first run is possible after the workflow has been merged to `main`.
+
+Versions are `YY.M.N`: the year without the century, the month without a leading zero, and the number of the release in that month, counting from 0. The first release of October 2026 is `26.10.0`, the next `26.10.1`, and the first of November `26.11.0`. The number is found by counting the existing `vYY.M.*` tags. The version is written into the crate manifests only inside the build, so the checked-in `Cargo.toml` files keep their own numbers.
+
+The comment at the top of `release.yml` says how to switch to automatic releases on every code merge to `main`.
 
 The builds are not signed or notarized, so macOS and Windows warn on first launch; the release notes say how to get past that.

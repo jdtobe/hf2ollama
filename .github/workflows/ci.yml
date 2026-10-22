@@ -1,10 +1,10 @@
 name: CI
 
 on:
-  # Tests run on every push except main (main is tested by release.yml, which
-  # calls this workflow before it builds anything) and on pull requests.
+  # Tests run on every push (main included) and on pull requests, except for
+  # docs-only changes. Releases are a separate, manual workflow (release.yml),
+  # which calls this one.
   push:
-    branches-ignore: [main]
     paths-ignore:
       - "**.md"
       - "docs/**"
