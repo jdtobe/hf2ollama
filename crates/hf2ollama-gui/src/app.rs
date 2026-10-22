@@ -39,6 +39,8 @@ pub struct AppState {
     pub delete_after_import: bool,
     /// Detected or overridden once at startup; NVML probing is not free.
     pub machine: Machine,
+    /// Where the status pill was last painted (for layout tests).
+    pub pill_rect: Option<egui::Rect>,
 }
 
 impl AppState {
@@ -55,6 +57,7 @@ impl AppState {
                 ram_gb: 0.0,
                 vram_gb: None,
             },
+            pill_rect: None,
         }
     }
 
@@ -86,6 +89,11 @@ impl AppState {
 pub fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     rest.split('/').next().unwrap_or(rest).to_string()
+}
+
+/// Exact size of the status pill for a label of `text_width` (dot, gap, text, padding).
+pub fn pill_size(_text_width: f32) -> egui::Vec2 {
+    todo!()
 }
 
 pub struct App {
@@ -137,6 +145,13 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.show(ui);
+    }
+}
+
+impl App {
+    /// The whole window; separate from `eframe::App::ui` so tests can run it headless.
+    fn show(&mut self, ui: &mut egui::Ui) {
         let t = tokens(ui);
         let dark = ui.visuals().dark_mode;
 
@@ -281,5 +296,71 @@ mod tests {
         assert_eq!(host_of("http://localhost:11434"), "localhost:11434");
         assert_eq!(host_of("https://box.lan:8443/"), "box.lan:8443");
         assert_eq!(host_of("box:11434/api"), "box:11434");
+    }
+
+    fn headless_pill(dark: bool) -> (egui::Rect, f32, f32) {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.set_theme(if dark {
+            egui::ThemePreference::Dark
+        } else {
+            egui::ThemePreference::Light
+        });
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            &Settings::default(),
+            PathBuf::from("/tmp/staging"),
+            Machine {
+                ram_gb: 16.0,
+                vram_gb: None,
+            },
+            tx,
+            rx,
+        );
+        app.state.ollama = Some(Some("0.9.2".to_string()));
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1180.0, 820.0));
+        for _ in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| app.show(ui));
+        }
+        let label = "Ollama 0.9.2 · localhost:11434";
+        let w = ctx.fonts_mut(|f| {
+            f.layout_no_wrap(
+                label.to_string(),
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+        });
+        (
+            app.state.pill_rect.expect("pill painted"),
+            w,
+            screen.right(),
+        )
+    }
+
+    #[test]
+    fn status_pill_sizing_is_deterministic() {
+        for dark in [false, true] {
+            let (rect, text_w, screen_right) = headless_pill(dark);
+            let want = pill_size(text_w);
+            assert!(
+                (rect.width() - want.x).abs() < 1.5,
+                "dark={dark} width {} vs {}",
+                rect.width(),
+                want.x
+            );
+            assert!((rect.height() - want.y).abs() < 1.5, "dark={dark} height");
+            assert!(
+                (rect.right() - (screen_right - 16.0)).abs() < 2.0,
+                "dark={dark} right edge {}",
+                rect.right()
+            );
+        }
     }
 }
