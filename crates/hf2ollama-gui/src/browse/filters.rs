@@ -218,54 +218,60 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState) {
                 .stroke(Stroke::new(1.0, t.line)),
         )
         .show(ui, |ui| {
-            caption(ui, "Format");
-            ui.checkbox(&mut f.gguf, "GGUF");
-            ui.checkbox(&mut f.safetensors, "Safetensors");
-            ui.checkbox(&mut f.other, "PyTorch / other");
-            ui.add_space(10.0);
+            // The rail never grows past the room it is given, so a tall
+            // dock cannot push it over the downloads.
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    caption(ui, "Format");
+                    ui.checkbox(&mut f.gguf, "GGUF");
+                    ui.checkbox(&mut f.safetensors, "Safetensors");
+                    ui.checkbox(&mut f.other, "PyTorch / other");
+                    ui.add_space(10.0);
 
-            caption(ui, "Parameters");
-            egui::ComboBox::from_id_salt("params")
-                .selected_text(f.params.label())
-                .width(ui.available_width())
-                .show_ui(ui, |ui| {
-                    for p in ParamRange::ALL {
-                        ui.selectable_value(&mut f.params, p, p.label());
-                    }
-                });
-            ui.add_space(10.0);
+                    caption(ui, "Parameters");
+                    egui::ComboBox::from_id_salt("params")
+                        .selected_text(f.params.label())
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for p in ParamRange::ALL {
+                                ui.selectable_value(&mut f.params, p, p.label());
+                            }
+                        });
+                    ui.add_space(10.0);
 
-            caption(ui, "Fits my machine");
-            ui.checkbox(&mut f.only_fit, "Only models that fit");
-            ui.add(
-                egui::Label::new(
-                    RichText::new(machine_line(&machine))
-                        .size(12.0)
-                        .color(t.fg3),
-                )
-                .wrap(),
-            );
-            ui.add_space(10.0);
+                    caption(ui, "Fits my machine");
+                    ui.checkbox(&mut f.only_fit, "Only models that fit");
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(machine_line(&machine))
+                                .size(12.0)
+                                .color(t.fg3),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(10.0);
 
-            caption(ui, "Task");
-            ui.checkbox(&mut f.text, "Text generation");
-            ui.checkbox(&mut f.embeddings, "Embeddings");
-            ui.checkbox(&mut f.vision, "Vision / multimodal");
-            ui.add_space(10.0);
+                    caption(ui, "Task");
+                    ui.checkbox(&mut f.text, "Text generation");
+                    ui.checkbox(&mut f.embeddings, "Embeddings");
+                    ui.checkbox(&mut f.vision, "Vision / multimodal");
+                    ui.add_space(10.0);
 
-            caption(ui, "Sort by");
-            egui::ComboBox::from_id_salt("sort")
-                .selected_text(sort_label(f.sort))
-                .width(ui.available_width())
-                .show_ui(ui, |ui| {
-                    for s in [
-                        SortKey::Downloads,
-                        SortKey::Trending,
-                        SortKey::Updated,
-                        SortKey::Likes,
-                    ] {
-                        ui.selectable_value(&mut f.sort, s, sort_label(s));
-                    }
+                    caption(ui, "Sort by");
+                    egui::ComboBox::from_id_salt("sort")
+                        .selected_text(sort_label(f.sort))
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for s in [
+                                SortKey::Downloads,
+                                SortKey::Trending,
+                                SortKey::Updated,
+                                SortKey::Likes,
+                            ] {
+                                ui.selectable_value(&mut f.sort, s, sort_label(s));
+                            }
+                        });
                 });
         });
     #[cfg(test)]
