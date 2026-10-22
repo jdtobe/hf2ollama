@@ -31,7 +31,8 @@ pub enum BackendRequest {
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     Job(JobEvent),
-    SearchDone(Result<Vec<ModelSummary>, String>),
+    /// Echoes the query so callers can tell concurrent searches apart.
+    SearchDone(SearchQuery, Result<Vec<ModelSummary>, String>),
     ModelInfoLoaded(String, Result<ModelInfo, String>),
     InstalledLoaded(Result<Vec<InstalledModel>, String>),
     InstalledDetails(String, Result<ModelDetails, String>),
@@ -268,7 +269,10 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         (c.hf.clone(), c.ollama.clone())
     };
     let ev = match req {
-        BackendRequest::Search(q) => UiEvent::SearchDone(text(hf.search(&q).await)),
+        BackendRequest::Search(q) => {
+            let r = text(hf.search(&q).await);
+            UiEvent::SearchDone(q, r)
+        }
         BackendRequest::ModelInfo(id) => {
             let r = text(hf.model_info(&id).await);
             UiEvent::ModelInfoLoaded(id, r)
@@ -445,7 +449,7 @@ mod tests {
         }))
         .unwrap();
         let res = wait_for(&h.rx, |e| match e {
-            UiEvent::SearchDone(r) => Some(r.clone()),
+            UiEvent::SearchDone(_, r) => Some(r.clone()),
             _ => None,
         });
         let models = res.unwrap();
