@@ -1,5 +1,4 @@
 //! Pure job bookkeeping for the downloads dock (no egui).
-#![allow(unused_variables)] // RED stub, removed in the GREEN commit
 
 use hf2ollama_core::events::{JobEvent, JobId, Stage};
 use std::time::Instant;
@@ -59,7 +58,13 @@ impl JobRow {
 
     /// Download progress as a fraction in 0..=1.
     pub fn fraction(&self) -> f32 {
-        todo!("not implemented yet")
+        if self.status == RowStatus::Finished {
+            return 1.0;
+        }
+        if self.total == 0 {
+            return 0.0;
+        }
+        (self.done as f64 / self.total as f64).clamp(0.0, 1.0) as f32
     }
 
     fn settle(&mut self, status: RowStatus, now: Instant) {
@@ -115,19 +120,79 @@ impl JobsState {
 
     /// Names a job and records the size of what it will download.
     pub fn accept(&mut self, id: JobId, name: String, total: u64) {
-        todo!("not implemented yet")
+        let row = self.row_mut(id);
+        row.name = name;
+        row.total = row.total.max(total);
     }
 
     pub fn apply(&mut self, ev: &JobEvent, now: Instant) {
-        todo!("not implemented yet")
+        match ev {
+            JobEvent::Stage { id, stage } => {
+                let row = self.row_mut(*id);
+                if row.status.is_settled() {
+                    return;
+                }
+                row.stage = *stage;
+                row.status = row.live_status();
+            }
+            JobEvent::Progress { id, done, total } => {
+                let row = self.row_mut(*id);
+                if row.status.is_settled() {
+                    return;
+                }
+                row.total = row.total.max(*total);
+                row.done = row.done.max(*done);
+            }
+            JobEvent::Log { id, line } => {
+                let row = self.row_mut(*id);
+                row.log.push(line.clone());
+                if row.log.len() > MAX_LOG_LINES {
+                    let extra = row.log.len() - MAX_LOG_LINES;
+                    row.log.drain(..extra);
+                }
+            }
+            JobEvent::Paused { id } => {
+                let row = self.row_mut(*id);
+                if row.status.is_settled() {
+                    return;
+                }
+                row.paused = true;
+                row.status = RowStatus::Paused;
+            }
+            JobEvent::Resumed { id } => {
+                let row = self.row_mut(*id);
+                if row.status.is_settled() {
+                    return;
+                }
+                row.paused = false;
+                row.status = row.live_status();
+            }
+            JobEvent::Finished { id } => {
+                let row = self.row_mut(*id);
+                if !row.status.is_settled() {
+                    row.stage = Stage::Done;
+                }
+                row.settle(RowStatus::Finished, now);
+            }
+            JobEvent::Failed { id, error } => {
+                let row = self.row_mut(*id);
+                if !row.status.is_settled() {
+                    row.error = Some(error.clone());
+                }
+                row.settle(RowStatus::Failed, now);
+            }
+            JobEvent::Cancelled { id } => {
+                self.row_mut(*id).settle(RowStatus::Cancelled, now);
+            }
+        }
     }
 
     pub fn dismiss(&mut self, id: JobId) {
-        todo!("not implemented yet")
+        self.rows.retain(|r| r.id != id);
     }
 
     pub fn clear_finished(&mut self) {
-        todo!("not implemented yet")
+        self.rows.retain(|r| !r.status.is_settled());
     }
 
     pub fn has_settled(&self) -> bool {
@@ -139,7 +204,11 @@ impl JobsState {
     }
 
     pub fn header_text(&self) -> String {
-        todo!("not implemented yet")
+        match (self.active_count(), self.rows.is_empty()) {
+            (0, true) => "No active jobs".to_string(),
+            (0, false) => "All done".to_string(),
+            (n, _) => format!("{n} active"),
+        }
     }
 }
 
