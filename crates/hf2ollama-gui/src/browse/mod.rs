@@ -33,6 +33,7 @@ pub struct Probe {
 
 pub mod detail;
 pub mod filters;
+pub mod markdown;
 pub mod options;
 pub mod plan_card;
 pub mod results;
