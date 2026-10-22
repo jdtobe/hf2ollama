@@ -1,0 +1,7 @@
+[
+  "LlamaForCausalLM",
+  "MistralForCausalLM",
+  "MixtralForCausalLM",
+  "GemmaForCausalLM",
+  "Phi3ForCausalLM"
+]
