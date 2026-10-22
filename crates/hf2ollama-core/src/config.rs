@@ -185,4 +185,71 @@ mod tests {
             Some(Duration::from_secs(3600))
         );
     }
+
+    #[test]
+    fn settings_toml_uses_kebab_case_enum_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.toml");
+        let s = Settings {
+            auto_dismiss: AutoDismiss::FiveMinutes,
+            theme: ThemeChoice::Dark,
+            ..Settings::default()
+        };
+        s.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("auto_dismiss = \"five-minutes\""), "{text}");
+        assert!(text.contains("theme = \"dark\""), "{text}");
+        assert!(
+            !text.contains("FiveMinutes") && !text.contains("Dark"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn legacy_pascal_case_enum_names_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.toml");
+        for (old, dismiss, theme) in [
+            ("Never", AutoDismiss::Never, "System"),
+            ("OneMinute", AutoDismiss::OneMinute, "Light"),
+            ("FiveMinutes", AutoDismiss::FiveMinutes, "Dark"),
+            ("OneHour", AutoDismiss::OneHour, "Dark"),
+        ] {
+            std::fs::write(
+                &path,
+                format!("auto_dismiss = \"{old}\"\ntheme = \"{theme}\"\n"),
+            )
+            .unwrap();
+            let s = Settings::load(&path).unwrap();
+            assert_eq!(s.auto_dismiss, dismiss, "{old}");
+            let want = match theme {
+                "System" => ThemeChoice::System,
+                "Light" => ThemeChoice::Light,
+                _ => ThemeChoice::Dark,
+            };
+            assert_eq!(s.theme, want, "{theme}");
+        }
+    }
+
+    #[test]
+    fn roundtrip_all_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rt.toml");
+        for d in [
+            AutoDismiss::Never,
+            AutoDismiss::OneMinute,
+            AutoDismiss::FiveMinutes,
+            AutoDismiss::OneHour,
+        ] {
+            for t in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+                let s = Settings {
+                    auto_dismiss: d,
+                    theme: t,
+                    ..Settings::default()
+                };
+                s.save(&path).unwrap();
+                assert_eq!(Settings::load(&path).unwrap(), s);
+            }
+        }
+    }
 }
