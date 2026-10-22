@@ -268,4 +268,43 @@ mod tests {
         assert!(!line.is_empty());
         assert!(!staging_dir.exists());
     }
+
+    #[test]
+    fn a_corrupt_settings_file_is_kept_as_bak_before_falling_back_to_defaults() {
+        let exe = tempfile::tempdir().unwrap();
+        let osd = tempfile::tempdir().unwrap();
+        let cfg = osd.path().join("config/hf2ollama.toml");
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(&cfg, "this is = not [valid toml").unwrap();
+        // An older backup is replaced.
+        let bak = osd.path().join("config/hf2ollama.toml.bak");
+        std::fs::write(&bak, "old backup").unwrap();
+
+        let st = startup(exe.path(), os(osd.path()));
+
+        assert_eq!(st.settings, Settings::default());
+        assert!(!cfg.exists(), "the unreadable file is moved out of the way");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "this is = not [valid toml"
+        );
+        let notice = st.notice.expect("a startup notice");
+        assert!(notice.contains("hf2ollama.toml.bak"), "{notice}");
+        let log = std::fs::read_to_string(osd.path().join("state/logs/startup.log")).unwrap();
+        assert!(log.contains("hf2ollama.toml.bak"), "{log}");
+    }
+
+    #[test]
+    fn a_valid_settings_file_is_left_alone() {
+        let exe = tempfile::tempdir().unwrap();
+        let osd = tempfile::tempdir().unwrap();
+        let cfg = osd.path().join("config/hf2ollama.toml");
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(&cfg, "max_parallel = 3\n").unwrap();
+        let st = startup(exe.path(), os(osd.path()));
+        assert_eq!(st.settings.max_parallel, 3);
+        assert!(cfg.exists());
+        assert!(!osd.path().join("config/hf2ollama.toml.bak").exists());
+        assert!(st.notice.is_none());
+    }
 }
