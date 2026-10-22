@@ -932,6 +932,9 @@ mod tests {
                 likes: 1,
                 updated: String::new(),
                 gated,
+                pipeline_tag: None,
+                languages: Vec::new(),
+                tags: Vec::new(),
             }),
         );
         app.browse.select_repo(id);
@@ -1094,6 +1097,9 @@ mod tests {
             likes: 10,
             updated: "2026-01-01T00:00:00.000Z".into(),
             gated,
+            pipeline_tag: None,
+            languages: Vec::new(),
+            tags: Vec::new(),
         }
     }
 

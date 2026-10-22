@@ -658,6 +658,9 @@ mod tests {
             likes: 1,
             updated: "2026-10-01T00:00:00.000Z".to_string(),
             gated: false,
+            pipeline_tag: None,
+            languages: Vec::new(),
+            tags: Vec::new(),
         }
     }
 

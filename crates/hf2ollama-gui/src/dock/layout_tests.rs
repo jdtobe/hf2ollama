@@ -86,6 +86,9 @@ fn browse_app_chan(
                 likes: 10,
                 updated: "2026-01-01T00:00:00.000Z".into(),
                 gated: false,
+                pipeline_tag: None,
+                languages: Vec::new(),
+                tags: Vec::new(),
             }),
         );
         st.browse.select_repo(id);
@@ -105,6 +108,9 @@ fn browse_app_chan(
             likes: 10,
             updated: "2026-01-01T00:00:00.000Z".into(),
             gated: true,
+            pipeline_tag: None,
+            languages: Vec::new(),
+            tags: Vec::new(),
         }),
     );
     st.browse.select_repo(id);
