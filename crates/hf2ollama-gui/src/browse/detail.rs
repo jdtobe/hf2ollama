@@ -149,6 +149,18 @@ fn callout(ui: &mut egui::Ui, warn: bool, text: &str) -> Rect {
         .rect
 }
 
+/// What the options table shows and how it behaves.
+#[derive(Clone, Copy)]
+pub struct TableSpec<'a> {
+    /// Shown in the sticky bar when the header has scrolled away.
+    pub title: &'a str,
+    pub first_col: &'a str,
+    /// The section caption above the table.
+    pub label: Option<Rect>,
+    pub selected: Option<usize>,
+    pub scroll_to_selected: bool,
+}
+
 /// Where the options table painted its parts (read by the layout tests).
 #[derive(Default)]
 pub struct TableOut {
@@ -167,15 +179,18 @@ const NOTE_MIN: f32 = 80.0;
 /// second line so nothing is clipped.
 pub fn options_table(
     ui: &mut egui::Ui,
-    title: &str,
-    first_col: &str,
-    label: Option<Rect>,
+    spec: &TableSpec,
     rows: &[OptionRow],
-    selected: Option<usize>,
     machine: &Machine,
-    scroll_to_selected: bool,
     out: &mut TableOut,
 ) -> Option<usize> {
+    let TableSpec {
+        title,
+        first_col,
+        label,
+        selected,
+        scroll_to_selected,
+    } = *spec;
     let t = tokens(ui);
     let w = ui.available_width();
     let p = ui.painter().clone();
@@ -445,7 +460,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     // Height budget: header, notices, scroll area and the pinned card share
     // the pane. The header and notices heights are measured every frame and
     // reused by the card on the next one.
-    let budget_id = ui.id().with("detail_budget");
+    let budget_id = egui::Id::NULL.with("detail_budget");
     let (header_h, notices_h): (f32, f32) = ui
         .ctx()
         .data(|d| d.get_temp(budget_id))
@@ -698,13 +713,15 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
             let _ = label;
             clicked = options_table(
                 ui,
-                "Choose a file",
-                "File",
-                Some(label_rect),
+                &TableSpec {
+                    title: "Choose a file",
+                    first_col: "File",
+                    label: Some(label_rect),
+                    selected,
+                    scroll_to_selected: scroll,
+                },
                 &plan.rows,
-                selected,
                 &app.machine,
-                scroll,
                 &mut table_out,
             );
         }
@@ -729,13 +746,15 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
             let _ = label;
             clicked = options_table(
                 ui,
-                "Choose a quantization",
-                "Quantization",
-                Some(label_rect),
+                &TableSpec {
+                    title: "Choose a quantization",
+                    first_col: "Quantization",
+                    label: Some(label_rect),
+                    selected,
+                    scroll_to_selected: scroll,
+                },
                 &plan.rows,
-                selected,
                 &app.machine,
-                scroll,
                 &mut table_out,
             );
         }
