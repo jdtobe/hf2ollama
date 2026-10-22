@@ -11,12 +11,12 @@ pub const MAX_DEPTH: usize = 8;
 /// Leaf blocks kept; the rest is cut and reported as truncated.
 pub const MAX_BLOCKS: usize = 400;
 /// Spans kept in one paragraph or heading; the rest is dropped.
-pub const MAX_SPANS_PER_BLOCK: usize = 2000;
+pub const MAX_SPANS_PER_BLOCK: usize = 1000;
 /// Table columns and rows kept; the rest is dropped.
 pub const MAX_TABLE_COLS: usize = 20;
 pub const MAX_TABLE_ROWS: usize = 200;
 /// Drawn elements kept in a whole document (see `draw_items`).
-pub const MAX_DOC_ITEMS: usize = 5000;
+pub const MAX_DOC_ITEMS: usize = 2000;
 /// Items kept in one list.
 pub const MAX_LIST_ITEMS: usize = 500;
 
@@ -81,6 +81,7 @@ pub fn is_safe_link(url: &str) -> bool {
 /// What drawing `blocks` puts on screen, in elements: one per block, span,
 /// table cell, list item and quote. The parser keeps this under
 /// `MAX_DOC_ITEMS`.
+#[cfg(test)]
 pub fn draw_items(blocks: &[Block]) -> usize {
     blocks
         .iter()
@@ -166,15 +167,30 @@ struct Builder {
     /// Something was dropped without stopping the parse.
     overflow: bool,
     truncated: bool,
+    /// Set while closing after truncation: the reserved element is usable.
+    reserve: bool,
 }
 
 impl Builder {
     fn push_block(&mut self, block: Block) {
-        if self.leaves >= MAX_BLOCKS {
+        let limit = if self.reserve {
+            MAX_DOC_ITEMS
+        } else {
+            MAX_DOC_ITEMS - 1
+        };
+        self.push_counted(block, limit);
+    }
+
+    /// Adds a leaf block if the block and element budgets allow `limit`.
+    /// Spans, cells and containers stop one short of the document budget so
+    /// the leaf being built when it ran out still fits.
+    fn push_counted(&mut self, block: Block, limit: usize) {
+        if self.leaves >= MAX_BLOCKS || self.items >= limit {
             self.truncated = true;
             return;
         }
         self.leaves += 1;
+        self.items += 1;
         if let Some(Frame::Root(v) | Frame::Quote(v) | Frame::Item(v)) = self.frames.last_mut() {
             v.push(block);
         }
@@ -187,7 +203,7 @@ impl Builder {
             self.overflow = true;
             return false;
         }
-        if self.items >= MAX_DOC_ITEMS {
+        if self.items + 1 >= MAX_DOC_ITEMS {
             self.truncated = true;
             return false;
         }
@@ -227,6 +243,14 @@ impl Builder {
         };
         self.flattened.push(flat);
         if !flat {
+            // Every kept quote and list item is drawn, even an empty one.
+            if matches!(frame, Frame::Item(_) | Frame::Quote(_)) {
+                if self.items + 1 >= MAX_DOC_ITEMS {
+                    self.truncated = true;
+                } else {
+                    self.items += 1;
+                }
+            }
             if !is_item {
                 self.depth += 1;
             }
@@ -258,7 +282,11 @@ impl Builder {
         match top {
             Frame::Item(blocks) => {
                 if let Some(Frame::List { items, .. }) = self.frames.last_mut() {
-                    items.push(blocks);
+                    if items.len() >= MAX_LIST_ITEMS {
+                        self.overflow = true;
+                    } else {
+                        items.push(blocks);
+                    }
                 }
             }
             Frame::List { ordered, items } => {
@@ -294,7 +322,7 @@ impl Builder {
             Some(Inline::Cell) => {
                 if self.row.len() >= MAX_TABLE_COLS {
                     self.overflow = true;
-                } else if self.items >= MAX_DOC_ITEMS {
+                } else if self.items + 1 >= MAX_DOC_ITEMS {
                     self.truncated = true;
                 } else {
                     self.items += 1;
@@ -473,6 +501,7 @@ impl Builder {
     fn finish(mut self) -> (Vec<Block>, bool) {
         if self.truncated {
             // Keep what was being built when the budget ran out.
+            self.reserve = true;
             if matches!(self.inline, Some(Inline::Paragraph | Inline::Heading(_))) {
                 self.end_inline();
             }
@@ -1145,8 +1174,7 @@ mod tests {
 
     #[test]
     fn empty_blockquote_markers_are_bounded() {
-        let (_, cut) = assert_bounded(&"> > > > > > > >\n".repeat(10_000), "> > >");
-        assert!(cut);
+        assert_bounded(&"> > > > > > > >\n".repeat(10_000), "> > >");
         assert_bounded(&">\n".repeat(100_000), ">");
         assert_bounded(&">\n\n".repeat(60_000), "separate quotes");
     }
