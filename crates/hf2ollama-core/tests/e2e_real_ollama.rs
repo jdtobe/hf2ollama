@@ -1,0 +1,422 @@
+//! Opt-in end-to-end tests against a REAL Ollama and the PUBLIC Hugging Face
+//! API (no token). They are `#[ignore]`d and also skip themselves unless
+//! `HF2OLLAMA_E2E_OLLAMA_URL` is set. Point it at a throwaway server, never at
+//! your everyday one, for example:
+//!
+//! ```text
+//! OLLAMA_HOST=127.0.0.1:11555 OLLAMA_MODELS=/some/temp/dir ollama serve &
+//! HF2OLLAMA_E2E_OLLAMA_URL=http://127.0.0.1:11555 \
+//!   cargo test -p hf2ollama-core --test e2e_real_ollama -- --ignored --test-threads=1
+//! ```
+//!
+//! The tests create and delete models named `hf2o-e2e-*` only. As a guard they
+//! refuse Ollama's default port (11434) unless `HF2OLLAMA_E2E_ALLOW_DEFAULT=1`.
+
+use hf2ollama_core::compat::{bundled_supported, classify, Compat};
+use hf2ollama_core::config::Settings;
+use hf2ollama_core::control::JobControl;
+use hf2ollama_core::error::Error;
+use hf2ollama_core::events::{JobEvent, JobId};
+use hf2ollama_core::hf::HfClient;
+use hf2ollama_core::history::History;
+use hf2ollama_core::model::{ImportRequest, RepoFile};
+use hf2ollama_core::ollama::OllamaClient;
+use hf2ollama_core::pipeline::{run_import, PipelineCtx};
+use hf2ollama_core::staging::Staging;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+const HF: &str = "https://huggingface.co";
+const GGUF_REPO: &str = "ggml-org/tiny-llamas";
+const SAFETENSORS_REPO: &str = "hf-internal-testing/tiny-random-LlamaForCausalLM";
+
+fn ollama_url() -> Option<String> {
+    let url = match std::env::var("HF2OLLAMA_E2E_OLLAMA_URL") {
+        Ok(u) if !u.trim().is_empty() => u,
+        _ => {
+            eprintln!(
+                "SKIPPED: set HF2OLLAMA_E2E_OLLAMA_URL to a throwaway Ollama to run this test"
+            );
+            return None;
+        }
+    };
+    assert!(
+        !url.contains(":11434")
+            || std::env::var("HF2OLLAMA_E2E_ALLOW_DEFAULT").as_deref() == Ok("1"),
+        "refusing to run against the default Ollama port; use a throwaway server"
+    );
+    Some(url)
+}
+
+struct Harness {
+    _dir: tempfile::TempDir,
+    ctx: PipelineCtx,
+    url: String,
+}
+
+impl Harness {
+    fn new(url: &str, delete_after_import: bool, keep_partials: bool) -> Harness {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = Settings {
+            ollama_url: url.to_string(),
+            delete_after_import,
+            keep_partials,
+            ..Settings::default()
+        };
+        let history = History::load(&dir.path().join("history.json")).expect("history");
+        let ctx = PipelineCtx {
+            hf: HfClient::new(HF, None),
+            ollama: OllamaClient::new(url),
+            staging: Staging::new(dir.path().join("staging")),
+            settings,
+            history: Arc::new(Mutex::new(history)),
+            log_dir: dir.path().join("logs"),
+        };
+        Harness {
+            _dir: dir,
+            ctx,
+            url: url.to_string(),
+        }
+    }
+
+    fn staging_root(&self) -> std::path::PathBuf {
+        self._dir.path().join("staging")
+    }
+
+    fn job_dirs(&self) -> Vec<String> {
+        match std::fs::read_dir(self.staging_root()) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    async fn run(&self, id: u64, req: ImportRequest) -> (Result<(), Error>, Vec<JobEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let r = run_import(&self.ctx, JobId(id), req, JobControl::new(), tx).await;
+        (r, rx.try_iter().collect())
+    }
+
+    async fn installed(&self, name: &str) -> bool {
+        let want = if name.contains(':') {
+            name.to_string()
+        } else {
+            format!("{name}:latest")
+        };
+        self.ctx
+            .ollama
+            .list()
+            .await
+            .expect("api/tags")
+            .iter()
+            .any(|m| m.name == want)
+    }
+
+    async fn show_format(&self, name: &str) -> String {
+        let v: serde_json::Value = reqwest::Client::new()
+            .post(format!("{}/api/show", self.url))
+            .json(&serde_json::json!({ "model": name }))
+            .send()
+            .await
+            .expect("api/show")
+            .json()
+            .await
+            .expect("show json");
+        v["details"]["format"].as_str().unwrap_or("").to_string()
+    }
+}
+
+async fn files_of(repo: &str) -> Vec<RepoFile> {
+    HfClient::new(HF, None)
+        .model_info(repo)
+        .await
+        .expect("public model info")
+        .files
+}
+
+fn pick(files: &[RepoFile], path: &str) -> RepoFile {
+    files
+        .iter()
+        .find(|f| f.path == path)
+        .unwrap_or_else(|| panic!("{path} not in repository"))
+        .clone()
+}
+
+/// Same selection the app makes for safetensors: root weights, JSON and
+/// tokenizer files.
+fn safetensors_files(files: &[RepoFile]) -> Vec<RepoFile> {
+    files
+        .iter()
+        .filter(|f| {
+            let n = f.path.to_ascii_lowercase();
+            !n.contains('/')
+                && (n.ends_with(".safetensors")
+                    || n.ends_with(".json")
+                    || matches!(n.as_str(), "tokenizer.model" | "merges.txt" | "vocab.txt"))
+        })
+        .cloned()
+        .collect()
+}
+
+async fn gguf_request(name: &str, overwrite: bool) -> ImportRequest {
+    let files = files_of(GGUF_REPO).await;
+    ImportRequest {
+        repo_id: GGUF_REPO.into(),
+        files: vec![pick(&files, "stories260K.gguf")],
+        model_name: name.into(),
+        quantize: None,
+        overwrite,
+    }
+}
+
+async fn safetensors_request(name: &str, quantize: Option<&str>) -> ImportRequest {
+    let files = files_of(SAFETENSORS_REPO).await;
+    ImportRequest {
+        repo_id: SAFETENSORS_REPO.into(),
+        files: safetensors_files(&files),
+        model_name: name.into(),
+        quantize: quantize.map(String::from),
+        overwrite: true,
+    }
+}
+
+fn finished(events: &[JobEvent]) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, JobEvent::Finished { .. }))
+}
+
+fn history_source(h: &Harness, name: &str) -> Option<String> {
+    h.ctx
+        .history
+        .lock()
+        .expect("history lock")
+        .source_of(&format!("{name}:latest"))
+        .map(String::from)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a throwaway Ollama and network; see the file header"]
+async fn gguf_import_deletes_staging_and_records_history() {
+    let Some(url) = ollama_url() else { return };
+    let h = Harness::new(&url, true, true);
+    let name = "hf2o-e2e-gguf";
+    let _ = h.ctx.ollama.delete(name).await;
+    let (r, events) = h.run(1, gguf_request(name, false).await).await;
+    assert_eq!(r, Ok(()), "events: {events:?}");
+    assert!(finished(&events));
+    assert!(h.installed(name).await, "model missing from /api/tags");
+    assert_eq!(history_source(&h, name).as_deref(), Some(GGUF_REPO));
+    assert!(
+        h.job_dirs().is_empty(),
+        "staging not empty: {:?}",
+        h.job_dirs()
+    );
+    assert_eq!(h.show_format(name).await, "gguf");
+    h.ctx.ollama.delete(name).await.expect("delete");
+    assert!(!h.installed(name).await, "model still listed after delete");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a throwaway Ollama and network; see the file header"]
+async fn gguf_import_with_delete_off_keeps_the_files_listed() {
+    let Some(url) = ollama_url() else { return };
+    let h = Harness::new(&url, false, true);
+    let name = "hf2o-e2e-keep";
+    let _ = h.ctx.ollama.delete(name).await;
+    let (r, events) = h.run(2, gguf_request(name, false).await).await;
+    assert_eq!(r, Ok(()), "events: {events:?}");
+    let cached = h.ctx.staging.list_cached().expect("list cached");
+    assert_eq!(cached.len(), 1, "{cached:?}");
+    assert!(!cached[0].partial);
+    assert!(cached[0].bytes >= 1_185_376, "{cached:?}");
+    assert_eq!(
+        h.ctx.staging.clear_cached().expect("clear"),
+        cached[0].bytes
+    );
+    assert!(h.job_dirs().is_empty());
+    h.ctx.ollama.delete(name).await.expect("delete");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a throwaway Ollama and network; see the file header"]
+async fn safetensors_import_with_int8_and_unquantized() {
+    let Some(url) = ollama_url() else { return };
+    let h = Harness::new(&url, true, true);
+    for (name, quant) in [
+        ("hf2o-e2e-st-int8", Some("int8")),
+        ("hf2o-e2e-st-none", None),
+    ] {
+        let _ = h.ctx.ollama.delete(name).await;
+        let (r, events) = h.run(3, safetensors_request(name, quant).await).await;
+        assert_eq!(r, Ok(()), "{name}: events: {events:?}");
+        assert!(h.installed(name).await, "{name} missing from /api/tags");
+        let fmt = h.show_format(name).await;
+        eprintln!("{name}: /api/show details.format = {fmt:?}");
+        assert!(
+            fmt.contains("safetensors"),
+            "{name}: /api/show format was {fmt:?}"
+        );
+        assert_eq!(history_source(&h, name).as_deref(), Some(SAFETENSORS_REPO));
+        assert!(
+            h.job_dirs().is_empty(),
+            "staging not empty: {:?}",
+            h.job_dirs()
+        );
+        h.ctx.ollama.delete(name).await.expect("delete");
+        assert!(!h.installed(name).await);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a throwaway Ollama and network; see the file header"]
+async fn cancel_in_the_middle_of_a_download_removes_the_job_dir() {
+    let Some(url) = ollama_url() else { return };
+    // keep_partials off: a cancelled job must leave nothing behind.
+    let h = Harness::new(&url, true, false);
+    let name = "hf2o-e2e-cancel";
+    let _ = h.ctx.ollama.delete(name).await;
+    // stories15M.gguf is 98 MB, so the cancel lands while bytes are flowing.
+    let files = files_of(GGUF_REPO).await;
+    let req = ImportRequest {
+        repo_id: GGUF_REPO.into(),
+        files: vec![pick(&files, "stories15M.gguf")],
+        model_name: name.into(),
+        quantize: None,
+        overwrite: false,
+    };
+    let (tx, rx): (_, Receiver<JobEvent>) = mpsc::channel();
+    let ctl = JobControl::new();
+    let ctx = h.ctx.clone();
+    let job_ctl = ctl.clone();
+    let task = tokio::spawn(async move { run_import(&ctx, JobId(4), req, job_ctl, tx).await });
+    let mut events = Vec::new();
+    let mut cancelled_at = None;
+    for _ in 0..4000 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        for ev in rx.try_iter() {
+            if let JobEvent::Progress { done, total, .. } = &ev {
+                if cancelled_at.is_none() && *done > 0 && done < total {
+                    cancelled_at = Some((*done, *total));
+                    ctl.cancel();
+                }
+            }
+            events.push(ev);
+        }
+        if task.is_finished() {
+            break;
+        }
+    }
+    let r = task.await.expect("join");
+    events.extend(rx.try_iter());
+    eprintln!("cancel requested at {cancelled_at:?} bytes");
+    assert!(cancelled_at.is_some(), "never saw mid-download progress");
+    assert_eq!(r, Err(Error::Cancelled));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, JobEvent::Cancelled { .. })));
+    assert!(h.job_dirs().is_empty(), "job dir left: {:?}", h.job_dirs());
+    assert!(!h.installed(name).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a throwaway Ollama and network; see the file header"]
+async fn pause_holds_a_job_until_resume() {
+    let Some(url) = ollama_url() else { return };
+    let h = Harness::new(&url, true, true);
+    let name = "hf2o-e2e-pause";
+    let _ = h.ctx.ollama.delete(name).await;
+    let req = gguf_request(name, false).await;
+    let (tx, rx) = mpsc::channel();
+    let ctl = JobControl::new();
+    ctl.pause();
+    let ctx = h.ctx.clone();
+    let job_ctl = ctl.clone();
+    let task = tokio::spawn(async move { run_import(&ctx, JobId(5), req, job_ctl, tx).await });
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!task.is_finished(), "a paused job must not finish");
+    assert!(
+        !h.installed(name).await && h.job_dirs().is_empty(),
+        "a paused job must not have started work"
+    );
+    ctl.resume();
+    let r = tokio::time::timeout(Duration::from_secs(120), task)
+        .await
+        .expect("job finishes after resume")
+        .expect("join");
+    let events: Vec<JobEvent> = rx.try_iter().collect();
+    assert_eq!(r, Ok(()), "events: {events:?}");
+    assert!(finished(&events));
+    assert!(h.installed(name).await);
+    h.ctx.ollama.delete(name).await.expect("delete");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a throwaway Ollama and network; see the file header"]
+async fn name_collision_errors_then_overwrite_succeeds() {
+    let Some(url) = ollama_url() else { return };
+    let h = Harness::new(&url, true, true);
+    let name = "hf2o-e2e-collide";
+    let _ = h.ctx.ollama.delete(name).await;
+    let (r, _) = h.run(6, gguf_request(name, false).await).await;
+    assert_eq!(r, Ok(()));
+    let (r, events) = h.run(7, gguf_request(name, false).await).await;
+    assert_eq!(r, Err(Error::NameCollision(name.to_string())));
+    assert!(events.iter().any(|e| matches!(e, JobEvent::Failed { .. })));
+    assert!(h.job_dirs().is_empty(), "collision must not stage anything");
+    let (r, events) = h.run(8, gguf_request(name, true).await).await;
+    assert_eq!(r, Ok(()), "events: {events:?}");
+    assert!(h.installed(name).await);
+    h.ctx.ollama.delete(name).await.expect("delete");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs network; see the file header"]
+async fn unsupported_repositories_are_classified_not_imported() {
+    // Classification only: no Ollama needed, but keep the same opt-in gate.
+    let Some(_) = ollama_url() else { return };
+    let info = HfClient::new(HF, None)
+        .model_info("hf-internal-testing/tiny-random-GPT2LMHeadModel")
+        .await
+        .expect("public model info");
+    let supported = bundled_supported();
+    assert!(matches!(
+        classify(&info.files, info.arch.as_deref(), &supported),
+        Compat::Unsupported { .. }
+    ));
+    // Supported architecture and a GGUF repo are recognised too.
+    let st = HfClient::new(HF, None)
+        .model_info(SAFETENSORS_REPO)
+        .await
+        .expect("public model info");
+    assert!(matches!(
+        classify(&st.files, st.arch.as_deref(), &supported),
+        Compat::Safetensors { .. }
+    ));
+    let gg = files_of(GGUF_REPO).await;
+    assert!(matches!(
+        classify(&gg, None, &supported),
+        Compat::Gguf { .. }
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a throwaway Ollama and network; see the file header"]
+async fn imports_work_against_a_non_default_models_directory() {
+    // The throwaway server is started with its own OLLAMA_MODELS directory
+    // (see the file header), so every test above already exercises a
+    // non-default store. Here we only prove the server is not the default one.
+    let Some(url) = ollama_url() else { return };
+    let version = OllamaClient::new(&url).version().await.expect("version");
+    eprintln!("throwaway Ollama {version} at {url}");
+    let h = Harness::new(&url, true, true);
+    let name = "hf2o-e2e-store";
+    let _ = h.ctx.ollama.delete(name).await;
+    let (r, _) = h.run(9, gguf_request(name, false).await).await;
+    assert_eq!(r, Ok(()));
+    assert!(h.installed(name).await);
+    h.ctx.ollama.delete(name).await.expect("delete");
+}
