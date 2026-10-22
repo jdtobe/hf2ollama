@@ -99,6 +99,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 .stroke(Stroke::new(1.0, t.line)),
         )
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             let visible = app.browse.visible_len();
             let loaded = app.browse.loaded_len();
             let head = match (&app.browse.search, visible == loaded) {
