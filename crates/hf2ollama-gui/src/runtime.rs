@@ -4,7 +4,7 @@
 use eframe::egui;
 use hf2ollama_core::config::Settings;
 use hf2ollama_core::events::{Command, JobEvent, JobId};
-use hf2ollama_core::hf::{HfClient, ModelInfo, ModelSummary, SearchQuery};
+use hf2ollama_core::hf::{HfClient, ModelCard, ModelInfo, ModelSummary, SearchQuery};
 use hf2ollama_core::history::History;
 use hf2ollama_core::ollama::{InstalledModel, ModelDetails, OllamaClient};
 use hf2ollama_core::paths::Paths;
@@ -24,6 +24,8 @@ pub enum BackendRequest {
     Core(Command),
     Search(SearchQuery),
     ModelInfo(String),
+    /// The README of a repository, fetched when its About tab opens.
+    ModelCard(String),
     ListInstalled,
     ShowInstalled(String),
     DeleteInstalled(String),
@@ -46,6 +48,8 @@ pub enum UiEvent {
     /// Echoes the query so callers can tell concurrent searches apart.
     SearchDone(SearchQuery, Result<Vec<ModelSummary>, String>),
     ModelInfoLoaded(String, Result<ModelInfo, String>),
+    /// `Ok(None)` when the repository has no model card.
+    ModelCardLoaded(String, Result<Option<ModelCard>, String>),
     InstalledLoaded(Result<Vec<InstalledModel>, String>),
     InstalledDetails(String, Result<ModelDetails, String>),
     DeleteDone(String, Result<(), String>),
@@ -296,6 +300,10 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         BackendRequest::ModelInfo(id) => {
             let r = text(hf.model_info(&id).await);
             UiEvent::ModelInfoLoaded(id, r)
+        }
+        BackendRequest::ModelCard(id) => {
+            let r = Err("not implemented".to_string());
+            UiEvent::ModelCardLoaded(id, r)
         }
         BackendRequest::ListInstalled => UiEvent::InstalledLoaded(text(ollama.list().await)),
         BackendRequest::ShowInstalled(name) => {
@@ -572,5 +580,54 @@ mod tests {
         let after = History::load(&h.paths.history_file).unwrap();
         assert_eq!(after.source_of("qwen:q4"), None);
         assert_eq!(after.source_of("keep:me"), Some("x/y"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_model_card_request_returns_the_card() {
+        let hf = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/a/b/raw/main/README.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("---\nx: y\n---\n# Hi\n"))
+            .mount(&hf)
+            .await;
+        let h = harness("http://127.0.0.1:1", &hf.uri());
+        h.tx.send(BackendRequest::ModelCard("a/b".into())).unwrap();
+        let (id, res) = wait_for(&h.rx, |e| match e {
+            UiEvent::ModelCardLoaded(i, r) => Some((i.clone(), r.clone())),
+            _ => None,
+        });
+        assert_eq!(id, "a/b");
+        let card = res.unwrap().unwrap();
+        assert_eq!(card.markdown, "# Hi\n");
+        assert!(!card.truncated);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_model_card_missing_is_ok_none_and_gated_is_a_gated_string() {
+        let hf = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/a/none/raw/main/README.md"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&hf)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/a/priv/raw/main/README.md"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&hf)
+            .await;
+        let h = harness("http://127.0.0.1:1", &hf.uri());
+        for id in ["a/none", "a/priv"] {
+            h.tx.send(BackendRequest::ModelCard(id.into())).unwrap();
+        }
+        let mut got = std::collections::HashMap::new();
+        wait_for(&h.rx, |e| {
+            if let UiEvent::ModelCardLoaded(i, r) = e {
+                got.insert(i.clone(), r.clone());
+            }
+            (got.len() == 2).then_some(())
+        });
+        assert_eq!(got["a/none"], Ok(None));
+        let err = got["a/priv"].clone().unwrap_err();
+        assert!(crate::browse::state::is_gated_error(&err), "{err}");
     }
 }
