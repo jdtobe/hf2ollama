@@ -12,6 +12,7 @@ use hf2ollama_core::pipeline::{JobManager, PipelineCtx};
 use hf2ollama_core::secrets::{KeychainStore, TokenStore};
 use hf2ollama_core::staging::Staging;
 use std::ops::Not;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -22,8 +23,8 @@ use tokio::sync::Notify;
 #[derive(Clone, PartialEq, Eq)]
 pub struct HfToken(String);
 
-#[allow(dead_code)] // RED stub: the Settings backend and view use these next
 impl HfToken {
+    #[allow(dead_code)] // removed when the Settings view lands (next commits)
     pub fn new(token: impl Into<String>) -> HfToken {
         HfToken(token.into())
     }
@@ -39,7 +40,7 @@ impl std::fmt::Debug for HfToken {
     }
 }
 
-#[allow(dead_code)] // RED stub: the Settings backend and view use these next
+#[allow(dead_code)] // removed when the Settings view lands (next commits)
 #[derive(Debug, Clone)]
 pub enum BackendRequest {
     Core(Command),
@@ -63,7 +64,6 @@ pub enum BackendRequest {
 }
 
 /// What the Settings view shows about the Hugging Face token. Never the token.
-#[allow(dead_code)] // RED stub: the Settings backend and view use these next
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HfTokenStatus {
     None,
@@ -83,7 +83,7 @@ pub struct CachedRow {
     pub partial: bool,
 }
 
-#[allow(dead_code)] // RED stub: the Settings backend and view use these next
+#[allow(dead_code)] // removed when the Settings view lands (next commits)
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     Job(JobEvent),
@@ -142,6 +142,10 @@ impl Emitter {
 struct Clients {
     hf: HfClient,
     ollama: OllamaClient,
+    /// The settings the clients were last built from.
+    settings: Settings,
+    /// Where new jobs stage files; also what the Cached files list reads.
+    staging: PathBuf,
     /// Older managers stay so their running jobs remain controllable; the
     /// last one takes new imports.
     managers: Vec<Arc<JobManager>>,
@@ -167,13 +171,17 @@ impl Shared {
         self.history.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    fn staging_dir(&self, settings: &Settings) -> PathBuf {
+        settings
+            .staging_dir
+            .clone()
+            .unwrap_or_else(|| self.paths.default_staging.clone())
+    }
+
     fn pipeline_ctx(&self, settings: &Settings) -> PipelineCtx {
         // A failed keychain read means no token, never a crash.
         let token = self.store.get().ok().flatten();
-        let staging = settings
-            .staging_dir
-            .clone()
-            .unwrap_or_else(|| self.paths.default_staging.clone());
+        let staging = self.staging_dir(settings);
         PipelineCtx {
             hf: HfClient::new(&settings.hf_endpoint, token),
             ollama: OllamaClient::new(&settings.ollama_url),
@@ -195,6 +203,8 @@ impl Shared {
         let mut clients = self.clients();
         clients.hf = hf;
         clients.ollama = ollama;
+        clients.settings = settings.clone();
+        clients.staging = self.staging_dir(settings);
         clients.managers.push(manager);
     }
 }
@@ -299,6 +309,8 @@ fn run(
         clients: Mutex::new(Clients {
             hf: HfClient::new(&settings.hf_endpoint, token),
             ollama: OllamaClient::new(&settings.ollama_url),
+            settings: settings.clone(),
+            staging: PathBuf::new(),
             managers: Vec::new(),
         }),
         history: Arc::new(Mutex::new(history)),
@@ -310,6 +322,10 @@ fn run(
         recheck: Notify::new(),
     });
     shared.install_settings(&settings);
+    // What the keychain holds, without asking Hugging Face.
+    shared
+        .out
+        .emit(UiEvent::HfTokenStatus(stored_token_status(&*shared.store)));
 
     runtime.spawn(poll_status(Arc::clone(&shared)));
     while let Ok(req) = req_rx.recv() {
@@ -355,6 +371,8 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
         BackendRequest::ApplySettings(settings) => {
             shared.install_settings(&settings);
             shared.recheck.notify_one();
+            let saved = text(settings.save(&shared.paths.config_file));
+            shared.out.emit(UiEvent::SettingsSaved(saved));
         }
         other => {
             let shared = Arc::clone(shared);
@@ -362,6 +380,46 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
                 serve(&shared, other).await;
             });
         }
+    }
+}
+
+fn keychain_failure(e: &hf2ollama_core::error::Error) -> HfTokenStatus {
+    HfTokenStatus::Invalid(format!("could not access the system keychain: {e}"))
+}
+
+/// `Saved`/`None` from the keychain alone: no network.
+fn stored_token_status(store: &dyn TokenStore) -> HfTokenStatus {
+    match store.get() {
+        Ok(Some(_)) => HfTokenStatus::Saved,
+        Ok(None) => HfTokenStatus::None,
+        Err(e) => keychain_failure(&e),
+    }
+}
+
+/// Asks Hugging Face whose token the keychain holds.
+async fn check_token(shared: &Shared) -> HfTokenStatus {
+    match shared.store.get() {
+        Ok(None) => return HfTokenStatus::None,
+        Err(e) => return keychain_failure(&e),
+        Ok(Some(_)) => {}
+    }
+    let hf = shared.clients().hf.clone();
+    match hf.whoami().await {
+        Ok(name) => HfTokenStatus::Valid(name),
+        Err(hf2ollama_core::error::Error::Http { status: 401, body }) => {
+            HfTokenStatus::Invalid(body)
+        }
+        Err(e) => HfTokenStatus::Unreachable(e.to_string()),
+    }
+}
+
+/// Flattens a blocking task result into the plain error text the UI shows.
+fn joined<T>(
+    r: Result<hf2ollama_core::error::Result<T>, tokio::task::JoinError>,
+) -> Result<T, String> {
+    match r {
+        Ok(inner) => text(inner),
+        Err(e) => Err(format!("the background task failed: {e}")),
     }
 }
 
@@ -416,11 +474,42 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         }
         // Handled synchronously in `dispatch`.
         BackendRequest::Core(_) | BackendRequest::ApplySettings(_) => return,
-        // Not wired yet.
-        BackendRequest::SetHfToken(_)
-        | BackendRequest::CheckHfToken
-        | BackendRequest::ListCached
-        | BackendRequest::ClearCached => return,
+        BackendRequest::SetHfToken(token) => {
+            let failure = match token {
+                Some(t) => shared.store.set(t.expose()).err(),
+                None => shared.store.clear().err(),
+            };
+            let status = match failure {
+                Some(e) => keychain_failure(&e),
+                None => {
+                    // New requests use the new token (or none); no token
+                    // reads back as `None` without a network call.
+                    let settings = shared.clients().settings.clone();
+                    shared.install_settings(&settings);
+                    check_token(shared).await
+                }
+            };
+            UiEvent::HfTokenStatus(status)
+        }
+        BackendRequest::CheckHfToken => UiEvent::HfTokenStatus(check_token(shared).await),
+        BackendRequest::ListCached => {
+            let staging = Staging::new(shared.clients().staging.clone());
+            let r = tokio::task::spawn_blocking(move || staging.list_cached()).await;
+            UiEvent::CachedLoaded(joined(r).map(|rows| {
+                rows.into_iter()
+                    .map(|c| CachedRow {
+                        label: c.label,
+                        bytes: c.bytes,
+                        partial: c.partial,
+                    })
+                    .collect()
+            }))
+        }
+        BackendRequest::ClearCached => {
+            let staging = Staging::new(shared.clients().staging.clone());
+            let r = tokio::task::spawn_blocking(move || staging.clear_cached()).await;
+            UiEvent::CachedCleared(joined(r))
+        }
     };
     shared.out.emit(ev);
 }
