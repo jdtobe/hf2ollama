@@ -45,18 +45,48 @@ fn saved_staging_is_usable(dir: &Path) -> bool {
             .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
-/// Resolves paths and settings. Reads files, never writes or creates any.
+/// Moves an unreadable settings file to `<name>.bak` (replacing an older
+/// backup) so the next save cannot destroy it. Returns the line for the
+/// status bar and the log.
+fn set_corrupt_settings_aside(config_file: &Path, why: &str) -> String {
+    let mut bak = config_file.as_os_str().to_os_string();
+    bak.push(".bak");
+    let bak = PathBuf::from(bak);
+    let bak_name = bak.file_name().map_or_else(
+        || "a backup".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    // A rename does not replace an existing file on every platform.
+    let _ = std::fs::remove_file(&bak);
+    match std::fs::rename(config_file, &bak) {
+        Ok(()) => format!(
+            "the settings file could not be read ({why}); it was kept as {bak_name} and defaults are in use"
+        ),
+        Err(e) => format!(
+            "the settings file could not be read ({why}) and could not be moved aside ({e}); defaults are in use"
+        ),
+    }
+}
+
+/// Resolves paths and settings. Reads files and never creates any, except
+/// that an unreadable settings file is renamed to `<name>.bak` and the
+/// reason is appended to `startup.log`.
 pub fn startup(exe_dir: &Path, os: OsDirs) -> Startup {
     let paths = Paths::resolve(exe_dir, os);
+    let mut notes = Vec::new();
     let mut settings = Settings::load(&paths.config_file).unwrap_or_else(|e| {
-        eprintln!("could not load settings ({e}); using defaults");
+        let line = set_corrupt_settings_aside(&paths.config_file, &e.to_string());
+        append_log(&paths.log_dir, &line);
+        notes.push(line);
         Settings::default()
     });
-    let (staging_dir, notice) = effective_staging_dir(&settings, &paths);
-    if notice.is_some() {
+    let (staging_dir, staging_notice) = effective_staging_dir(&settings, &paths);
+    if staging_notice.is_some() {
         // The backend reads the same field; keep both on the same folder.
         settings.staging_dir = None;
     }
+    notes.extend(staging_notice);
+    let notice = (!notes.is_empty()).then(|| notes.join("; "));
     Startup {
         paths,
         settings,
