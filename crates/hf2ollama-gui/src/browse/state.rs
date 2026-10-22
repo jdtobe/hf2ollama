@@ -121,6 +121,8 @@ pub struct BrowseState {
     plan: Option<Plan>,
     selected_option: Option<usize>,
     scroll_pending: bool,
+    #[cfg(test)]
+    pub probe: super::Probe,
     pub name: String,
     pub name_edited: bool,
 }
@@ -205,6 +207,8 @@ impl BrowseState {
             plan: None,
             selected_option: None,
             scroll_pending: false,
+            #[cfg(test)]
+            probe: Default::default(),
             name: String::new(),
             name_edited: false,
         }

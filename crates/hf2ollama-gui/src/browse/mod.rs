@@ -5,6 +5,16 @@ use crate::runtime::BackendRequest;
 use eframe::egui;
 use std::time::Instant;
 
+/// Painted rectangles recorded for the headless layout tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+pub struct Probe {
+    pub card: Option<egui::Rect>,
+    pub selected_row: Option<egui::Rect>,
+    pub viewport: Option<egui::Rect>,
+    pub scroll_offset: f32,
+}
+
 pub mod detail;
 pub mod filters;
 pub mod options;
@@ -65,5 +75,43 @@ pub(crate) mod test_util {
             out.drop_without_applying_deltas();
         }
         last.expect("at least one frame ran")
+    }
+
+    /// Frame-by-frame harness for tests that inject input events.
+    pub struct Harness {
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Harness {
+        pub fn new(dark: bool) -> Harness {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            ctx.set_theme(if dark {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            });
+            Harness { ctx, time: 0.0 }
+        }
+
+        /// Runs one frame on a `size` screen with the given input events.
+        pub fn frame(
+            &mut self,
+            size: egui::Vec2,
+            events: Vec<egui::Event>,
+            mut f: impl FnMut(&mut egui::Ui),
+        ) {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            self.ctx
+                .run_ui(input, |ui| f(ui))
+                .drop_without_applying_deltas();
+        }
     }
 }

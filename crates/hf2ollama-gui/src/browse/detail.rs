@@ -610,4 +610,109 @@ mod tests {
             }
         }
     }
+
+    fn many_options_app() -> AppState {
+        use hf2ollama_core::fit::Machine;
+        use hf2ollama_core::model::RepoFile;
+        let id = "o/many-GGUF";
+        let mut files: Vec<RepoFile> = (1..=25)
+            .map(|i| RepoFile {
+                path: format!("many-IQ{i}_XS.gguf"),
+                size: 10_000_000_000 + i as u64 * 100_000_000,
+                sha256: Some(format!("s{i}")),
+                blob_id: None,
+            })
+            .collect();
+        files.push(RepoFile {
+            path: "many-Q4_K_M.gguf".into(),
+            size: 4_680_000_000,
+            sha256: Some("q4".into()),
+            blob_id: None,
+        });
+        let mut app = AppState::new();
+        app.machine = Machine {
+            ram_gb: 64.0,
+            vram_gb: Some(24.0),
+        };
+        app.browse = crate::browse::state::BrowseState::new(app.machine.clone());
+        app.ollama = Some(Some("0.9".into()));
+        app.browse.on_model_info(
+            id,
+            Ok(ModelInfo {
+                id: id.into(),
+                files,
+                arch: Some("llama".into()),
+                params: Some("7B".into()),
+                context: None,
+                license: None,
+                base_model: None,
+                downloads: 1,
+                likes: 1,
+                updated: String::new(),
+                gated: false,
+            }),
+        );
+        app.browse.select_repo(id);
+        app
+    }
+
+    #[test]
+    fn recommended_row_is_scrolled_into_view_after_the_first_frames() {
+        use crate::browse::test_util::Harness;
+        for dark in [false, true] {
+            let mut app = many_options_app();
+            let mut h = Harness::new(dark);
+            for _ in 0..6 {
+                h.frame(vec2(1180.0, 820.0), vec![], |ui| {
+                    show(ui, &mut app, &mut Vec::new())
+                });
+            }
+            let row = app.browse.probe.selected_row.expect("selected row painted");
+            let view = app.browse.probe.viewport.expect("viewport recorded");
+            assert!(
+                row.top() >= view.top() - 0.5 && row.bottom() <= view.bottom() + 0.5,
+                "dark={dark}: row {row:?} outside viewport {view:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn import_card_is_pinned_and_does_not_move_when_scrolling() {
+        use crate::browse::test_util::Harness;
+        for dark in [false, true] {
+            let mut app = many_options_app();
+            let mut h = Harness::new(dark);
+            let size = vec2(1180.0, 820.0);
+            for _ in 0..6 {
+                h.frame(size, vec![], |ui| show(ui, &mut app, &mut Vec::new()));
+            }
+            let before = app.browse.probe.card.expect("card painted");
+            let start = app.browse.probe.scroll_offset;
+            assert!(
+                (820.0 - before.bottom() - 13.0).abs() < 2.5,
+                "dark={dark}: card bottom {} not pinned near the pane bottom",
+                before.bottom()
+            );
+            let wheel = vec![
+                egui::Event::PointerMoved(egui::pos2(600.0, 300.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, 400.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                },
+            ];
+            h.frame(size, wheel, |ui| show(ui, &mut app, &mut Vec::new()));
+            for _ in 0..12 {
+                h.frame(size, vec![], |ui| show(ui, &mut app, &mut Vec::new()));
+            }
+            let after = app.browse.probe.card.expect("card painted");
+            assert!(
+                (app.browse.probe.scroll_offset - start).abs() > 5.0,
+                "dark={dark}: scroll offset did not change ({start})"
+            );
+            assert_eq!(before, after, "dark={dark}: card moved while scrolling");
+        }
+    }
 }

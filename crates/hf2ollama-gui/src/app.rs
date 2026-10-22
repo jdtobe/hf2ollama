@@ -43,6 +43,8 @@ pub struct AppState {
     pub browse: BrowseState,
     /// Where the status pill was last painted (for layout tests).
     pub pill_rect: Option<egui::Rect>,
+    /// Where the search field was last painted; `None` when hidden for lack of room.
+    pub search_rect: Option<egui::Rect>,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
                 vram_gb: None,
             }),
             pill_rect: None,
+            search_rect: None,
         }
     }
 
@@ -414,6 +417,63 @@ mod tests {
                 "dark={dark} right edge {}",
                 rect.right()
             );
+        }
+    }
+
+    fn run_app(dark: bool, width: f32) -> (Option<egui::Rect>, egui::Rect) {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.set_theme(if dark {
+            egui::ThemePreference::Dark
+        } else {
+            egui::ThemePreference::Light
+        });
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            &Settings::default(),
+            PathBuf::from("/tmp/staging"),
+            Machine {
+                ram_gb: 16.0,
+                vram_gb: None,
+            },
+            tx,
+            rx,
+        );
+        app.state.ollama = Some(None);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 820.0));
+        for _ in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        }
+        (
+            app.state.search_rect,
+            app.state.pill_rect.expect("pill painted"),
+        )
+    }
+
+    #[test]
+    fn search_field_never_overlaps_the_status_pill() {
+        for dark in [false, true] {
+            for width in [700.0, 900.0, 1180.0] {
+                let (search, pill) = run_app(dark, width);
+                if width >= 900.0 {
+                    assert!(search.is_some(), "dark={dark} width={width}: field hidden");
+                }
+                if let Some(s) = search {
+                    assert!(
+                        s.right() + 8.0 <= pill.left(),
+                        "dark={dark} width={width}: search ends {} pill starts {}",
+                        s.right(),
+                        pill.left()
+                    );
+                    assert!(s.width() >= 120.0, "dark={dark} width={width}");
+                }
+            }
         }
     }
 }
