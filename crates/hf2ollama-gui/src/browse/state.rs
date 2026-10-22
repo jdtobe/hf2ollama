@@ -487,20 +487,29 @@ impl BrowseState {
         }
     }
 
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     pub fn tab(&self) -> DetailTab {
         self.tab
     }
 
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     /// Switches the detail tab. Opening About for the first time asks for
     /// the selected repository's model card.
     pub fn set_tab(&mut self, tab: DetailTab) {
         self.tab = tab;
+        if tab == DetailTab::About {
+            if let Some(id) = self.selected.clone() {
+                self.cards.want(&id);
+            }
+        }
     }
 
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     pub fn card_expanded(&self) -> bool {
         self.card_expanded
     }
 
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     pub fn set_card_expanded(&mut self, expanded: bool) {
         self.card_expanded = expanded;
     }
@@ -508,24 +517,59 @@ impl BrowseState {
     /// The model-card lookups to start now (at most `MAX_CARD_IN_FLIGHT`
     /// running at once).
     pub fn next_card_requests(&mut self) -> Vec<String> {
-        Vec::new()
+        self.cards.next_requests()
     }
 
     /// Stores a model-card answer.
-    pub fn on_model_card(&mut self, _id: &str, _result: Result<Option<ModelCard>, String>) {}
+    pub fn on_model_card(&mut self, id: &str, result: Result<Option<ModelCard>, String>) {
+        self.cards.in_flight.remove(id);
+        let view = match result {
+            Err(e) => Err(if is_gated_error(&e) {
+                CARD_GATED_MESSAGE.to_string()
+            } else {
+                friendly_error(&e)
+            }),
+            Ok(None) => Ok(None),
+            Ok(Some(card)) => {
+                let (full, cut) = markdown::parse_capped(&card.markdown);
+                if full.is_empty() {
+                    Ok(None)
+                } else {
+                    let (preview, more) = markdown::preview(&full, markdown::COLLAPSED);
+                    Ok(Some(Arc::new(CardView {
+                        full,
+                        preview,
+                        more,
+                        truncated: card.truncated || cut,
+                    })))
+                }
+            }
+        };
+        self.cards.results.insert(id.to_string(), view);
+    }
 
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     /// The cached answer for `id`; `None` while it is not loaded.
     pub fn card_for(&self, id: &str) -> Option<&CardResult> {
         self.cards.results.get(id)
     }
 
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     /// True while the card of `id` was asked for but not answered.
-    pub fn card_pending(&self, _id: &str) -> bool {
-        false
+    pub fn card_pending(&self, id: &str) -> bool {
+        self.cards.requested.contains(id) && !self.cards.results.contains_key(id)
+            || self.cards.queued.iter().any(|q| q == id)
     }
 
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     /// Forgets a failed card lookup so it is asked for again (Retry button).
-    pub fn retry_card(&mut self, _id: &str) {}
+    pub fn retry_card(&mut self, id: &str) {
+        self.cards.results.remove(id);
+        self.cards.requested.remove(id);
+        self.cards.in_flight.remove(id);
+        self.cards.queued.retain(|q| q != id);
+        self.cards.queued.push_front(id.to_string());
+    }
 
     /// Selects a repository by id, picking its recommended option.
     pub fn select_repo(&mut self, id: &str) {
@@ -533,6 +577,8 @@ impl BrowseState {
             return;
         }
         self.selected = Some(id.to_string());
+        self.tab = DetailTab::Files;
+        self.card_expanded = false;
         if !self.requested.contains(id) {
             self.queued.retain(|q| q != id);
             self.queued.push_front(id.to_string());
@@ -659,6 +705,7 @@ impl BrowseState {
 }
 
 /// Which part of the detail pane's scroll area is shown.
+#[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailTab {
     #[default]
@@ -681,6 +728,29 @@ pub struct CardView {
     pub more: bool,
     /// The card was cut: by the download cap or by the block cap.
     pub truncated: bool,
+}
+
+impl CardStore {
+    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
+    fn want(&mut self, id: &str) {
+        if !self.requested.contains(id) && !self.queued.iter().any(|q| q == id) {
+            self.queued.push_back(id.to_string());
+        }
+    }
+
+    fn next_requests(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        while self.in_flight.len() < MAX_CARD_IN_FLIGHT {
+            let Some(id) = self.queued.pop_front() else {
+                break;
+            };
+            if self.requested.insert(id.clone()) {
+                self.in_flight.insert(id.clone());
+                out.push(id);
+            }
+        }
+        out
+    }
 }
 
 /// `Ok(None)` means the repository has no model card.

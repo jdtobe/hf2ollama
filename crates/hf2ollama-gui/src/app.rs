@@ -109,6 +109,10 @@ impl AppState {
                 self.browse.on_model_info(id, r.clone());
                 None
             }
+            UiEvent::ModelCardLoaded(id, r) => {
+                self.browse.on_model_card(id, r.clone());
+                None
+            }
             UiEvent::JobAccepted {
                 id,
                 model_name,

@@ -58,6 +58,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     for id in app.browse.next_info_requests() {
         out.push(BackendRequest::ModelInfo(id));
     }
+    for id in app.browse.next_card_requests() {
+        out.push(BackendRequest::ModelCard(id));
+    }
 }
 
 #[cfg(test)]
