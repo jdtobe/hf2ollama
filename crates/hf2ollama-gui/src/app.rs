@@ -4,7 +4,8 @@ use crate::browse::state::BrowseState;
 use crate::dock::jobs::JobsState;
 use crate::dock::{self, DockAction, DockUi};
 use crate::installed::state::{InstalledState, ListStatus};
-use crate::runtime::{BackendRequest, UiEvent};
+use crate::runtime::{BackendRequest, HfTokenStatus, UiEvent};
+use crate::settings::{self, SettingsView};
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::{ellipsize_middle, segmented_nav};
 use eframe::egui::{self, vec2, Color32, Margin, RichText, Sense, Stroke};
@@ -44,7 +45,12 @@ pub struct AppState {
     pub installed_ui: crate::installed::InstalledUi,
     pub ollama_host: String,
     pub staging_dir: PathBuf,
+    /// Where staging goes when the setting is empty.
+    pub default_staging: PathBuf,
     pub delete_after_import: bool,
+    /// The live settings; the Settings view edits them in place.
+    pub settings: Settings,
+    pub settings_view: SettingsView,
     /// Detected or overridden once at startup; NVML probing is not free.
     pub machine: Machine,
     pub browse: BrowseState,
@@ -71,7 +77,10 @@ impl AppState {
             installed_ui: Default::default(),
             ollama_host: String::new(),
             staging_dir: PathBuf::new(),
+            default_staging: PathBuf::new(),
             delete_after_import: true,
+            settings: Settings::default(),
+            settings_view: SettingsView::new(&Settings::default(), PathBuf::new(), None),
             machine: Machine {
                 ram_gb: 0.0,
                 vram_gb: None,
@@ -91,6 +100,18 @@ impl AppState {
 
     pub fn select(&mut self, view: View) {
         self.view = view;
+    }
+
+    /// Applies what the user changed in the Settings view to the live app
+    /// state and returns the requests to send (one `ApplySettings` that
+    /// saves the file, only when something changed).
+    pub fn apply_change(
+        &mut self,
+        change: settings::state::SettingsChange,
+        ctx: &egui::Context,
+    ) -> Vec<BackendRequest> {
+        let _ = (change, ctx);
+        Vec::new()
     }
 
     /// Folds a backend event into the state; may ask for a follow-up request.
@@ -203,6 +224,12 @@ impl App {
         &mut self.state
     }
 
+    /// What the Settings view needs besides the settings: where staging goes
+    /// by default and what hardware was detected (before any override).
+    pub fn set_environment(&mut self, default_staging: PathBuf, detected: Machine) {
+        let _ = (default_staging, detected);
+    }
+
     /// Screenshot helper: starts on the given view.
     pub fn preset_view(&mut self, view: View) {
         self.state.view = view;
@@ -237,11 +264,7 @@ pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui:
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        while let Ok(ev) = self.rx.try_recv() {
-            if let Some(req) = self.state.on_event(&ev) {
-                let _ = self.tx.send(req);
-            }
-        }
+        self.pump_events();
         // Wake up again only when a settled row is waiting for its deadline.
         let now = Instant::now();
         if let Some(due) = self.state.jobs.tick(now, self.state.auto_dismiss) {
@@ -255,6 +278,16 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Folds every waiting backend event into the state and sends the
+    /// requests that follow from them.
+    pub(crate) fn pump_events(&mut self) {
+        while let Ok(ev) = self.rx.try_recv() {
+            if let Some(req) = self.state.on_event(&ev) {
+                let _ = self.tx.send(req);
+            }
+        }
+    }
+
     fn apply_dock_action(&mut self, action: DockAction) {
         let command = |c: Command| BackendRequest::Core(c);
         match action {
@@ -841,5 +874,371 @@ mod tests {
         s.on_event(&UiEvent::InstalledLoaded(Ok(vec![entry("a:1", 10, None)])));
         s.on_event(&UiEvent::OllamaStatus(None));
         assert_eq!(s.installed.status, ListStatus::Loaded);
+    }
+
+    // ---- settings wiring ----
+
+    fn gguf_info(id: &str) -> hf2ollama_core::hf::ModelInfo {
+        use hf2ollama_core::model::RepoFile;
+        let file = |path: &str, gb: u64| RepoFile {
+            path: path.into(),
+            size: gb * 1_000_000_000,
+            sha256: Some(format!("sha-{path}")),
+            blob_id: None,
+        };
+        hf2ollama_core::hf::ModelInfo {
+            id: id.into(),
+            files: vec![
+                file("m-Q8_0.gguf", 20),
+                file("m-Q5_K_M.gguf", 12),
+                file("m-Q2_K.gguf", 3),
+            ],
+            arch: Some("qwen2".into()),
+            params: None,
+            context: None,
+            license: None,
+            base_model: None,
+            downloads: 0,
+            likes: 0,
+            updated: String::new(),
+            gated: false,
+            pipeline_tag: None,
+            languages: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    fn settings_state(detected: Option<Machine>) -> AppState {
+        let mut s = AppState::new();
+        s.settings_view = SettingsView::new(&s.settings, PathBuf::from("/tmp/default"), detected);
+        s.default_staging = PathBuf::from("/tmp/default");
+        s.staging_dir = PathBuf::from("/tmp/default");
+        s
+    }
+
+    fn only_apply(reqs: Vec<BackendRequest>) -> Settings {
+        match <[BackendRequest; 1]>::try_from(reqs) {
+            Ok([BackendRequest::ApplySettings(s)]) => s,
+            other => panic!("expected exactly one ApplySettings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_dismiss_change_reaches_the_dock_state() {
+        use hf2ollama_core::events::{JobId, Stage};
+        let ctx = egui::Context::default();
+        let mut s = settings_state(None);
+        let t0 = Instant::now();
+        let id = JobId(1);
+        s.jobs.accept(id, "m:q4".into(), 10);
+        s.jobs.apply(
+            &JobEvent::Stage {
+                id,
+                stage: Stage::Downloading,
+            },
+            t0,
+        );
+        s.jobs.apply(&JobEvent::Finished { id }, t0);
+        let later = t0 + std::time::Duration::from_secs(61);
+        s.jobs.tick(later, s.auto_dismiss);
+        assert_eq!(s.jobs.rows().len(), 1, "Never keeps settled rows");
+        let change = s
+            .settings_view
+            .state
+            .set_auto_dismiss(&mut s.settings, AutoDismiss::OneMinute);
+        only_apply(s.apply_change(change, &ctx));
+        assert_eq!(s.auto_dismiss, AutoDismiss::OneMinute);
+        s.jobs.tick(later, s.auto_dismiss);
+        assert!(s.jobs.rows().is_empty(), "the already settled row follows");
+    }
+
+    #[test]
+    fn hardware_override_recomputes_machine_and_fit() {
+        use hf2ollama_core::fit::{fit, Fit};
+        let ctx = egui::Context::default();
+        let detected = Machine {
+            ram_gb: 16.0,
+            vram_gb: None,
+        };
+        let mut s = settings_state(Some(detected.clone()));
+        s.machine = detected.clone();
+        s.browse = BrowseState::new(detected.clone());
+        let id = "o/m-GGUF";
+        s.browse.on_model_info(id, Ok(gguf_info(id)));
+        s.browse.select_repo(id);
+        let recommended = |s: &AppState| {
+            s.browse
+                .plan()
+                .and_then(|p| p.rows.iter().find(|r| r.recommended))
+                .map(|r| r.label.clone())
+        };
+        assert_eq!(recommended(&s).as_deref(), Some("Q2_K"), "VRAM unknown");
+        assert_eq!(fit(12.0, &s.machine), Fit::Unknown);
+
+        let mut change = s.settings_view.state.set_override(&mut s.settings, true);
+        s.settings_view.state.ram_text = "64".into();
+        s.settings_view.state.vram_text = "24".into();
+        change.merge(s.settings_view.state.commit_hardware(&mut s.settings));
+        assert!(change.hardware);
+        let applied = only_apply(s.apply_change(change, &ctx));
+        assert_eq!(
+            applied.hardware_override,
+            Some(Machine {
+                ram_gb: 64.0,
+                vram_gb: Some(24.0)
+            })
+        );
+        let want = Machine {
+            ram_gb: 64.0,
+            vram_gb: Some(24.0),
+        };
+        assert_eq!(s.machine, want);
+        assert_eq!(s.browse.machine(), &want);
+        assert_eq!(fit(12.0, &s.machine), Fit::Fits);
+        assert_eq!(recommended(&s).as_deref(), Some("Q5_K_M"));
+
+        // Turning the override off goes back to the detected machine.
+        let change = s.settings_view.state.set_override(&mut s.settings, false);
+        only_apply(s.apply_change(change, &ctx));
+        assert_eq!(s.machine, detected);
+        assert_eq!(s.browse.machine(), &detected);
+        assert_eq!(recommended(&s).as_deref(), Some("Q2_K"));
+    }
+
+    #[test]
+    fn delete_after_import_change_is_live_for_the_plan_card_and_status_bar() {
+        let ctx = egui::Context::default();
+        let mut s = settings_state(None);
+        assert!(s.delete_after_import);
+        let change = s
+            .settings_view
+            .state
+            .set_delete_after_import(&mut s.settings, false);
+        let applied = only_apply(s.apply_change(change, &ctx));
+        assert!(
+            !s.delete_after_import,
+            "the plan card and status bar read this"
+        );
+        assert!(!applied.delete_after_import);
+    }
+
+    #[test]
+    fn theme_change_applies_immediately() {
+        let ctx = egui::Context::default();
+        let mut s = settings_state(None);
+        let change = s
+            .settings_view
+            .state
+            .set_theme(&mut s.settings, hf2ollama_core::config::ThemeChoice::Dark);
+        only_apply(s.apply_change(change, &ctx));
+        assert_eq!(
+            ctx.options(|o| o.theme_preference),
+            egui::ThemePreference::Dark
+        );
+    }
+
+    #[test]
+    fn apply_change_sends_one_apply_settings_and_only_when_something_changed() {
+        let ctx = egui::Context::default();
+        let mut s = settings_state(None);
+        assert!(s.apply_change(Default::default(), &ctx).is_empty());
+        let mut change = s
+            .settings_view
+            .state
+            .set_keep_partials(&mut s.settings, false);
+        change.merge(s.settings_view.state.set_max_parallel(&mut s.settings, 3));
+        let applied = only_apply(s.apply_change(change, &ctx));
+        assert!(!applied.keep_partials);
+        assert_eq!(applied.max_parallel, 3);
+        assert_eq!(applied, s.settings);
+        assert_eq!(
+            s.settings_view.state.save,
+            crate::settings::state::SaveIndicator::Saving
+        );
+    }
+
+    #[test]
+    fn invalid_values_never_reach_the_app_or_the_backend() {
+        let ctx = egui::Context::default();
+        let mut s = settings_state(None);
+        let before = s.settings.clone();
+        s.settings_view.state.ollama_text = "ftp://nope".into();
+        let change = s.settings_view.state.commit_ollama(&mut s.settings);
+        assert!(s.apply_change(change, &ctx).is_empty(), "nothing is sent");
+        assert_eq!(s.settings, before);
+        assert_eq!(s.ollama_host, "");
+        assert_eq!(
+            s.settings_view.state.save,
+            crate::settings::state::SaveIndicator::Idle
+        );
+        assert!(s.settings_view.state.ollama_error.is_some());
+    }
+
+    #[test]
+    fn ollama_address_change_updates_the_host_and_forgets_the_old_status() {
+        let ctx = egui::Context::default();
+        let mut s = settings_state(None);
+        s.ollama = Some(Some("0.9.2".into()));
+        s.settings_view.state.ollama_text = "http://box.lan:11434/".into();
+        let change = s.settings_view.state.commit_ollama(&mut s.settings);
+        let applied = only_apply(s.apply_change(change, &ctx));
+        assert_eq!(applied.ollama_url, "http://box.lan:11434");
+        assert_eq!(s.ollama_host, "box.lan:11434");
+        assert_eq!(
+            s.ollama, None,
+            "the pill says Checking until the poll answers"
+        );
+    }
+
+    #[test]
+    fn staging_change_updates_the_status_bar_path_and_back_to_default() {
+        let ctx = egui::Context::default();
+        let mut s = settings_state(None);
+        let dir = tempfile::tempdir().unwrap();
+        s.settings_view.state.staging_text = dir.path().display().to_string();
+        let change = s.settings_view.state.commit_staging(&mut s.settings);
+        only_apply(s.apply_change(change, &ctx));
+        assert_eq!(s.staging_dir, dir.path());
+        s.settings_view.state.staging_text = String::new();
+        let change = s.settings_view.state.commit_staging(&mut s.settings);
+        only_apply(s.apply_change(change, &ctx));
+        assert_eq!(s.staging_dir, PathBuf::from("/tmp/default"));
+    }
+
+    #[test]
+    fn settings_events_fold_into_the_view_state() {
+        use crate::runtime::CachedRow;
+        use crate::settings::state::{CachedStatus, ConnectionState, SaveIndicator};
+        let mut s = settings_state(None);
+        assert!(s
+            .on_event(&UiEvent::ConnectionTest(Ok("0.40.8".into())))
+            .is_none());
+        assert_eq!(
+            s.settings_view.state.connection,
+            ConnectionState::Done(Ok("0.40.8".into()))
+        );
+        s.on_event(&UiEvent::SettingsSaved(Err("disk full".into())));
+        assert_eq!(
+            s.settings_view.state.save,
+            SaveIndicator::Failed("disk full".into())
+        );
+        s.on_event(&UiEvent::SettingsSaved(Ok(())));
+        assert!(matches!(
+            s.settings_view.state.save,
+            SaveIndicator::Saved { .. }
+        ));
+        s.on_event(&UiEvent::HfTokenStatus(HfTokenStatus::Valid("jd".into())));
+        assert_eq!(
+            s.settings_view.state.token_status,
+            HfTokenStatus::Valid("jd".into())
+        );
+        let rows = vec![CachedRow {
+            label: "job-1".into(),
+            bytes: 10,
+            partial: false,
+        }];
+        s.on_event(&UiEvent::CachedLoaded(Ok(rows.clone())));
+        assert_eq!(s.settings_view.state.cached, CachedStatus::Loaded(rows));
+        s.on_event(&UiEvent::CachedCleared(Ok(2_000_000_000)));
+        assert_eq!(
+            s.settings_view.state.note.as_ref().map(|n| n.0.as_str()),
+            Some("Freed 2.00 GB")
+        );
+    }
+
+    #[test]
+    fn settings_requests_are_forwarded_to_the_backend() {
+        let (mut app, reqs, ev) = app_with_channels();
+        app.state.settings_view.state.token_input = "x".into();
+        app.state.settings_view.state.save_token();
+        ev.send(UiEvent::CachedCleared(Ok(1))).unwrap();
+        app.pump_events();
+        let sent: Vec<_> = reqs.try_iter().collect();
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, BackendRequest::SetHfToken(Some(_)))),
+            "{sent:?}"
+        );
+        assert!(
+            sent.iter().any(|r| matches!(r, BackendRequest::ListCached)),
+            "a clear is followed by a list refresh: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn opening_settings_refreshes_cached_files_and_checks_a_saved_token_once() {
+        let mut s = settings_state(None);
+        s.on_event(&UiEvent::HfTokenStatus(HfTokenStatus::Saved));
+        s.select(View::Settings);
+        let reqs = s.settings_view.state.take_requests();
+        assert!(
+            reqs.iter().any(|r| matches!(r, BackendRequest::ListCached)),
+            "{reqs:?}"
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| matches!(r, BackendRequest::CheckHfToken)),
+            "{reqs:?}"
+        );
+        // Coming back while the check runs does not repeat it.
+        s.select(View::Browse);
+        s.select(View::Settings);
+        let reqs = s.settings_view.state.take_requests();
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| matches!(r, BackendRequest::CheckHfToken)),
+            "{reqs:?}"
+        );
+        // No token, nothing to check.
+        let mut s = settings_state(None);
+        s.on_event(&UiEvent::HfTokenStatus(HfTokenStatus::None));
+        s.select(View::Settings);
+        let reqs = s.settings_view.state.take_requests();
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| matches!(r, BackendRequest::CheckHfToken)),
+            "{reqs:?}"
+        );
+    }
+
+    #[test]
+    fn app_new_seeds_the_live_settings_and_the_view_from_the_saved_ones() {
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, rx) = std::sync::mpsc::channel();
+        let settings = Settings {
+            ollama_url: "http://box:11434".into(),
+            delete_after_import: false,
+            ..Settings::default()
+        };
+        let mut app = App::new(
+            &settings,
+            PathBuf::from("/tmp/staging"),
+            Machine {
+                ram_gb: 16.0,
+                vram_gb: None,
+            },
+            tx,
+            rx,
+        );
+        assert_eq!(app.state.settings, settings);
+        assert_eq!(
+            app.state.settings_view.state.ollama_text,
+            "http://box:11434"
+        );
+        app.set_environment(
+            PathBuf::from("/tmp/default"),
+            Machine {
+                ram_gb: 32.0,
+                vram_gb: Some(16.0),
+            },
+        );
+        assert_eq!(app.state.default_staging, PathBuf::from("/tmp/default"));
+        assert_eq!(
+            app.state.settings_view.state.detected().map(|m| m.ram_gb),
+            Some(32.0)
+        );
+        assert_eq!(app.state.settings_view.state.staging_text, "/tmp/default");
     }
 }

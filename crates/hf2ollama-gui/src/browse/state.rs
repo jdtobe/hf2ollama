@@ -583,6 +583,17 @@ impl BrowseState {
         self.rebuild_plan();
     }
 
+    pub fn machine(&self) -> &Machine {
+        &self.machine
+    }
+
+    /// The machine changed (hardware override): fit pills, the recommended
+    /// option and the "fits my machine" filter follow. The chosen option and
+    /// name edits stay.
+    pub fn set_machine(&mut self, machine: Machine) {
+        self.machine = machine;
+    }
+
     pub fn select_option(&mut self, idx: usize) {
         let in_range = self.plan.as_ref().is_some_and(|p| idx < p.rows.len());
         if in_range {
@@ -1547,5 +1558,49 @@ mod tests {
         }
         st.on_model_card(id, Err("network error: boom".into()));
         assert!(matches!(st.card_for(id), Some(Err(m)) if m.contains("Could not reach")));
+    }
+
+    #[test]
+    fn set_machine_recomputes_fit_rows_and_keeps_the_chosen_option() {
+        let id = "o/m-GGUF";
+        let files = vec![
+            file("m-Q8_0.gguf", 20 * GB),
+            file("m-Q6_K.gguf", 9 * GB),
+            file("m-Q5_K_S.gguf", 6 * GB),
+            file("m-Q2_K.gguf", 3 * GB),
+        ];
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        st.on_model_info(id, Ok(info(id, files, None)));
+        st.select_repo(id);
+        assert_eq!(selected_label(&st), "Q6_K");
+        // The user picks another quantization.
+        st.select_option(3);
+        assert_eq!(selected_label(&st), "Q2_K");
+        let recommended = |st: &BrowseState| {
+            st.plan()
+                .and_then(|p| p.rows.iter().find(|r| r.recommended))
+                .map(|r| r.label.clone())
+        };
+        assert_eq!(recommended(&st).as_deref(), Some("Q6_K"));
+        // 80 GB of VRAM: the 20 GB file now fits comfortably.
+        st.set_machine(machine(128.0, Some(80.0)));
+        assert_eq!(st.machine(), &machine(128.0, Some(80.0)));
+        assert_eq!(recommended(&st).as_deref(), Some("Q8_0"));
+        assert_eq!(selected_label(&st), "Q2_K", "the user's choice stays");
+        // Unknown VRAM: nothing fits, the smallest is recommended.
+        st.set_machine(machine(32.0, None));
+        assert_eq!(recommended(&st).as_deref(), Some("Q2_K"));
+    }
+
+    #[test]
+    fn set_machine_reapplies_the_fits_my_machine_filter() {
+        let mut st = BrowseState::new(machine(8.0, Some(8.0)));
+        let q = st.search_now("big");
+        st.on_search_done(&q, Ok(vec![summary("o/big", Some("70B"))]));
+        st.filters.only_fit = true;
+        st.apply_filters();
+        assert_eq!(st.visible_len(), 0, "70B does not fit 8 GB");
+        st.set_machine(machine(256.0, Some(160.0)));
+        assert_eq!(st.visible_len(), 1, "it fits 160 GB of VRAM");
     }
 }
