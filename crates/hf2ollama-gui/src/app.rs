@@ -117,9 +117,10 @@ impl AppState {
             }
             UiEvent::DeleteDone(name, r) => {
                 // A deleted model changes what Ollama reports: read it again.
-                self.installed
-                    .on_delete_done(name, r, Instant::now())
-                    .then_some(BackendRequest::ListInstalled)
+                // Also after an error: the model may already be gone
+                // (Ollama 404) and the row would stay stale until Refresh.
+                self.installed.on_delete_done(name, r, Instant::now());
+                Some(BackendRequest::ListInstalled)
             }
             UiEvent::SearchDone(q, r) => {
                 self.browse.on_search_done(q, r.clone());

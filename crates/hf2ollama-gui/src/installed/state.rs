@@ -172,11 +172,15 @@ impl InstalledState {
     /// delay and inside the window.
     pub fn confirm_ready(&self, name: &str, now: Instant) -> bool {
         self.is_armed(name, now)
+            && self
+                .armed
+                .as_ref()
+                .is_some_and(|(_, at)| now >= *at + ARM_MIN_DELAY)
     }
 
     /// Second click on the same row inside the window: the delete to send.
     pub fn confirm_delete(&mut self, name: &str, now: Instant) -> Option<DeleteAction> {
-        if !self.is_armed(name, now) {
+        if !self.confirm_ready(name, now) {
             return None;
         }
         self.armed = None;
@@ -187,11 +191,15 @@ impl InstalledState {
 
     /// One click on a Delete button: arms, or confirms when already armed.
     pub fn click_delete(&mut self, name: &str, now: Instant) -> Option<DeleteAction> {
-        let action = self.confirm_delete(name, now);
-        if action.is_none() {
-            self.arm_delete(name, now);
+        // Rules: a click on a row that is not armed (or whose arming ran
+        // out) arms it. A click on the armed row inside `ARM_MIN_DELAY` is
+        // ignored: it neither confirms, re-arms nor disarms, so a double
+        // click can never delete. After the delay it confirms.
+        if self.is_armed(name, now) {
+            return self.confirm_delete(name, now);
         }
-        action
+        self.arm_delete(name, now);
+        None
     }
 
     /// Expires the armed state; returns when the next expiry is due.
@@ -206,7 +214,14 @@ impl InstalledState {
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
         }
-        let armed = self.armed.as_ref().map(|(_, at)| *at + ARM_WINDOW);
+        // First wake-up when the button turns ready, then at expiry.
+        let armed = self.armed.as_ref().map(|(_, at)| {
+            if now < *at + ARM_MIN_DELAY {
+                *at + ARM_MIN_DELAY
+            } else {
+                *at + ARM_WINDOW
+            }
+        });
         let toast = self.toast.as_ref().map(|t| t.until);
         match (armed, toast) {
             (Some(a), Some(t)) => Some(a.min(t)),

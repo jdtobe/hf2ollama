@@ -364,23 +364,30 @@ fn held_enter_key_never_confirms() {
             let mut h = Harness::new(dark);
             run(&mut app, &mut h, size, 6);
             let target = rows(&mut app)[1].clone();
-            click(&mut app, &mut h, size, target.delete_btn.center());
-            std::thread::sleep(PAST_DELAY);
-            run(&mut app, &mut h, size, 2);
-            let id = rows(&mut app)[1].delete_id;
+            let id = target.delete_id;
             let (w, hh) = size;
-            // Focus the Delete button, then hold Enter: only repeats arrive.
+            let tag = format!("{size:?} dark={dark}");
+            // Focus the Delete button and press Enter: that arms the row.
             h.frame(vec2(w, hh), vec![], |ui| {
                 app.show(ui);
                 ui.memory_mut(|m| m.request_focus(id));
             });
+            h.frame(vec2(w, hh), vec![key(true, false)], |ui| app.show(ui));
+            assert!(
+                app.state_mut()
+                    .installed
+                    .is_armed(&target.name, Instant::now()),
+                "{tag}: Enter on the focused button arms"
+            );
+            // Keep holding it past the delay: only repeats arrive.
+            std::thread::sleep(PAST_DELAY);
             for _ in 0..3 {
                 h.frame(vec2(w, hh), vec![key(true, true)], |ui| app.show(ui));
             }
-            let tag = format!("{size:?} dark={dark}");
             let reqs: Vec<_> = sent.try_iter().collect();
             assert!(reqs.is_empty(), "{tag}: a held key sent {reqs:?}");
-            // A fresh press after the delay is a deliberate confirmation.
+            // Release, then a fresh press is a deliberate confirmation.
+            h.frame(vec2(w, hh), vec![key(false, false)], |ui| app.show(ui));
             h.frame(vec2(w, hh), vec![key(true, false)], |ui| app.show(ui));
             h.frame(vec2(w, hh), vec![key(false, false)], |ui| app.show(ui));
             let reqs: Vec<_> = sent.try_iter().collect();

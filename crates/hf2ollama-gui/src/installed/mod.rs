@@ -125,7 +125,10 @@ fn sub_line(state: &InstalledState, host: &str) -> String {
         return format!("Read from Ollama at {host}");
     }
     let n = state.rows().len();
-    let total: u64 = state.rows().iter().map(|r| r.model.size).sum();
+    let total = state
+        .rows()
+        .iter()
+        .fold(0u64, |t, r| t.saturating_add(r.model.size));
     format!(
         "{n} model{} · {} · read from Ollama at {host}",
         if n == 1 { "" } else { "s" },
@@ -380,6 +383,7 @@ fn table(ui: &mut egui::Ui, app: &mut AppState, cx: &Ctx, out: &mut Vec<BackendR
                 let (rect, _) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::hover());
                 let expanded = app.installed.is_expanded(row.name());
                 let armed = app.installed.is_armed(row.name(), cx.now);
+                let ready = app.installed.confirm_ready(row.name(), cx.now);
                 let probe = if ui.is_rect_visible(rect) {
                     paint_row(
                         ui,
@@ -387,7 +391,7 @@ fn table(ui: &mut egui::Ui, app: &mut AppState, cx: &Ctx, out: &mut Vec<BackendR
                         rect,
                         &spans,
                         (details_w, delete_w),
-                        (expanded, armed),
+                        (expanded, armed, ready),
                         cx,
                         now_sys,
                     )
@@ -400,7 +404,21 @@ fn table(ui: &mut egui::Ui, app: &mut AppState, cx: &Ctx, out: &mut Vec<BackendR
                             out.push(BackendRequest::ShowInstalled(n));
                         }
                     }
-                    if p.delete.clicked() {
+                    // A held Enter or Space repeats `clicked()`; only a fresh
+                    // activation may arm or confirm.
+                    let held = ui.input(|i| {
+                        i.events.iter().any(|e| {
+                            matches!(
+                                e,
+                                egui::Event::Key {
+                                    key: egui::Key::Enter | egui::Key::Space,
+                                    repeat: true,
+                                    ..
+                                }
+                            )
+                        })
+                    });
+                    if p.delete.clicked() && !held {
                         if let Some(a) = app.installed.click_delete(row.name(), cx.now) {
                             out.push(BackendRequest::DeleteInstalled(a.name));
                         }
@@ -444,7 +462,7 @@ fn paint_row(
     rect: Rect,
     spans: &[(Column, f32, f32)],
     (details_w, delete_w): (f32, f32),
-    (expanded, armed): (bool, bool),
+    (expanded, armed, ready): (bool, bool, bool),
     cx: &Ctx,
     now: SystemTime,
 ) -> Option<Painted> {
@@ -557,6 +575,15 @@ fn paint_row(
                     .min_size(vec2(details_w, BUTTON_H)),
                 );
                 let x = if armed {
+                    // Same rect and label size in both phases. Dimmed until
+                    // `ARM_MIN_DELAY` has passed; kept enabled (not disabled)
+                    // so keyboard focus survives, with the state ignoring
+                    // clicks in the meantime.
+                    let fill = if ready {
+                        bad(cx.dark)
+                    } else {
+                        bad(cx.dark).gamma_multiply(0.45)
+                    };
                     ui.put(
                         x_rect,
                         egui::Button::new(
@@ -564,7 +591,7 @@ fn paint_row(
                                 .size(12.0)
                                 .color(Color32::WHITE),
                         )
-                        .fill(bad(cx.dark))
+                        .fill(fill)
                         .wrap_mode(egui::TextWrapMode::Extend)
                         .min_size(vec2(delete_w, BUTTON_H)),
                     )
