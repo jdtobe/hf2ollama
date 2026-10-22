@@ -6,10 +6,15 @@ use std::time::Duration;
 
 /// How long finished and cancelled jobs stay in the dock before dismissal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AutoDismiss {
+    #[serde(alias = "Never")]
     Never,
+    #[serde(alias = "OneMinute")]
     OneMinute,
+    #[serde(alias = "FiveMinutes")]
     FiveMinutes,
+    #[serde(alias = "OneHour")]
     OneHour,
 }
 
@@ -25,9 +30,13 @@ impl AutoDismiss {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ThemeChoice {
+    #[serde(alias = "System")]
     System,
+    #[serde(alias = "Light")]
     Light,
+    #[serde(alias = "Dark")]
     Dark,
 }
 
