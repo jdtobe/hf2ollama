@@ -1,0 +1,82 @@
+{
+  "_id": "664def996933307b2066cbbd",
+  "id": "ggml-org/tiny-llamas",
+  "private": false,
+  "tags": [
+    "gguf",
+    "endpoints_compatible",
+    "region:us"
+  ],
+  "downloads": 33442,
+  "likes": 4,
+  "modelId": "ggml-org/tiny-llamas",
+  "author": "ggml-org",
+  "sha": "99dd1a73db5a37100bd4ae633f4cfce6560e1567",
+  "lastModified": "2024-05-22T13:15:20.000Z",
+  "gated": false,
+  "disabled": false,
+  "config": {},
+  "gguf": {
+    "total": 24407712,
+    "architecture": "llama",
+    "context_length": 128,
+    "bos_token": "<s>",
+    "eos_token": "</s>",
+    "totalFileSize": 19077344
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "blobId": "81fb7afc90f1eb587f3167889b3209213dd14223",
+      "size": 1738
+    },
+    {
+      "rfilename": "README.md",
+      "blobId": "15459fe1754ebc2245b5e71bdaa3d38e7f599656",
+      "size": 29
+    },
+    {
+      "rfilename": "stories15M-q4_0.gguf",
+      "blobId": "da91430001240791942f3242d276edca9ff0e99d",
+      "size": 19077344,
+      "lfs": {
+        "sha256": "6151b1929d7f5aa3385d9ddef3393e55587c0a55de661562322bc51dfda93a04",
+        "size": 19077344,
+        "pointerSize": 133
+      }
+    },
+    {
+      "rfilename": "stories15M-q8_0.gguf",
+      "blobId": "71fac9e3c329c1d4b88b7a145867bde7e3d86c51",
+      "size": 26671328,
+      "lfs": {
+        "sha256": "2eda49203f2f044f3dddf29a7dd7cc861ef5a0340f518a19613d73ba6d9c06b6",
+        "size": 26671328,
+        "pointerSize": 133
+      }
+    },
+    {
+      "rfilename": "stories15M.gguf",
+      "blobId": "3d0f59748338780b9f02db9b9f401354e5da1a46",
+      "size": 98357920,
+      "lfs": {
+        "sha256": "61b50d457809a5194818fd22e6724b456cd7bb9a6264c52c8110684c53f3704a",
+        "size": 98357920,
+        "pointerSize": 133
+      }
+    },
+    {
+      "rfilename": "stories260K.gguf",
+      "blobId": "3e863edbce12f72b420dabd7fc15beb5d3557bb9",
+      "size": 1185376,
+      "lfs": {
+        "sha256": "047bf46455a544931cff6fef14d7910154c56afbc23ab1c5e56a72e69912c04b",
+        "size": 1185376,
+        "pointerSize": 132
+      }
+    }
+  ],
+  "spaces": [],
+  "createdAt": "2024-05-22T13:14:01.000Z",
+  "usedStorage": 145291968
+}

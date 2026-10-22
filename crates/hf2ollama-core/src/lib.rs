@@ -1,0 +1,16 @@
+pub mod compat;
+pub mod config;
+pub mod control;
+pub mod error;
+pub mod events;
+pub mod fit;
+pub mod hardware;
+pub mod hf;
+pub mod history;
+pub mod model;
+pub mod names;
+pub mod ollama;
+pub mod paths;
+pub mod pipeline;
+pub mod secrets;
+pub mod staging;

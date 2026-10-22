@@ -1,0 +1,63 @@
+# cargo-deny policy. Run with `cargo deny check`.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Defaults: RustSec advisories for vulnerabilities and unmaintained crates are
+# checked against the advisory database fetched by cargo-deny.
+#
+# Every ignore below is an "unmaintained" notice (no known vulnerability) on a
+# transitive dependency we cannot replace ourselves. Re-check on each
+# dependency update and drop an entry as soon as its parent stops using it.
+ignore = [
+    # ttf-parser: font parsing inside egui/epaint (via eframe). Unmaintained,
+    # no vulnerability reported; fonts we load are the bundled ones.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained, via egui/epaint font parsing; no vulnerability, awaiting upstream" },
+    # zbus family: D-Bus on Linux only (accesskit_unix for accessibility and
+    # the Secret Service keyring backend). Unmaintained as standalone crates,
+    # superseded by zbus 6; pulled in by eframe and keyring, awaiting upstream.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, Linux D-Bus via eframe/keyring, awaiting upstream" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, Linux D-Bus via eframe/keyring, awaiting upstream" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, Linux D-Bus via eframe/keyring, awaiting upstream" },
+]
+
+[licenses]
+# SPDX identifiers allowed in the dependency tree. For "A OR B" expressions,
+# one allowed option is enough.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = [
+    # TLS is rustls only. OpenSSL must never enter the dependency tree.
+    { crate = "openssl" },
+    { crate = "openssl-sys" },
+    { crate = "native-tls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

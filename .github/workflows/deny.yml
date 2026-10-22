@@ -1,0 +1,13 @@
+name: Deny
+
+on:
+  push:
+    branches: [main, master]  # the default branch name is not decided yet; either works
+  pull_request:
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

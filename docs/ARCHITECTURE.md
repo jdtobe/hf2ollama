@@ -1,0 +1,154 @@
+# Architecture
+
+This is a contributor overview. The approved design is in `docs/superpowers/specs/2026-10-22-hf2ollama-design.md` (sections 3 and 4 are summarized here), and verified API behavior is in `docs/superpowers/notes/api-verification.md`. If this page and the spec disagree, the spec and the code win; please fix this page.
+
+Status: the core crate and the GUI crate are implemented and tested.
+
+## Crate layout
+
+The workspace has two crates. The core is a library with no UI dependencies; the GUI is a thin binary on top of it.
+
+```mermaid
+flowchart TB
+    subgraph gui["hf2ollama-gui (binary, egui/eframe)"]
+        views["Views: Browse, Installed, Settings, downloads dock"]
+        theme["theme: tokens, fonts, custom widgets"]
+        rt["tokio runtime + channel bridge"]
+    end
+    subgraph core["hf2ollama-core (library)"]
+        hf["hf: search, metadata, resumable download"]
+        ollama["ollama: HTTP API client"]
+        pipeline["pipeline: import job + JobManager"]
+        control["control: pause / resume / cancel"]
+        staging["staging: job dirs, sweep, cached files"]
+        compat["compat: GGUF / safetensors / unsupported"]
+        fit["fit: size vs machine"]
+        hardware["hardware: RAM, VRAM"]
+        config["config + paths: settings, portable mode"]
+        secrets["secrets: HF token in keychain"]
+        history["history: import records"]
+        events["events + model: shared types"]
+    end
+    views --> rt
+    rt -- "Command" --> pipeline
+    pipeline -- "JobEvent" --> rt
+    pipeline --> hf
+    pipeline --> ollama
+    pipeline --> staging
+    pipeline --> control
+    pipeline --> history
+    fit --> hardware
+    hf --> secrets
+    config --> staging
+```
+
+Hard rules that follow from this layout:
+
+- Core never imports egui.
+- The GUI never makes HTTP calls. It sends commands to core and reads events.
+- The public core API is async and returns typed errors (`thiserror`). No `unwrap` or `expect` on I/O, network or parse results in non-test code.
+- TLS is rustls only. OpenSSL must not enter the dependency tree (enforced by `deny.toml`).
+
+## Modules in `hf2ollama-core`
+
+| Module | Responsibility |
+|---|---|
+| `hf` (`search`, `download`) | Search models; fetch metadata and the file list with sizes and SHA-256 (`?blobs=true`); download files with HTTP Range resume while hashing. Redacts the token in `Debug`. |
+| `ollama` | Client for `/api/version`, `/api/tags`, `/api/show`, `/api/blobs/:digest` (HEAD and POST), `/api/create` (streamed) and `/api/delete`. |
+| `pipeline` | Runs one import job end to end and emits events. Also holds `JobManager`, which queues jobs and enforces the parallel-download limit. |
+| `control` | `JobControl`: the pause, resume and cancel flags a job checks at checkpoints and races against network waits. |
+| `staging` | Per-job folders under the staging root, free-space checks, cleanup guarantees, startup sweep of orphans and expired partials, listing and clearing of cached files. |
+| `compat` | Classifies a repo as GGUF (with options, shards grouped), safetensors with a supported architecture, or unsupported with a reason. The architecture list is bundled data (`supported_architectures.json`). |
+| `fit` | Pure function from model size and a machine profile to a verdict: fits, tight, partial offload, too large. |
+| `hardware` | Detects RAM (`sysinfo`) and VRAM where reliable (NVIDIA through NVML, Apple unified memory). Accepts a manual override. |
+| `config`, `paths` | Settings (TOML; enum values are kebab-case such as `five-minutes`, and the older PascalCase spellings still load) and storage locations. If a file named `portable` is next to the executable, everything lives beside it. |
+| `secrets` | Hugging Face token in the system keychain, with an in-memory store for tests. |
+| `history` | JSON record of which Hugging Face repo produced which Ollama model name. |
+| `names` | Validation of Ollama model names. |
+| `events`, `model` | `Command`, `JobEvent`, `Stage`, `JobId` and request types shared with the GUI. |
+| `error` | The crate's error type. |
+
+## Import pipeline
+
+One job per import. Stages: `Queued`, `Downloading`, `Verifying`, `Uploading`, `Creating`, `CleaningUp`, `Done`, plus `Paused`, `Failed(reason)` and `Cancelled`.
+
+```mermaid
+flowchart TD
+    Q[Queued] --> P[Plan: resolve files, check space, check Ollama]
+    P -->|not enough space or Ollama down| F[Failed]
+    P --> D[Download to staging/job-id with Range resume]
+    D --> V[Verify: SHA-256 for LFS files, git SHA-1 for small files]
+    V -->|mismatch: delete file| F
+    V --> U[Upload: HEAD blob, POST if missing]
+    U --> C[Create: POST /api/create with file to digest map]
+    C -->|Ollama rejects| F
+    C --> K[Clean up per settings]
+    K --> H[Record in history]
+    H --> Done
+    D -.pause.-> Paused
+    Paused -.resume.-> D
+    D -.cancel.-> X[Cancelled: delete partial files]
+```
+
+1. **Plan.** Resolve the selected file or files, compute download and final size, check free space in the staging folder, check Ollama is reachable. Refuse with a clear message if space is insufficient.
+2. **Download** into `<staging>/<job-id>/`, resuming with HTTP Range. A `206` response whose `Content-Range` does not match the resume offset restarts the download. The token is used for gated repos. A file that fails with a network error (including a stall), a 5xx or a 429 is retried up to 3 times on the same job folder with waits of 1, 2 and 4 seconds (a retry-after hint is honoured, capped at 30 seconds); the wait races against cancel and respects pause, and each retry is logged. Checksum mismatches, gated repos, other 4xx errors, unsafe paths and cancels are never retried. A body longer than the declared size is cut off at once.
+3. **Verify.** Hugging Face publishes SHA-256 only for LFS files. Those are checked against it. Small non-LFS files (config, tokenizer JSON) are checked against the git blob SHA-1. The app also computes SHA-256 for every file locally, since Ollama's blob upload needs it. A mismatch fails the job and deletes the bad file.
+4. **Upload** each file as a blob: `HEAD /api/blobs/sha256:<hex>` and skip if present, otherwise `POST`.
+5. **Create** with `POST /api/create` (after checking again that the model name is still free, unless overwrite was requested), mapping file names to blob digests. For safetensors the request includes weights, config and tokenizer files and the user's `quantize` choice (or none).
+6. **Clean up** according to settings, then record the import in history.
+
+Each job has a timestamped log (queued, request results, stage completions, pause, resume, cancel, errors). It is also written to a log file for bug reports.
+
+## Command and event channels
+
+```mermaid
+sequenceDiagram
+    participant UI as GUI (UI thread)
+    participant RT as tokio runtime
+    participant JM as JobManager
+    UI->>RT: Command::StartImport / Pause / Resume / Cancel
+    RT->>JM: forward
+    JM-->>RT: JobEvent::Stage / Progress / Log / Finished / Failed
+    RT-->>UI: events over a channel
+    RT->>UI: ctx.request_repaint()
+```
+
+The GUI owns a tokio runtime. The UI thread sends `Command`s and drains `JobEvent`s; it never blocks on I/O. The receiving side calls `ctx.request_repaint()` so progress draws immediately. Event and command types live in core (`events`) so both sides share them.
+
+## The GUI layer
+
+`hf2ollama-gui` is a binary with these parts:
+
+- **Startup** (`startup.rs`, `main.rs`). `startup()` resolves paths (portable or OS directories), loads settings and ignores an unusable saved staging folder (not absolute, contains `..`, or starts with `~`), without opening a window or writing files. `spawn_sweep` runs `Staging::sweep` once on its own thread before any job exists and appends the report to `startup.log` in the log directory.
+- **Backend bridge** (`runtime.rs`). The backend thread owns the tokio runtime, the Hugging Face and Ollama clients, the history and the job managers. The UI sends `BackendRequest` values (core commands, search, model info, model card, installed list and delete, settings apply, token set and check, cached files) over an mpsc channel and drains `UiEvent` values (job events, search and info results, installed lists, status polls, settings saved, token status, cached files). Every event wakes the UI with `ctx.request_repaint()`. The GUI makes no HTTP calls itself.
+- **App state** (`app.rs`). `AppState` is plain data that folds `UiEvent`s in `on_event` and may answer with a follow-up request (for example a fresh installed list after a job finishes). Views read it and push requests; tests drive it without a window.
+- **Browse** (`browse/`). Filters, result list, lazy details, option tables, the import plan card, and the model card tab (`markdown.rs` and `about.rs`).
+- **Downloads dock** (`dock/`). `JobsState` in `dock/jobs.rs` is a pure reducer: it turns `JobEvent`s into rows (status, progress, step, log capped at 2000 lines, auto-dismiss deadline). `dock/mod.rs` only draws rows and reports button clicks as actions.
+- **Installed and Settings** (`installed/`, `settings/`, `confirm.rs`). Pure state plus drawing; destructive buttons share the two-step confirm in `confirm.rs` (4 s window, 600 ms minimum delay, held keys never confirm). Settings validators live in `settings/validate.rs`.
+- **Closing the window** (`quit.rs`). `QuitState` (`Idle`, `Confirming`, `Cancelling`, `Closing`) is a pure state machine. A close request with unsettled jobs is cancelled and a confirmation is shown ("Keep running", the default, or "Quit and cancel"); the latter sends `Cancel` for every unsettled job and closes once they settle or after 3 seconds. Held Enter or Space never confirms.
+- **Import names** (`app.rs`, `dock/jobs.rs`). The Download button is disabled while an unsettled job, or a click not yet answered by `JobAccepted`, uses the same normalized name.
+- **Layout tests.** Each view has tests that run real egui frames at 900 by 640 and 1180 by 820 and check rectangles (nothing clipped, buttons fully visible).
+
+### Model card safety
+
+The README is fetched by core (capped at 256 KiB, front matter stripped) and parsed into a small block tree in `browse/markdown.rs`. Raw HTML never survives, images are never loaded, and only absolute `http` and `https` links are kept (opened in the browser, never fetched). Budgets bound the work per frame: nesting depth 8, 400 blocks, 1000 spans per block, tables of at most 20 columns and 200 rows, 500 list items and 2000 drawn items per document. Anything past a budget is cut and the card says it is truncated.
+
+### Quantization values
+
+For safetensors the picker offers none, `int8` and `int4`, and the request carries the choice in `quantize` (omitted for none). On Ollama 0.40.8 the server accepts `int4`, `int8`, `nvfp4`, `mxfp4` and `mxfp8` and rejects the older `q8_0` style names. `int8` and no quantization were imported end to end (see the acceptance record); `int4` is accepted by the server according to its error message but was not imported here. The vocabulary is version dependent, so these values are an assumption for other Ollama versions. GGUF files are uploaded as they are and never re-quantized.
+
+## Cleanup guarantees
+
+- Every job gets its own directory under the staging root. The directory handle is consumed by `finish(keep)` or `discard()`, and the pipeline routes every outcome through them.
+- Cancel always deletes the partial files.
+- A failed job keeps its files for 7 days if that setting is on (they are not reused by a new import; resuming after a restart is not supported yet); otherwise it deletes them. "Clear cached files" removes kept and failed job directories, never a directory without a marker (an active job). On startup the GUI runs `Staging::sweep` once, off the UI thread, which removes only marker-guarded orphaned job directories and expired partials; foreign files in the staging folder are never touched.
+- With "delete downloaded files after import" on, no job leaves files after success, cancel or failure (other than failed-job files kept for 7 days when enabled). With it off, kept files are listed as cached files and can be cleared.
+- A create that has already completed wins over a late cancel, and an in-flight create is not abandoned.
+
+## What is intentionally not done
+
+- No writing into Ollama's model store. Everything goes through the HTTP API, so any models directory or a remote Ollama works.
+- No deleting of blobs. Ollama has no blob-delete API, so a failed import after upload can leave an unused blob that Ollama prunes later.
+- No format conversion. There is no Python or llama.cpp step, so architectures Ollama does not support are reported as unsupported.
+- No running or chatting with models, no Modelfile editing beyond the model name, no uploading to Hugging Face, and no management of Ollama library pulls.
+- No resume of failed jobs and no cross-restart resume of in-progress downloads in v1 (files of a failed job are kept for 7 days, but nothing reuses them and a restart does not pick the job back up).
