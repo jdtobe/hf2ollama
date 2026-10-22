@@ -4,7 +4,11 @@ use super::HfClient;
 use crate::control::JobControl;
 use crate::error::{Error, Result};
 use crate::model::RepoFile;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A finished download: its final path and the SHA-256 computed while streaming.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,14 +17,81 @@ pub struct Downloaded {
     pub sha256: String,
 }
 
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+const REHASH_BUF: usize = 1024 * 1024;
+
+fn io_err(e: std::io::Error) -> Error {
+    Error::Io(e.to_string())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Joins a repository-relative path onto `base`, rejecting anything that could
 /// escape it.
 pub fn safe_join(base: &Path, rel: &str) -> Result<PathBuf> {
-    let _ = (base, rel, Error::UnsafePath(String::new()));
-    todo!()
+    let unsafe_path = || Error::UnsafePath(rel.to_string());
+    if rel.is_empty() || rel.contains('\0') || rel.starts_with('/') || rel.starts_with('\\') {
+        return Err(unsafe_path());
+    }
+    let bytes = rel.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err(unsafe_path());
+    }
+    let mut out = base.to_path_buf();
+    for part in rel.replace('\\', "/").split('/') {
+        if part.is_empty() || part == "." || part == ".." || part.contains(':') {
+            return Err(unsafe_path());
+        }
+        out.push(part);
+    }
+    Ok(out)
+}
+
+fn part_path(final_path: &Path) -> PathBuf {
+    let mut s = final_path.as_os_str().to_os_string();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+async fn remove_quiet(p: &Path) {
+    let _ = tokio::fs::remove_file(p).await;
+}
+
+/// Running hashes over the downloaded bytes.
+struct Hashers {
+    sha256: Sha256,
+    git_sha1: Option<Sha1>,
+}
+
+impl Hashers {
+    fn new(file: &RepoFile) -> Hashers {
+        let git_sha1 = if file.sha256.is_none() && file.blob_id.is_some() {
+            let mut h = Sha1::new();
+            h.update(format!("blob {}\0", file.size).as_bytes());
+            Some(h)
+        } else {
+            None
+        };
+        Hashers {
+            sha256: Sha256::new(),
+            git_sha1,
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.sha256.update(data);
+        if let Some(h) = &mut self.git_sha1 {
+            h.update(data);
+        }
+    }
 }
 
 impl HfClient {
+    /// Downloads `file` into `job_dir`, resuming a `.part` file when present,
+    /// and verifies it before the final rename. A dropped connection keeps the
+    /// `.part` file; a failed verification deletes it.
     pub async fn download(
         &self,
         repo_id: &str,
@@ -29,8 +100,121 @@ impl HfClient {
         ctl: &JobControl,
         on_progress: &mut dyn FnMut(u64, u64),
     ) -> Result<Downloaded> {
-        let _ = (repo_id, file, job_dir, ctl, on_progress);
-        todo!()
+        let final_path = safe_join(job_dir, &file.path)?;
+        let part = part_path(&final_path);
+        if let Some(parent) = final_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(io_err)?;
+        }
+        let mut existing = match tokio::fs::metadata(&part).await {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(io_err(e)),
+        };
+        if file.size == 0 || existing > file.size {
+            existing = 0;
+        }
+
+        let mut segments: Vec<&str> = repo_id.split('/').collect();
+        segments.extend(["resolve", "main"]);
+        segments.extend(file.path.split('/'));
+        let url = self.url(&segments)?;
+
+        let mut resp = None;
+        if existing > 0 {
+            let req = self
+                .get(url.clone())
+                .header(reqwest::header::RANGE, format!("bytes={existing}-"));
+            match self.send_checked(req, Some(repo_id)).await {
+                Ok(r) => resp = Some(r),
+                Err(Error::Http { status: 416, .. }) if existing == file.size => {}
+                Err(Error::Http { status: 416, .. }) => existing = 0,
+                Err(e) => return Err(e),
+            }
+        }
+        if resp.is_none() && existing != file.size {
+            existing = 0;
+        }
+        if resp.is_none() && existing == 0 {
+            resp = Some(self.send_checked(self.get(url), Some(repo_id)).await?);
+        }
+        // A 200 answer to a ranged request means the server ignored the range.
+        let resumed =
+            matches!(&resp, Some(r) if r.status() == reqwest::StatusCode::PARTIAL_CONTENT);
+        if resp.is_some() && !resumed {
+            existing = 0;
+        }
+
+        let mut hashers = Hashers::new(file);
+        let mut done = existing;
+        let mut out = if existing > 0 {
+            let mut f = tokio::fs::File::open(&part).await.map_err(io_err)?;
+            let mut buf = vec![0u8; REHASH_BUF];
+            loop {
+                let n = f.read(&mut buf).await.map_err(io_err)?;
+                if n == 0 {
+                    break;
+                }
+                hashers.update(&buf[..n]);
+            }
+            Some(
+                tokio::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&part)
+                    .await
+                    .map_err(io_err)?,
+            )
+        } else if resp.is_some() {
+            Some(tokio::fs::File::create(&part).await.map_err(io_err)?)
+        } else {
+            None
+        };
+
+        if let (Some(mut resp), Some(f)) = (resp, out.as_mut()) {
+            let streamed: Result<()> = loop {
+                if let Err(e) = ctl.checkpoint().await {
+                    break Err(e);
+                }
+                let chunk = match tokio::time::timeout(STALL_TIMEOUT, resp.chunk()).await {
+                    Err(_) => break Err(Error::Network("download stalled".to_string())),
+                    Ok(Err(e)) => break Err(Error::Network(e.without_url().to_string())),
+                    Ok(Ok(None)) => break Ok(()),
+                    Ok(Ok(Some(c))) => c,
+                };
+                if let Err(e) = f.write_all(&chunk).await {
+                    break Err(io_err(e));
+                }
+                hashers.update(&chunk);
+                done += chunk.len() as u64;
+                on_progress(done, file.size);
+            };
+            let flushed = f.flush().await.map_err(io_err);
+            streamed?;
+            flushed?;
+        }
+        drop(out);
+
+        let mismatch = || Error::HashMismatch {
+            file: file.path.clone(),
+        };
+        let sha256 = hex(&hashers.sha256.finalize());
+        let ok = (file.size == 0 || done == file.size)
+            && match (&file.sha256, &file.blob_id, hashers.git_sha1) {
+                (Some(expected), _, _) => expected.eq_ignore_ascii_case(&sha256),
+                (None, Some(blob), Some(h)) => blob.eq_ignore_ascii_case(&hex(&h.finalize())),
+                _ => true,
+            };
+        if !ok {
+            remove_quiet(&part).await;
+            remove_quiet(&final_path).await;
+            return Err(mismatch());
+        }
+        tokio::fs::rename(&part, &final_path)
+            .await
+            .map_err(io_err)?;
+        Ok(Downloaded {
+            path: final_path,
+            sha256,
+        })
     }
 }
 
@@ -342,8 +526,8 @@ mod tests {
         let download = client.download(REPO, &file, dir.path(), &ctl, &mut on_progress);
         let driver = async {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let blocked =
-                !dir.path().join("m.gguf").exists() && !dir.path().join("m.gguf.part").exists();
+            let part_len = std::fs::metadata(dir.path().join("m.gguf.part")).map_or(0, |m| m.len());
+            let blocked = part_len == 0 && !dir.path().join("m.gguf").exists();
             ctl.resume();
             blocked
         };
