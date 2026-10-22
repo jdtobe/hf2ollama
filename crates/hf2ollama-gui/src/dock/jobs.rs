@@ -1,5 +1,6 @@
 //! Pure job bookkeeping for the downloads dock (no egui).
 
+use hf2ollama_core::config::AutoDismiss;
 use hf2ollama_core::events::{JobEvent, JobId, Stage};
 use std::time::Instant;
 
@@ -201,6 +202,13 @@ impl JobsState {
 
     fn active_count(&self) -> usize {
         self.rows.iter().filter(|r| !r.status.is_settled()).count()
+    }
+
+    /// Removes settled rows older than `auto`; returns when the next settled
+    /// row will be due, or `None` when nothing is waiting.
+    pub fn tick(&mut self, now: Instant, auto: AutoDismiss) -> Option<Instant> {
+        let _ = (now, auto);
+        None
     }
 
     pub fn header_text(&self) -> String {
@@ -468,5 +476,79 @@ mod tests {
         s.apply(&stage(3, Stage::Queued), now);
         let ids: Vec<u64> = s.rows().iter().map(|r| r.id.0).collect();
         assert_eq!(ids, vec![5, 3, 2]);
+    }
+
+    // ---- auto-dismiss ----
+
+    fn settled_pair(s: &mut JobsState, now: Instant) {
+        running(s, 1, now);
+        running(s, 2, now);
+        running(s, 3, now);
+        s.apply(&JobEvent::Finished { id: id(1) }, now);
+        s.apply(&JobEvent::Cancelled { id: id(2) }, now);
+    }
+
+    #[test]
+    fn auto_dismiss_after_one_minute_removes_settled_rows_only() {
+        let now = t0();
+        let mut s = JobsState::new();
+        settled_pair(&mut s, now);
+        s.tick(now + Duration::from_secs(59), AutoDismiss::OneMinute);
+        assert_eq!(s.rows().len(), 3, "not yet due");
+        s.tick(now + Duration::from_secs(60), AutoDismiss::OneMinute);
+        let ids: Vec<u64> = s.rows().iter().map(|r| r.id.0).collect();
+        assert_eq!(ids, vec![3], "the running row is never auto-dismissed");
+    }
+
+    #[test]
+    fn auto_dismiss_never_keeps_rows() {
+        let now = t0();
+        let mut s = JobsState::new();
+        settled_pair(&mut s, now);
+        let next = s.tick(now + Duration::from_secs(86_400), AutoDismiss::Never);
+        assert_eq!(s.rows().len(), 3);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn changing_auto_dismiss_applies_to_already_settled_rows() {
+        let now = t0();
+        let mut s = JobsState::new();
+        settled_pair(&mut s, now);
+        let later = now + Duration::from_secs(400);
+        s.tick(later, AutoDismiss::Never);
+        assert_eq!(s.rows().len(), 3);
+        s.tick(later, AutoDismiss::FiveMinutes);
+        let ids: Vec<u64> = s.rows().iter().map(|r| r.id.0).collect();
+        assert_eq!(ids, vec![3], "settled 400 s ago, limit is now 300 s");
+    }
+
+    #[test]
+    fn tick_returns_next_deadline_only_when_settled_rows_wait() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        assert_eq!(s.tick(now, AutoDismiss::OneMinute), None, "nothing settled");
+        s.apply(
+            &JobEvent::Finished { id: id(1) },
+            now + Duration::from_secs(10),
+        );
+        running(&mut s, 2, now);
+        s.apply(
+            &JobEvent::Cancelled { id: id(2) },
+            now + Duration::from_secs(30),
+        );
+        let next = s.tick(now + Duration::from_secs(31), AutoDismiss::OneMinute);
+        assert_eq!(next, Some(now + Duration::from_secs(70)), "earliest first");
+        assert_eq!(
+            s.tick(now + Duration::from_secs(31), AutoDismiss::Never),
+            None
+        );
+        s.tick(now + Duration::from_secs(95), AutoDismiss::OneMinute);
+        assert!(s.rows().is_empty());
+        assert_eq!(
+            s.tick(now + Duration::from_secs(95), AutoDismiss::OneMinute),
+            None
+        );
     }
 }
