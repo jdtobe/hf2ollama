@@ -4,6 +4,7 @@ mod confirm;
 mod dock;
 mod installed;
 mod runtime;
+mod settings;
 mod theme;
 mod widgets;
 
