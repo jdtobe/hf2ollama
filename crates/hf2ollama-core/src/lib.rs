@@ -3,6 +3,8 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod fit;
+pub mod history;
 pub mod model;
 pub mod paths;
+pub mod secrets;
 pub mod staging;
