@@ -15,8 +15,10 @@ pub const MAX_SPANS_PER_BLOCK: usize = 2000;
 /// Table columns and rows kept; the rest is dropped.
 pub const MAX_TABLE_COLS: usize = 20;
 pub const MAX_TABLE_ROWS: usize = 200;
-/// Spans plus table cells kept in a whole document.
+/// Drawn elements kept in a whole document (see `draw_items`).
 pub const MAX_DOC_ITEMS: usize = 5000;
+/// Items kept in one list.
+pub const MAX_LIST_ITEMS: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Span {
@@ -74,6 +76,28 @@ pub fn is_safe_link(url: &str) -> bool {
     rest.chars()
         .next()
         .is_some_and(|c| c != '/' && c != '?' && c != '#')
+}
+
+/// What drawing `blocks` puts on screen, in elements: one per block, span,
+/// table cell, list item and quote. The parser keeps this under
+/// `MAX_DOC_ITEMS`.
+pub fn draw_items(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::Heading(_, s) | Block::Paragraph(s) => 1 + s.len(),
+            Block::CodeBlock(_) | Block::Rule => 1,
+            Block::Table(rows) => {
+                1 + rows
+                    .iter()
+                    .flatten()
+                    .map(|cell| 1 + cell.len())
+                    .sum::<usize>()
+            }
+            Block::List { items, .. } => items.iter().map(|i| 1 + draw_items(i)).sum(),
+            Block::Quote(c) => 1 + draw_items(c),
+        })
+        .sum()
 }
 
 /// Parses Markdown into blocks; see `parse_capped` for the cut flag.
@@ -1011,21 +1035,8 @@ mod tests {
         assert!(leaf_count(&p) <= 12 && leaf_count(&p) > 0);
     }
 
-    /// Spans and cells in a block tree.
     fn items(blocks: &[Block]) -> usize {
-        blocks
-            .iter()
-            .map(|b| match b {
-                Block::Heading(_, s) | Block::Paragraph(s) => s.len(),
-                Block::List { items: it, .. } => it.iter().map(|i| items(i)).sum(),
-                Block::Quote(c) => items(c),
-                Block::Table(rows) => {
-                    rows.iter().map(|r| r.len()).sum::<usize>()
-                        + rows.iter().flatten().map(Vec::len).sum::<usize>()
-                }
-                _ => 0,
-            })
-            .sum()
+        draw_items(blocks)
     }
 
     #[test]
@@ -1080,7 +1091,7 @@ mod tests {
         assert!(cut);
         assert_eq!(leaf_count(&b), MAX_BLOCKS);
         let (b, _) = parse_capped(&"a".repeat(MAX_INPUT_BYTES));
-        assert_eq!(items(&b), 1);
+        assert_eq!(items(&b), 2);
     }
 
     #[test]
@@ -1105,5 +1116,55 @@ mod tests {
             "took {:?}",
             start.elapsed()
         );
+    }
+
+    fn assert_bounded(md: &str, what: &str) -> (Vec<Block>, bool) {
+        let (b, cut) = parse_capped(md);
+        assert!(items(&b) <= MAX_DOC_ITEMS, "{what}: {} items", items(&b));
+        assert!(depth(&b) <= MAX_DEPTH, "{what}: depth");
+        (b, cut)
+    }
+
+    #[test]
+    fn empty_list_items_are_bounded_and_flag_truncation() {
+        let (b, cut) = assert_bounded(&"-\n".repeat(128 * 1024), "empty items");
+        assert!(cut);
+        match &b[0] {
+            Block::List { items, .. } => assert!(items.len() <= MAX_LIST_ITEMS),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_empty_list_markers_are_bounded() {
+        let (_, cut) = assert_bounded(&"- - - - - - - - - -\n".repeat(13_000), "- - -");
+        assert!(cut);
+        let (_, cut) = assert_bounded(&"1. 1. 1. 1. 1. 1.\n".repeat(14_000), "1. 1.");
+        assert!(cut);
+    }
+
+    #[test]
+    fn empty_blockquote_markers_are_bounded() {
+        let (_, cut) = assert_bounded(&"> > > > > > > >\n".repeat(10_000), "> > >");
+        assert!(cut);
+        assert_bounded(&">\n".repeat(100_000), ">");
+        assert_bounded(&">\n\n".repeat(60_000), "separate quotes");
+    }
+
+    #[test]
+    fn mixed_container_bomb_stays_within_doc_budget() {
+        let unit = "- a\n\n> q\n\n| a | b |\n|-|-|\n| 1 | 2 |\n\n# h\n\n---\n\n";
+        let md = unit.repeat(MAX_INPUT_BYTES / unit.len());
+        let (b, cut) = assert_bounded(&md, "mixed");
+        assert!(cut);
+        assert!(items(&b) > MAX_DOC_ITEMS / 2, "{}", items(&b));
+    }
+
+    #[test]
+    fn strip_html_handles_mixed_case_and_unterminated_script() {
+        assert_eq!(strip_html("a<ScRiPt>x()</ScRiPt>b"), "ab");
+        assert_eq!(strip_html("a <script"), "a ");
+        assert_eq!(strip_html("a <SCRIPT>never closed"), "a ");
+        assert_eq!(strip_html("a<STYLE>p{}</style>b"), "ab");
     }
 }

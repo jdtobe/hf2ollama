@@ -190,6 +190,7 @@ fn blocks(ui: &mut egui::Ui, cx: &mut Cx, t: &Tokens, list: &[Block], color: Col
                             "•".to_string()
                         };
                         let (r, _) = ui.allocate_exact_size(vec2(24.0, 18.0), Sense::hover());
+                        cx.rect(r);
                         ui.painter().text(
                             r.right_top() + vec2(0.0, 1.0),
                             Align2::RIGHT_TOP,
@@ -211,6 +212,7 @@ fn blocks(ui: &mut egui::Ui, cx: &mut Cx, t: &Tokens, list: &[Block], color: Col
                     })
                     .show(ui, |ui| blocks(ui, cx, t, inner, t.fg2))
                     .response;
+                cx.rect(resp.rect);
                 let rule = Rect::from_min_size(
                     resp.rect.left_top() + vec2(2.0, 0.0),
                     vec2(3.0, resp.rect.height()),

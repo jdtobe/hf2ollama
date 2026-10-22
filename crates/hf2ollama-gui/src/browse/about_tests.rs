@@ -543,3 +543,22 @@ fn expanded_hostile_documents_render_quickly_with_few_widgets() {
         assert!(app.state_mut().browse.probe.about_notice.is_some());
     }
 }
+
+#[test]
+fn an_expanded_empty_list_item_bomb_renders_quickly_with_few_widgets() {
+    use super::markdown::MAX_DOC_ITEMS;
+    let mut app = about_app(Some(card(&"-\n".repeat(6_000))));
+    app.state_mut().browse.set_card_expanded(true);
+    let mut h = Harness::new(false);
+    let start = std::time::Instant::now();
+    run(&mut app, &mut h, SIZES[0], 3);
+    let took = start.elapsed();
+    assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
+    let p = &app.state_mut().browse.probe;
+    assert!(
+        p.about_rects.len() <= MAX_DOC_ITEMS,
+        "{} widgets",
+        p.about_rects.len()
+    );
+    assert!(p.about_notice.is_some());
+}
