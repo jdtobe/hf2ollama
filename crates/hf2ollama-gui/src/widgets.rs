@@ -120,18 +120,6 @@ pub fn tag(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) {
         });
 }
 
-// TODO(task 16 Installed): used by the Installed table.
-#[allow(dead_code)]
-/// Thin horizontal quality bar; `frac` is clamped to 0..=1.
-pub fn quality_bar(ui: &mut egui::Ui, frac: f32, width: f32) {
-    let t = tokens(ui);
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 6.0), Sense::hover());
-    ui.painter().rect_filled(rect, 3.0, t.line);
-    let mut fill = rect;
-    fill.set_width(width * frac.clamp(0.0, 1.0));
-    ui.painter().rect_filled(fill, 3.0, t.accent);
-}
-
 /// Accent-filled primary action.
 pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     let t = tokens(ui);
@@ -249,28 +237,6 @@ pub fn segmented_nav(
             }
         });
     clicked
-}
-
-// TODO(task 16 Installed): used by the Installed table.
-#[allow(dead_code)]
-/// Rounded status pill showing the fit estimate.
-pub fn fit_pill(ui: &mut egui::Ui, fit: Fit) {
-    let t = tokens(ui);
-    let (fg, bg) = match fit_pill_kind(fit) {
-        PillKind::Ok => (t.ok, t.ok_soft),
-        PillKind::Warn => (t.warn, t.warn_soft),
-        PillKind::Neutral => (t.fg2, t.surface2),
-    };
-    egui::Frame::new()
-        .fill(bg)
-        .corner_radius(10.0)
-        .inner_margin(Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.add(
-                egui::Label::new(RichText::new(fit_pill_label(fit)).size(12.0).color(fg))
-                    .wrap_mode(egui::TextWrapMode::Extend),
-            );
-        });
 }
 
 #[cfg(test)]
