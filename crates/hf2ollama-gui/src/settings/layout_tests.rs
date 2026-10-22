@@ -397,6 +397,86 @@ fn password_field_is_masked() {
     }
 }
 
+fn key_z(command: bool) -> egui::Event {
+    egui::Event::Key {
+        key: egui::Key::Z,
+        physical_key: Some(egui::Key::Z),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+            command,
+            ctrl: command,
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn leaving_settings_wipes_the_token_field_and_its_undo_history() {
+    const TYPED: &str = "hf_zQ9xKmTpL2";
+    let size = SIZES[0];
+    let (w, hh) = size;
+    let (mut app, _sent) = settings_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let field = reveal(&mut app, &mut h, size, "token");
+    click(&mut app, &mut h, size, field.center());
+    h.frame(vec2(w, hh), vec![egui::Event::Text(TYPED.into())], |ui| {
+        app.show(ui)
+    });
+    run(&mut app, &mut h, size, 3);
+    assert_eq!(app.state_mut().settings_view.state.token_input, TYPED);
+
+    app.state_mut().select(View::Installed);
+    run(&mut app, &mut h, size, 3);
+    assert!(
+        app.state_mut().settings_view.state.token_input.is_empty(),
+        "the typed token must not outlive the Settings view"
+    );
+
+    app.state_mut().select(View::Settings);
+    run(&mut app, &mut h, size, 4);
+    let field = reveal(&mut app, &mut h, size, "token");
+    click(&mut app, &mut h, size, field.center());
+    for _ in 0..2 {
+        h.frame(vec2(w, hh), vec![key_z(true)], |ui| app.show(ui));
+    }
+    run(&mut app, &mut h, size, 2);
+    assert!(
+        app.state_mut().settings_view.state.token_input.is_empty(),
+        "Ctrl+Z brought the token back"
+    );
+}
+
+#[test]
+fn saving_the_token_also_wipes_the_undo_history() {
+    const TYPED: &str = "hf_zQ9xKmTpL2";
+    let size = SIZES[0];
+    let (w, hh) = size;
+    let (mut app, _sent) = settings_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let field = reveal(&mut app, &mut h, size, "token");
+    click(&mut app, &mut h, size, field.center());
+    h.frame(vec2(w, hh), vec![egui::Event::Text(TYPED.into())], |ui| {
+        app.show(ui)
+    });
+    run(&mut app, &mut h, size, 3);
+    let save = reveal(&mut app, &mut h, size, "token-save");
+    click(&mut app, &mut h, size, save.center());
+    assert!(app.state_mut().settings_view.state.token_input.is_empty());
+    let field = reveal(&mut app, &mut h, size, "token");
+    click(&mut app, &mut h, size, field.center());
+    for _ in 0..2 {
+        h.frame(vec2(w, hh), vec![key_z(true)], |ui| app.show(ui));
+    }
+    run(&mut app, &mut h, size, 2);
+    assert!(
+        app.state_mut().settings_view.state.token_input.is_empty(),
+        "Ctrl+Z brought the saved token back"
+    );
+}
+
 #[test]
 fn saving_the_token_clears_the_field_and_sends_it_only_to_the_backend() {
     const TYPED: &str = "hf_zQ9xKmTpL2";
