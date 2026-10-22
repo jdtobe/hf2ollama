@@ -43,6 +43,18 @@ impl JobControl {
     pub fn is_cancelled(&self) -> bool {
         self.tx.borrow().cancelled
     }
+    /// Resolves once cancelled; ignores pause. For racing against slow I/O.
+    pub async fn cancelled(&self) {
+        let mut rx = self.tx.subscribe();
+        loop {
+            if rx.borrow_and_update().cancelled {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
     /// `Err(Cancelled)` once cancelled; waits (without polling) while paused.
     pub async fn checkpoint(&self) -> Result<()> {
         let mut rx = self.tx.subscribe();

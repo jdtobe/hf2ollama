@@ -102,6 +102,21 @@ impl Hashers {
 }
 
 impl HfClient {
+    /// Sends a request, giving up after the stall timeout or on cancel.
+    async fn send_guarded(
+        &self,
+        req: reqwest::RequestBuilder,
+        repo_id: &str,
+        ctl: &JobControl,
+    ) -> Result<reqwest::Response> {
+        tokio::select! {
+            r = tokio::time::timeout(self.stall_timeout, self.send_checked(req, Some(repo_id))) => {
+                r.map_err(|_| Error::Network("download stalled".to_string()))?
+            }
+            () = ctl.cancelled() => Err(Error::Cancelled),
+        }
+    }
+
     /// Downloads `file` into `job_dir`, resuming a `.part` file when present,
     /// and verifies it before the final rename. A dropped connection keeps the
     /// `.part` file; a failed verification deletes it.
@@ -137,7 +152,7 @@ impl HfClient {
             let req = self
                 .get(url.clone())
                 .header(reqwest::header::RANGE, format!("bytes={existing}-"));
-            match self.send_checked(req, Some(repo_id)).await {
+            match self.send_guarded(req, repo_id, ctl).await {
                 Ok(r) => resp = Some(r),
                 Err(Error::Http { status: 416, .. }) if existing == file.size => {}
                 Err(Error::Http { status: 416, .. }) => existing = 0,
@@ -149,7 +164,7 @@ impl HfClient {
         }
         if resp.is_none() && existing == 0 {
             resp = Some(
-                self.send_checked(self.get(url.clone()), Some(repo_id))
+                self.send_guarded(self.get(url.clone()), repo_id, ctl)
                     .await?,
             );
         }
@@ -160,7 +175,7 @@ impl HfClient {
             } else if content_range_start(r) != Some(existing) {
                 // A 206 that does not start where we resume: restart in full.
                 existing = 0;
-                resp = Some(self.send_checked(self.get(url), Some(repo_id)).await?);
+                resp = Some(self.send_guarded(self.get(url), repo_id, ctl).await?);
             }
         }
 
@@ -194,7 +209,11 @@ impl HfClient {
                 if let Err(e) = ctl.checkpoint().await {
                     break Err(e);
                 }
-                let chunk = match tokio::time::timeout(self.stall_timeout, resp.chunk()).await {
+                let read = tokio::select! {
+                    r = tokio::time::timeout(self.stall_timeout, resp.chunk()) => r,
+                    () = ctl.cancelled() => break Err(Error::Cancelled),
+                };
+                let chunk = match read {
                     Err(_) => break Err(Error::Network("download stalled".to_string())),
                     Ok(Err(e)) => break Err(Error::Network(e.without_url().to_string())),
                     Ok(Ok(None)) => break Ok(()),
