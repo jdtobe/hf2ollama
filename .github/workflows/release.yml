@@ -3,7 +3,7 @@ name: Release
 # Every merge to main that changes code is tested, built for macOS, Windows and
 # Linux, and published as a GitHub release named YY.M.N (year without the
 # century, month without a leading zero, and the number of the release within
-# that month), for example v26.10.1. Docs-only merges do not release.
+# that month, counting from 0), for example v26.10.0. Docs-only merges do not release.
 on:
   push:
     branches: [main]
@@ -39,7 +39,9 @@ jobs:
         run: |
           prefix="$(date -u +%y).$(date -u +%-m)"
           last="$(git tag --list "v${prefix}.*" | sed "s/^v${prefix}\.//" | grep -E '^[0-9]+$' | sort -n | tail -1)"
-          echo "version=${prefix}.$(( ${last:-0} + 1 ))" >> "$GITHUB_OUTPUT"
+          # The first release of a month is .0, the next .1, and so on.
+          if [ -z "$last" ]; then n=0; else n=$(( last + 1 )); fi
+          echo "version=${prefix}.${n}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
