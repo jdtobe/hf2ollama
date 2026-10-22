@@ -143,7 +143,8 @@ impl eframe::App for App {
         egui::Panel::top("top")
             .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                let row = egui::Layout::left_to_right(egui::Align::Center);
+                ui.with_layout(row, |ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
                     ui.painter().rect_filled(r, 6.0, t.accent);
                     ui.painter()
@@ -192,10 +193,12 @@ impl eframe::App for App {
                             .inner_margin(Margin::symmetric(10, 3))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
+                                    // The row is right-to-left, so the label
+                                    // comes first and the dot lands on its left.
+                                    ui.label(RichText::new(label).size(12.0).color(t.fg2));
                                     let (r, _) =
                                         ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
                                     ui.painter().circle_filled(r.center(), 4.0, dot);
-                                    ui.label(RichText::new(label).size(12.0).color(t.fg2));
                                 });
                             });
                     });
