@@ -6,6 +6,7 @@ use hf2ollama_core::compat::{self, Compat, GgufOption};
 use hf2ollama_core::fit::Machine;
 use hf2ollama_core::hf::ModelInfo;
 use hf2ollama_core::model::{ImportRequest, RepoFile};
+use hf2ollama_core::names::validate_model_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ pub struct Plan {
 
 pub struct BrowseState {
     machine: Machine,
+    supported: Vec<String>,
     infos: HashMap<String, Result<Arc<ModelInfo>, String>>,
     selected: Option<String>,
     plan: Option<Plan>,
@@ -36,20 +38,65 @@ pub struct BrowseState {
 
 /// Lowercases and cleans a repo name into a valid Ollama model name part.
 pub fn sanitize_name(raw: &str) -> String {
-    let _ = raw;
-    unimplemented!()
+    let lower = raw.to_lowercase();
+    let trimmed = lower.strip_suffix("-gguf").unwrap_or(&lower);
+    let mut out = String::new();
+    for c in trimmed.chars() {
+        let ok = c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-');
+        let c = if ok { c } else { '-' };
+        if c == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(c);
+    }
+    let cleaned: String = out
+        .trim_matches(|c| c == '-' || c == '.')
+        .chars()
+        .take(MAX_NAME_PART)
+        .collect();
+    let cleaned = cleaned.trim_matches(|c| c == '-' || c == '.');
+    if cleaned.is_empty() {
+        "model".to_string()
+    } else {
+        cleaned.to_string()
+    }
 }
+
+/// Longest allowed part of a model name (see `names::validate_model_name`).
+const MAX_NAME_PART: usize = 64;
 
 /// Weight files plus the small config and tokenizer files Ollama needs.
 pub fn safetensors_import_files(files: &[RepoFile]) -> Vec<RepoFile> {
-    let _ = files;
-    unimplemented!()
+    let root_name = |f: &RepoFile| -> Option<String> {
+        (!f.path.contains('/')).then(|| f.path.to_ascii_lowercase())
+    };
+    let is_weight = |n: &str| n.ends_with(".safetensors");
+    let sharded_weights = files
+        .iter()
+        .filter_map(root_name)
+        .any(|n| is_weight(&n) && !n.starts_with("consolidated"));
+    files
+        .iter()
+        .filter(|f| {
+            let Some(n) = root_name(f) else {
+                return false;
+            };
+            if is_weight(&n) {
+                // consolidated.safetensors duplicates the sharded weights.
+                return !(sharded_weights && n.starts_with("consolidated"));
+            }
+            n.ends_with(".json")
+                || matches!(n.as_str(), "tokenizer.model" | "merges.txt" | "vocab.txt")
+        })
+        .cloned()
+        .collect()
 }
 
 impl BrowseState {
     pub fn new(machine: Machine) -> BrowseState {
         BrowseState {
             machine,
+            supported: compat::bundled_supported(),
             infos: HashMap::new(),
             selected: None,
             plan: None,
@@ -77,46 +124,158 @@ impl BrowseState {
 
     /// Stores a repository answer and rebuilds the plan if it is selected.
     pub fn on_model_info(&mut self, id: &str, result: Result<ModelInfo, String>) {
-        let _ = (id, result);
-        unimplemented!()
+        self.infos.insert(id.to_string(), result.map(Arc::new));
+        if self.selected.as_deref() == Some(id) {
+            self.rebuild_plan();
+        }
+    }
+
+    /// Builds the option table for the selected repository, if it is loaded.
+    fn rebuild_plan(&mut self) {
+        self.plan = None;
+        self.selected_option = None;
+        let Some(Ok(info)) = self.selected.as_ref().and_then(|id| self.infos.get(id)) else {
+            return;
+        };
+        let info = Arc::clone(info);
+        let plan = match compat::classify(&info.files, info.arch.as_deref(), &self.supported) {
+            Compat::Gguf { options } => {
+                let rows = options::gguf_rows(&options, &self.machine);
+                Plan {
+                    kind: PlanKind::Gguf(options),
+                    rows,
+                }
+            }
+            Compat::Safetensors { .. } => {
+                let files = safetensors_import_files(&info.files);
+                let source: u64 = files.iter().map(|f| f.size).sum();
+                Plan {
+                    rows: options::safetensors_rows(source),
+                    kind: PlanKind::Safetensors(files),
+                }
+            }
+            Compat::Unsupported { reason } => Plan {
+                kind: PlanKind::Unsupported(reason),
+                rows: Vec::new(),
+            },
+        };
+        self.selected_option = plan.rows.iter().position(|r| r.recommended);
+        self.plan = Some(plan);
+        self.rederive_name();
+    }
+
+    fn rederive_name(&mut self) {
+        if !self.name_edited {
+            self.name = self.default_model_name();
+        }
     }
 
     /// Selects a repository by id, picking its recommended option.
     pub fn select_repo(&mut self, id: &str) {
-        let _ = id;
-        unimplemented!()
+        if self.selected.as_deref() == Some(id) {
+            return;
+        }
+        self.selected = Some(id.to_string());
+        // An edited name belonged to the previous repository.
+        self.name_edited = false;
+        self.name.clear();
+        self.rebuild_plan();
     }
 
     pub fn select_option(&mut self, idx: usize) {
-        let _ = idx;
-        unimplemented!()
+        let in_range = self.plan.as_ref().is_some_and(|p| idx < p.rows.len());
+        if in_range {
+            self.selected_option = Some(idx);
+            self.rederive_name();
+        }
     }
 
     /// `repo-name:quant`, valid for `validate_model_name`.
     pub fn default_model_name(&self) -> String {
-        unimplemented!()
+        let repo = self.selected.as_deref().unwrap_or_default();
+        let base = sanitize_name(repo.rsplit('/').next().unwrap_or(repo));
+        let tag = match (self.plan.as_ref(), self.selected_option) {
+            (Some(plan), Some(i)) => match &plan.kind {
+                PlanKind::Gguf(opts) => opts.get(i).and_then(|o| o.quant.as_deref()).map(tag_of),
+                PlanKind::Safetensors(_) => plan
+                    .rows
+                    .get(i)
+                    .and_then(|r| r.quantize)
+                    .map(str::to_string),
+                PlanKind::Unsupported(_) => None,
+            },
+            _ => None,
+        };
+        match tag {
+            Some(t) if !t.is_empty() => format!("{base}:{t}"),
+            _ => base,
+        }
     }
 
     pub fn import_request(&self) -> Option<ImportRequest> {
-        unimplemented!()
+        let plan = self.plan.as_ref()?;
+        let idx = self.selected_option?;
+        let row = plan.rows.get(idx)?;
+        let files = match &plan.kind {
+            PlanKind::Gguf(options) => options.get(idx)?.files.clone(),
+            PlanKind::Safetensors(files) => files.clone(),
+            PlanKind::Unsupported(_) => return None,
+        };
+        Some(ImportRequest {
+            repo_id: self.selected.clone()?,
+            files,
+            model_name: self.name.clone(),
+            quantize: row.quantize.map(str::to_string),
+            overwrite: false,
+        })
     }
 
     /// Why the import button is disabled, if it is.
     pub fn import_block_reason(&self, ollama_reachable: bool) -> Option<String> {
-        let _ = ollama_reachable;
-        unimplemented!()
+        if self.selected_is_gated() {
+            return Some(GATED_MESSAGE.to_string());
+        }
+        let Some(plan) = self.plan.as_ref() else {
+            return Some("Waiting for the file list of this repository.".to_string());
+        };
+        if matches!(plan.kind, PlanKind::Unsupported(_)) {
+            return Some("Ollama cannot import this repository.".to_string());
+        }
+        if self.selected_option.is_none() {
+            return Some("Choose a file or quantization first.".to_string());
+        }
+        if validate_model_name(&self.name).is_err() {
+            return Some(
+                "The model name is not valid. Use lowercase letters, digits, - _ . and at most one :tag."
+                    .to_string(),
+            );
+        }
+        if !ollama_reachable {
+            return Some("Ollama is not reachable. Start Ollama, then try again.".to_string());
+        }
+        None
     }
 
     /// True when the selected repository failed with a gated-access error.
     pub fn selected_is_gated(&self) -> bool {
-        unimplemented!()
+        matches!(
+            self.selected.as_ref().and_then(|id| self.infos.get(id)),
+            Some(Err(e)) if is_gated_error(e)
+        )
     }
 }
 
-#[allow(dead_code)]
-fn _keep(_: Compat) {
-    let _ = compat::bundled_supported;
-    let _ = options::gb;
+pub const GATED_MESSAGE: &str = "This repo needs a Hugging Face access token. Add one in Settings.";
+
+/// `Error::GatedRepo` renders as "gated repository: ..."; some servers also
+/// say "token" or "gated" in a plain HTTP body.
+pub fn is_gated_error(e: &str) -> bool {
+    let e = e.to_lowercase();
+    e.contains("gated") || e.contains("access token")
+}
+
+fn tag_of(label: &str) -> String {
+    label.to_lowercase().replace('_', "-")
 }
 
 #[cfg(test)]
