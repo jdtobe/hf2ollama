@@ -146,6 +146,34 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Res
     ui.add_enabled(enabled, b)
 }
 
+/// The mockup's switch: 38 x 22, accent track when on. Flips `on` when
+/// clicked (or activated from the keyboard) and marks the response changed.
+pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let t = tokens(ui);
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(38.0, 22.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let value = *on;
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, ui.is_enabled(), value, ""));
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        p.rect_filled(rect, 11.0, if value { t.accent } else { t.line });
+        let x = rect.left() + if value { 27.0 } else { 11.0 };
+        p.circle_filled(egui::pos2(x, rect.center().y), 8.0, Color32::WHITE);
+        if resp.has_focus() {
+            p.rect_stroke(
+                rect.expand(2.0),
+                13.0,
+                Stroke::new(2.0, t.accent),
+                StrokeKind::Outside,
+            );
+        }
+    }
+    resp
+}
+
 /// Compact secondary button; returns true when clicked.
 pub fn small_button(ui: &mut egui::Ui, text: &str) -> bool {
     small_button_response(ui, text).clicked()

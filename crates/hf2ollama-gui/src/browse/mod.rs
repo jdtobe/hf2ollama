@@ -161,6 +161,37 @@ pub(crate) mod test_util {
             urls
         }
 
+        /// Like `frame`, returning every text the frame painted (what a user
+        /// could read off the screen).
+        pub fn frame_texts(
+            &mut self,
+            size: egui::Vec2,
+            events: Vec<egui::Event>,
+            mut f: impl FnMut(&mut egui::Ui),
+        ) -> Vec<String> {
+            fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                    _ => {}
+                }
+            }
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let out = self.ctx.run_ui(input, |ui| f(ui));
+            let mut texts = Vec::new();
+            for clipped in &out.shapes {
+                collect(&clipped.shape, &mut texts);
+            }
+            out.drop_without_applying_deltas();
+            texts
+        }
+
         /// Runs one frame on a `size` screen with the given input events.
         pub fn frame(
             &mut self,
