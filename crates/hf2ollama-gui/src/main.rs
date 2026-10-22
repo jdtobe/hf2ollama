@@ -1,5 +1,7 @@
 mod app;
 mod browse;
+#[allow(dead_code)]
+mod dock;
 mod runtime;
 mod theme;
 mod widgets;
