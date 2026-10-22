@@ -137,6 +137,10 @@ struct Builder {
     table: Option<Vec<Vec<Vec<Span>>>>,
     row: Vec<Vec<Span>>,
     leaves: usize,
+    /// Spans and table cells kept so far.
+    items: usize,
+    /// Something was dropped without stopping the parse.
+    overflow: bool,
     truncated: bool,
 }
 
@@ -152,8 +156,23 @@ impl Builder {
         }
     }
 
+    /// True when one more span or cell may be kept. A full paragraph only
+    /// drops its remainder; a full document ends the parse.
+    fn room(&mut self) -> bool {
+        if self.spans.len() >= MAX_SPANS_PER_BLOCK {
+            self.overflow = true;
+            return false;
+        }
+        if self.items >= MAX_DOC_ITEMS {
+            self.truncated = true;
+            return false;
+        }
+        self.items += 1;
+        true
+    }
+
     fn add_span(&mut self, text: String) {
-        if text.is_empty() {
+        if text.is_empty() || !self.room() {
             return;
         }
         self.spans.push(Span {
@@ -248,7 +267,16 @@ impl Builder {
             Some(Inline::Heading(level)) if !spans.is_empty() => {
                 self.push_block(Block::Heading(level, spans));
             }
-            Some(Inline::Cell) => self.row.push(spans),
+            Some(Inline::Cell) => {
+                if self.row.len() >= MAX_TABLE_COLS {
+                    self.overflow = true;
+                } else if self.items >= MAX_DOC_ITEMS {
+                    self.truncated = true;
+                } else {
+                    self.items += 1;
+                    self.row.push(spans);
+                }
+            }
             _ => {}
         }
     }
@@ -280,7 +308,7 @@ impl Builder {
             Event::Code(s) => {
                 if let Some(alt) = &mut self.image_alt {
                     alt.push_str(&s);
-                } else {
+                } else if self.room() {
                     self.spans.push(Span {
                         text: s.into_string(),
                         strong: self.strong > 0,
@@ -388,7 +416,11 @@ impl Builder {
             TagEnd::TableHead | TagEnd::TableRow => {
                 let row = std::mem::take(&mut self.row);
                 if let Some(t) = &mut self.table {
-                    t.push(row);
+                    if t.len() >= MAX_TABLE_ROWS {
+                        self.overflow = true;
+                    } else {
+                        t.push(row);
+                    }
                 }
             }
             TagEnd::Table => {
@@ -415,7 +447,15 @@ impl Builder {
     }
 
     fn finish(mut self) -> (Vec<Block>, bool) {
-        if !self.truncated {
+        if self.truncated {
+            // Keep what was being built when the budget ran out.
+            if matches!(self.inline, Some(Inline::Paragraph | Inline::Heading(_))) {
+                self.end_inline();
+            }
+            if let Some(rows) = self.table.take() {
+                self.push_block(Block::Table(rows));
+            }
+        } else {
             self.flush_implicit();
         }
         while self.frames.len() > 1 {
@@ -425,13 +465,15 @@ impl Builder {
             Some(Frame::Root(v)) => v,
             _ => Vec::new(),
         };
-        (blocks, self.truncated)
+        (blocks, self.truncated || self.overflow)
     }
 }
 
 /// Removes tags, comments and the content of script and style elements,
 /// keeping the text between them.
 fn strip_html(src: &str) -> String {
+    // Lowercased once; ASCII lowercasing keeps every byte offset.
+    let lower_src = src.to_ascii_lowercase();
     let mut out = String::new();
     let mut rest = src;
     while let Some(i) = rest.find('<') {
@@ -459,7 +501,7 @@ fn strip_html(src: &str) -> String {
         rest = &tail[tag_end..];
         if matches!(name.as_str(), "script" | "style") && !tail.starts_with("</") {
             let close = format!("</{name}");
-            let lower = rest.to_ascii_lowercase();
+            let lower = &lower_src[src.len() - rest.len()..];
             rest = match lower.find(&close) {
                 Some(j) => {
                     let after = &rest[j..];
@@ -579,11 +621,12 @@ fn take(blocks: &[Block], b: &mut Budget) -> Vec<Block> {
             Block::Table(rows) => {
                 let mut kept = Vec::new();
                 for row in rows {
+                    let row: Vec<Vec<Span>> = row.iter().take(MAX_TABLE_COLS).cloned().collect();
                     let chars: usize = row.iter().map(|c| span_chars(c)).sum();
                     if b.lines >= 1 && b.chars >= chars {
                         b.lines -= 1;
                         b.chars -= chars;
-                        kept.push(row.clone());
+                        kept.push(row);
                     } else {
                         b.cut = true;
                         break;
