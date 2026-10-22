@@ -121,6 +121,14 @@ impl InstalledState {
                     })
                     .collect();
                 self.status = ListStatus::Loaded;
+                // Forget what belongs to rows that are gone.
+                let rows = &self.rows;
+                let live = |n: &str| rows.iter().any(|r| r.name() == n);
+                self.expanded.retain(|n| live(n));
+                self.details.retain(|n, _| live(n));
+                if self.armed.as_ref().is_some_and(|(n, _)| !live(n)) {
+                    self.armed = None;
+                }
             }
             Err(e) => self.status = ListStatus::Error(e.clone()),
         }
@@ -172,7 +180,15 @@ impl InstalledState {
         {
             self.armed = None;
         }
-        self.armed.as_ref().map(|(_, at)| *at + ARM_WINDOW)
+        if self.toast.as_ref().is_some_and(|t| now >= t.until) {
+            self.toast = None;
+        }
+        let armed = self.armed.as_ref().map(|(_, at)| *at + ARM_WINDOW);
+        let toast = self.toast.as_ref().map(|t| t.until);
+        match (armed, toast) {
+            (Some(a), Some(t)) => Some(a.min(t)),
+            (a, t) => a.or(t),
+        }
     }
 
     /// Bytes on disk by source, over every installed model.
@@ -187,33 +203,60 @@ impl InstalledState {
         })
     }
 
-    pub fn is_expanded(&self, _name: &str) -> bool {
-        unimplemented!("is_expanded")
+    pub fn is_expanded(&self, name: &str) -> bool {
+        self.expanded.contains(name)
     }
 
     /// Opens or closes a row's details. Returns the model name to ask the
     /// backend about when nothing usable is cached yet.
-    pub fn toggle_expanded(&mut self, _name: &str) -> Option<String> {
-        unimplemented!("toggle_expanded")
+    pub fn toggle_expanded(&mut self, name: &str) -> Option<String> {
+        if self.expanded.remove(name) {
+            return None;
+        }
+        self.expanded.insert(name.to_string());
+        match self.details.get(name) {
+            Some(DetailsState::Loaded(_) | DetailsState::Loading) => None,
+            Some(DetailsState::Error(_)) | None => {
+                self.details.insert(name.to_string(), DetailsState::Loading);
+                Some(name.to_string())
+            }
+        }
     }
 
-    pub fn details_of(&self, _name: &str) -> Option<&DetailsState> {
-        unimplemented!("details_of")
+    pub fn details_of(&self, name: &str) -> Option<&DetailsState> {
+        self.details.get(name)
     }
 
-    pub fn on_details(&mut self, _name: &str, _r: &Result<ModelDetails, String>) {
-        unimplemented!("on_details")
+    pub fn on_details(&mut self, name: &str, r: &Result<ModelDetails, String>) {
+        let state = match r {
+            Ok(d) => DetailsState::Loaded(d.clone()),
+            Err(e) => DetailsState::Error(e.clone()),
+        };
+        self.details.insert(name.to_string(), state);
     }
 
     /// Applies a finished delete. Returns true when the list should be
     /// re-read from Ollama to reconcile (after a success).
-    pub fn on_delete_done(&mut self, _name: &str, _r: &Result<(), String>, _now: Instant) -> bool {
-        unimplemented!("on_delete_done")
+    pub fn on_delete_done(&mut self, name: &str, r: &Result<(), String>, now: Instant) -> bool {
+        let (text, ok) = match r {
+            Ok(()) => {
+                self.rows.retain(|row| row.name() != name);
+                self.expanded.remove(name);
+                self.details.remove(name);
+                (format!("Deleted {name}"), true)
+            }
+            Err(e) => (format!("Could not delete {name}: {e}"), false),
+        };
+        self.toast = Some(Toast {
+            text,
+            until: now + TOAST_TIME,
+        });
+        ok
     }
 
     /// The toast to show, while it has not run out.
-    pub fn toast(&self, _now: Instant) -> Option<&Toast> {
-        unimplemented!("toast")
+    pub fn toast(&self, now: Instant) -> Option<&Toast> {
+        self.toast.as_ref().filter(|t| now < t.until)
     }
 
     /// Rows after the text filter, the source filter and the sort.
