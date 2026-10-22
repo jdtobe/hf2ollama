@@ -230,33 +230,54 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
             }
             let used = ui.cursor().top() - start;
             let secondary_max = (budget - 22.0 - used).max(0.0);
-            egui::ScrollArea::vertical()
-                .id_salt("card_secondary")
-                .min_scrolled_height(0.0)
-                .max_height(secondary_max)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    if let Some(r) = &reason {
-                        ui.label(RichText::new(r).size(12.0).color(t.warn));
-                    }
-                    if let Some((is_gguf, quantize, download, final_bytes, estimated)) = facts {
-                        ui.add_space(2.0);
-                        let labels = steps(is_gguf, quantize, delete_after);
-                        step_chips(ui, &labels);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            let dim =
-                                |s: &str| RichText::new(s.to_string()).size(12.0).color(t.fg3);
-                            let val = |s: String| RichText::new(s).font(mono(12.0));
-                            ui.label(dim("Temporary space"));
-                            ui.label(val(format!("{:.2} GB", gb(download))));
-                            ui.add_space(12.0);
-                            ui.label(dim("Final in Ollama"));
-                            let est = if estimated { "~" } else { "" };
-                            ui.label(val(format!("{est}{:.2} GB", gb(final_bytes))));
-                        });
-                    }
-                });
+            // The panel's own height lags a frame behind, so the region is
+            // sized explicitly: its content height from last frame, capped.
+            let nat_id = egui::Id::NULL.with("card_secondary_natural");
+            let natural: f32 = ui
+                .ctx()
+                .data(|d| d.get_temp(nat_id))
+                .unwrap_or(secondary_max);
+            let height = natural.min(secondary_max);
+            let width = ui.available_width();
+            let region = ui
+                .allocate_ui(vec2(width, height), |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("card_secondary")
+                        .min_scrolled_height(0.0)
+                        .max_height(height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if let Some(r) = &reason {
+                                ui.label(RichText::new(r).size(12.0).color(t.warn));
+                            }
+                            if let Some((is_gguf, quantize, download, final_bytes, estimated)) =
+                                facts
+                            {
+                                ui.add_space(2.0);
+                                let labels = steps(is_gguf, quantize, delete_after);
+                                step_chips(ui, &labels);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    let dim = |s: &str| {
+                                        RichText::new(s.to_string()).size(12.0).color(t.fg3)
+                                    };
+                                    let val = |s: String| RichText::new(s).font(mono(12.0));
+                                    ui.label(dim("Temporary space"));
+                                    ui.label(val(format!("{:.2} GB", gb(download))));
+                                    ui.add_space(12.0);
+                                    ui.label(dim("Final in Ollama"));
+                                    let est = if estimated { "~" } else { "" };
+                                    ui.label(val(format!("{est}{:.2} GB", gb(final_bytes))));
+                                });
+                            }
+                        })
+                })
+                .inner;
+            let content_h = region.content_size.y;
+            if (content_h - natural).abs() > 0.5 {
+                ui.ctx().data_mut(|d| d.insert_temp(nat_id, content_h));
+                ui.ctx().request_repaint();
+            }
         })
         .response
         .rect;
