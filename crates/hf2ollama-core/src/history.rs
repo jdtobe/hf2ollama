@@ -1,6 +1,7 @@
 //! Record of which Hugging Face repo each imported Ollama model came from.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -10,27 +11,62 @@ pub struct History {
     entries: BTreeMap<String, String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct Stored {
+    #[serde(default)]
+    imports: BTreeMap<String, String>,
+}
+
 impl History {
     /// Loads history from `path`; a missing file yields an empty history bound to `path`.
-    pub fn load(_path: &Path) -> Result<History> {
-        todo!()
+    pub fn load(path: &Path) -> Result<History> {
+        let entries = match std::fs::read_to_string(path) {
+            Ok(text) => {
+                serde_json::from_str::<Stored>(&text)
+                    .map_err(|e| Error::Parse(e.to_string()))?
+                    .imports
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => return Err(Error::Io(e.to_string())),
+        };
+        Ok(History {
+            path: path.to_path_buf(),
+            entries,
+        })
     }
 
-    pub fn record(&mut self, _ollama_name: &str, _repo_id: &str) {
-        todo!()
+    pub fn record(&mut self, ollama_name: &str, repo_id: &str) {
+        self.entries
+            .insert(ollama_name.to_string(), repo_id.to_string());
     }
 
-    pub fn source_of(&self, _ollama_name: &str) -> Option<&str> {
-        todo!()
+    pub fn source_of(&self, ollama_name: &str) -> Option<&str> {
+        self.entries.get(ollama_name).map(String::as_str)
     }
 
-    pub fn forget(&mut self, _ollama_name: &str) {
-        todo!()
+    pub fn forget(&mut self, ollama_name: &str) {
+        self.entries.remove(ollama_name);
     }
 
     /// Saves atomically: temp file in the same directory, then rename.
     pub fn save(&self) -> Result<()> {
-        todo!()
+        let stored = Stored {
+            imports: self.entries.clone(),
+        };
+        let text =
+            serde_json::to_string_pretty(&stored).map_err(|e| Error::Parse(e.to_string()))?;
+        let io = |e: std::io::Error| Error::Io(e.to_string());
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(io)?;
+        }
+        let mut tmp = self.path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, text).map_err(io)?;
+        std::fs::rename(&tmp, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            io(e)
+        })
     }
 }
 

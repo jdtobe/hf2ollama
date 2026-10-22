@@ -1,6 +1,6 @@
 //! Hugging Face token storage. The token is never logged or put in errors.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use std::sync::Mutex;
 
 pub trait TokenStore: Send + Sync {
@@ -9,26 +9,46 @@ pub trait TokenStore: Send + Sync {
     fn clear(&self) -> Result<()>;
 }
 
+const SERVICE: &str = "hf2ollama";
+const ACCOUNT: &str = "huggingface-token";
+
 /// OS keychain-backed store (service `hf2ollama`, account `huggingface-token`).
 #[derive(Debug, Default)]
 pub struct KeychainStore;
 
+// Keyring error text describes the failure, never the secret.
+fn keyring_err(e: keyring::Error) -> Error {
+    Error::Io(format!("keychain: {e}"))
+}
+
+fn entry() -> Result<keyring::Entry> {
+    keyring::Entry::new(SERVICE, ACCOUNT).map_err(keyring_err)
+}
+
 impl TokenStore for KeychainStore {
     fn get(&self) -> Result<Option<String>> {
-        todo!()
+        match entry()?.get_password() {
+            Ok(t) => Ok(Some(t)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(keyring_err(e)),
+        }
     }
-    fn set(&self, _token: &str) -> Result<()> {
-        todo!()
+
+    fn set(&self, token: &str) -> Result<()> {
+        entry()?.set_password(token).map_err(keyring_err)
     }
+
     fn clear(&self) -> Result<()> {
-        todo!()
+        match entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(keyring_err(e)),
+        }
     }
 }
 
 /// In-memory store for tests.
 #[derive(Default)]
 pub struct MemoryStore {
-    #[allow(dead_code)]
     token: Mutex<Option<String>>,
 }
 
@@ -40,15 +60,25 @@ impl std::fmt::Debug for MemoryStore {
     }
 }
 
+impl MemoryStore {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.token.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
 impl TokenStore for MemoryStore {
     fn get(&self) -> Result<Option<String>> {
-        todo!()
+        Ok(self.slot().clone())
     }
-    fn set(&self, _token: &str) -> Result<()> {
-        todo!()
+
+    fn set(&self, token: &str) -> Result<()> {
+        *self.slot() = Some(token.to_string());
+        Ok(())
     }
+
     fn clear(&self) -> Result<()> {
-        todo!()
+        *self.slot() = None;
+        Ok(())
     }
 }
 
