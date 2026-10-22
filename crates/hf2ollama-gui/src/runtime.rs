@@ -4,12 +4,17 @@
 use eframe::egui;
 use hf2ollama_core::config::Settings;
 use hf2ollama_core::events::{Command, JobEvent};
-use hf2ollama_core::hf::{ModelInfo, ModelSummary, SearchQuery};
-use hf2ollama_core::ollama::{InstalledModel, ModelDetails};
+use hf2ollama_core::hf::{HfClient, ModelInfo, ModelSummary, SearchQuery};
+use hf2ollama_core::history::History;
+use hf2ollama_core::ollama::{InstalledModel, ModelDetails, OllamaClient};
 use hf2ollama_core::paths::Paths;
-use hf2ollama_core::secrets::TokenStore;
+use hf2ollama_core::pipeline::{JobManager, PipelineCtx};
+use hf2ollama_core::secrets::{KeychainStore, TokenStore};
+use hf2ollama_core::staging::Staging;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone)]
 pub enum BackendRequest {
@@ -36,32 +41,261 @@ pub enum UiEvent {
     ConnectionTest(Result<String, String>),
 }
 
+/// How often the Ollama server is polled for its version.
+const STATUS_POLL: Duration = Duration::from_secs(10);
+
+/// Sends events to the UI and wakes the UI thread after each one.
+#[derive(Clone)]
+struct Emitter {
+    tx: Sender<UiEvent>,
+    ctx: egui::Context,
+}
+
+impl Emitter {
+    fn emit(&self, ev: UiEvent) {
+        // A closed channel only means the window is gone.
+        let _ = self.tx.send(ev);
+        self.ctx.request_repaint();
+    }
+}
+
+/// Everything rebuilt by `ApplySettings`.
+struct Clients {
+    hf: HfClient,
+    ollama: OllamaClient,
+    /// Older managers stay so their running jobs remain controllable; the
+    /// last one takes new imports.
+    managers: Vec<Arc<JobManager>>,
+}
+
+struct Shared {
+    clients: Mutex<Clients>,
+    history: Arc<Mutex<History>>,
+    paths: Paths,
+    store: Arc<dyn TokenStore>,
+    job_tx: Sender<JobEvent>,
+    handle: tokio::runtime::Handle,
+    out: Emitter,
+    recheck: Notify,
+}
+
+impl Shared {
+    fn clients(&self) -> MutexGuard<'_, Clients> {
+        self.clients.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn history(&self) -> MutexGuard<'_, History> {
+        self.history.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn pipeline_ctx(&self, settings: &Settings) -> PipelineCtx {
+        // A failed keychain read means no token, never a crash.
+        let token = self.store.get().ok().flatten();
+        let staging = settings
+            .staging_dir
+            .clone()
+            .unwrap_or_else(|| self.paths.default_staging.clone());
+        PipelineCtx {
+            hf: HfClient::new(&settings.hf_endpoint, token),
+            ollama: OllamaClient::new(&settings.ollama_url),
+            staging: Staging::new(staging),
+            settings: settings.clone(),
+            history: Arc::clone(&self.history),
+            log_dir: self.paths.log_dir.clone(),
+        }
+    }
+
+    fn install_settings(&self, settings: &Settings) {
+        let ctx = self.pipeline_ctx(settings);
+        let (hf, ollama) = (ctx.hf.clone(), ctx.ollama.clone());
+        let manager = Arc::new(JobManager::new(
+            ctx,
+            self.job_tx.clone(),
+            self.handle.clone(),
+        ));
+        let mut clients = self.clients();
+        clients.hf = hf;
+        clients.ollama = ollama;
+        clients.managers.push(manager);
+    }
+}
+
+fn text<T>(r: hf2ollama_core::error::Result<T>) -> Result<T, String> {
+    r.map_err(|e| e.to_string())
+}
+
+/// Handle to the running backend; see `Backend::spawn`.
 pub struct Backend;
 
 impl Backend {
+    /// Starts the backend with the OS keychain as token store.
     pub fn spawn(
         ctx: egui::Context,
         settings: Settings,
         paths: Paths,
     ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
-        Backend::spawn_with(
-            ctx,
-            settings,
-            paths,
-            Arc::new(hf2ollama_core::secrets::KeychainStore),
-        )
+        Backend::spawn_with(ctx, settings, paths, Arc::new(KeychainStore))
     }
 
+    /// Starts the backend on its own thread, which owns the tokio runtime for
+    /// the life of the app (it exits when the request sender is dropped).
     pub fn spawn_with(
-        _ctx: egui::Context,
-        _settings: Settings,
-        _paths: Paths,
-        _store: Arc<dyn TokenStore>,
+        ctx: egui::Context,
+        settings: Settings,
+        paths: Paths,
+        store: Arc<dyn TokenStore>,
     ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
-        let (tx, _) = std::sync::mpsc::channel();
-        let (_, rx) = std::sync::mpsc::channel();
-        (tx, rx)
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<BackendRequest>();
+        let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiEvent>();
+        let started = std::thread::Builder::new()
+            .name("hf2ollama-backend".into())
+            .spawn(move || run(ctx, settings, paths, store, req_rx, ui_tx));
+        if let Err(e) = started {
+            eprintln!("could not start the backend thread: {e}");
+        }
+        (req_tx, ui_rx)
     }
+}
+
+fn run(
+    ctx: egui::Context,
+    settings: Settings,
+    paths: Paths,
+    store: Arc<dyn TokenStore>,
+    req_rx: Receiver<BackendRequest>,
+    ui_tx: Sender<UiEvent>,
+) {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("could not start the async runtime: {e}");
+            return;
+        }
+    };
+    let out = Emitter { tx: ui_tx, ctx };
+    let history = History::load(&paths.history_file).or_else(|e| {
+        // Never overwrite an unreadable history file: work on a side file.
+        eprintln!("history unreadable ({e}); starting empty");
+        History::load(&paths.log_dir.join("history-unreadable.json"))
+    });
+    let Ok(history) = history else {
+        eprintln!("could not set up history; backend not started");
+        return;
+    };
+
+    let (job_tx, job_rx) = std::sync::mpsc::channel::<JobEvent>();
+    let forward = out.clone();
+    let forwarder = std::thread::Builder::new()
+        .name("hf2ollama-job-events".into())
+        .spawn(move || {
+            while let Ok(ev) = job_rx.recv() {
+                forward.emit(UiEvent::Job(ev));
+            }
+        });
+    if let Err(e) = forwarder {
+        eprintln!("could not start the job event forwarder: {e}");
+    }
+
+    let token = store.get().ok().flatten();
+    let shared = Arc::new(Shared {
+        clients: Mutex::new(Clients {
+            hf: HfClient::new(&settings.hf_endpoint, token),
+            ollama: OllamaClient::new(&settings.ollama_url),
+            managers: Vec::new(),
+        }),
+        history: Arc::new(Mutex::new(history)),
+        paths,
+        store,
+        job_tx,
+        handle: runtime.handle().clone(),
+        out,
+        recheck: Notify::new(),
+    });
+    shared.install_settings(&settings);
+
+    runtime.spawn(poll_status(Arc::clone(&shared)));
+    while let Ok(req) = req_rx.recv() {
+        dispatch(&shared, req);
+    }
+}
+
+async fn poll_status(shared: Arc<Shared>) {
+    loop {
+        let ollama = shared.clients().ollama.clone();
+        let version = ollama.version().await.ok();
+        shared.out.emit(UiEvent::OllamaStatus(version));
+        tokio::select! {
+            _ = tokio::time::sleep(STATUS_POLL) => {}
+            _ = shared.recheck.notified() => {}
+        }
+    }
+}
+
+fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
+    match req {
+        BackendRequest::Core(cmd) => {
+            let managers = shared.clients().managers.clone();
+            match (&cmd, managers.split_last()) {
+                (Command::StartImport(_), Some((current, _))) => {
+                    current.handle(cmd);
+                }
+                (_, _) => {
+                    for m in &managers {
+                        m.handle(cmd.clone());
+                    }
+                }
+            }
+        }
+        BackendRequest::ApplySettings(settings) => {
+            shared.install_settings(&settings);
+            shared.recheck.notify_one();
+        }
+        other => {
+            let shared = Arc::clone(shared);
+            shared.handle.clone().spawn(async move {
+                serve(&shared, other).await;
+            });
+        }
+    }
+}
+
+async fn serve(shared: &Shared, req: BackendRequest) {
+    let (hf, ollama) = {
+        let c = shared.clients();
+        (c.hf.clone(), c.ollama.clone())
+    };
+    let ev = match req {
+        BackendRequest::Search(q) => UiEvent::SearchDone(text(hf.search(&q).await)),
+        BackendRequest::ModelInfo(id) => {
+            let r = text(hf.model_info(&id).await);
+            UiEvent::ModelInfoLoaded(id, r)
+        }
+        BackendRequest::ListInstalled => UiEvent::InstalledLoaded(text(ollama.list().await)),
+        BackendRequest::ShowInstalled(name) => {
+            let r = text(ollama.show(&name).await);
+            UiEvent::InstalledDetails(name, r)
+        }
+        BackendRequest::DeleteInstalled(name) => {
+            let r = text(ollama.delete(&name).await);
+            if r.is_ok() {
+                let mut history = shared.history();
+                history.forget(&name);
+                if let Err(e) = history.save() {
+                    eprintln!("could not save history: {e}");
+                }
+            }
+            UiEvent::DeleteDone(name, r)
+        }
+        BackendRequest::TestConnection(url) => {
+            UiEvent::ConnectionTest(text(OllamaClient::new(&url).version().await))
+        }
+        // Handled synchronously in `dispatch`.
+        BackendRequest::Core(_) | BackendRequest::ApplySettings(_) => return,
+    };
+    shared.out.emit(ev);
 }
 
 #[cfg(test)]
