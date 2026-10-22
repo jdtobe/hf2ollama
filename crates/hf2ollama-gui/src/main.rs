@@ -60,6 +60,12 @@ fn view_override() -> Option<app::View> {
 /// instead of the system keychain, starting with `HF2O_MEMORY_TOKEN` when
 /// set. Only meant for screenshots and trials that must not touch the real
 /// keychain; inert unless set.
+/// Only the exact value `1` enables the in-memory token store.
+fn dev_memory_store_enabled(value: Option<&str>) -> bool {
+    let _ = value;
+    false
+}
+
 fn memory_token_store() -> Option<std::sync::Arc<dyn hf2ollama_core::secrets::TokenStore>> {
     use hf2ollama_core::secrets::{MemoryStore, TokenStore};
     std::env::var("HF2O_MEMORY_TOKEN_STORE").ok()?;
@@ -125,4 +131,26 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_exact_one_enables_the_memory_store() {
+        assert!(!dev_memory_store_enabled(None));
+        for v in ["", "0", "true", "yes", " 1", "1 ", "11"] {
+            assert!(!dev_memory_store_enabled(Some(v)), "{v:?}");
+        }
+        assert!(dev_memory_store_enabled(Some("1")));
+    }
+
+    #[cfg(not(feature = "dev-hooks"))]
+    #[test]
+    fn memory_token_store_is_absent_without_the_dev_hooks_feature() {
+        std::env::set_var("HF2O_MEMORY_TOKEN_STORE", "1");
+        std::env::set_var("HF2O_MEMORY_TOKEN", "hf_not_used");
+        assert!(memory_token_store().is_none());
+    }
 }

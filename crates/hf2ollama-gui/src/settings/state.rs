@@ -238,6 +238,16 @@ impl SettingsState {
         self.detected.as_ref()
     }
 
+    /// Marks that the token store is in memory only (dev-hooks builds).
+    pub fn set_dev_memory_store(&mut self, on: bool) {
+        let _ = on;
+    }
+
+    /// A note shown next to the token status in dev-hooks runs.
+    pub fn token_note(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Requests queued for the backend since the last call.
     pub fn take_requests(&mut self) -> Vec<BackendRequest> {
         std::mem::take(&mut self.pending)
@@ -1226,5 +1236,15 @@ mod tests {
             }
             std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+    }
+
+    #[test]
+    fn dev_memory_store_shows_a_not_persisted_note() {
+        let (_s, mut st) = fresh();
+        assert_eq!(st.token_note(), None);
+        st.set_dev_memory_store(true);
+        assert_eq!(st.token_note(), Some("dev: token not persisted"));
+        st.set_dev_memory_store(false);
+        assert_eq!(st.token_note(), None);
     }
 }
