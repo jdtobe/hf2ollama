@@ -187,6 +187,35 @@ impl InstalledState {
         })
     }
 
+    pub fn is_expanded(&self, _name: &str) -> bool {
+        unimplemented!("is_expanded")
+    }
+
+    /// Opens or closes a row's details. Returns the model name to ask the
+    /// backend about when nothing usable is cached yet.
+    pub fn toggle_expanded(&mut self, _name: &str) -> Option<String> {
+        unimplemented!("toggle_expanded")
+    }
+
+    pub fn details_of(&self, _name: &str) -> Option<&DetailsState> {
+        unimplemented!("details_of")
+    }
+
+    pub fn on_details(&mut self, _name: &str, _r: &Result<ModelDetails, String>) {
+        unimplemented!("on_details")
+    }
+
+    /// Applies a finished delete. Returns true when the list should be
+    /// re-read from Ollama to reconcile (after a success).
+    pub fn on_delete_done(&mut self, _name: &str, _r: &Result<(), String>, _now: Instant) -> bool {
+        unimplemented!("on_delete_done")
+    }
+
+    /// The toast to show, while it has not run out.
+    pub fn toast(&self, _now: Instant) -> Option<&Toast> {
+        unimplemented!("toast")
+    }
+
     /// Rows after the text filter, the source filter and the sort.
     pub fn visible(&self) -> Vec<&InstalledRow> {
         let needle = self.filter_text.trim().to_lowercase();
@@ -573,5 +602,101 @@ mod tests {
             Some("https://huggingface.co/o/qwen".to_string())
         );
         assert_eq!(url("alpha:1b"), None);
+    }
+
+    // ---- details, delete results, toast ----
+
+    fn details(family: &str) -> ModelDetails {
+        ModelDetails {
+            family: family.into(),
+            context: Some(32768),
+            capabilities: vec!["completion".into(), "tools".into()],
+            digest: "sha256:abc".into(),
+            template: None,
+        }
+    }
+
+    #[test]
+    fn details_requested_once_and_cached() {
+        let mut s = sample();
+        assert_eq!(s.toggle_expanded("alpha:1b"), Some("alpha:1b".to_string()));
+        assert!(s.is_expanded("alpha:1b"));
+        assert_eq!(s.details_of("alpha:1b"), Some(&DetailsState::Loading));
+        s.on_details("alpha:1b", &Ok(details("llama")));
+        assert_eq!(
+            s.details_of("alpha:1b"),
+            Some(&DetailsState::Loaded(details("llama")))
+        );
+        assert_eq!(s.toggle_expanded("alpha:1b"), None, "collapse");
+        assert!(!s.is_expanded("alpha:1b"));
+        assert_eq!(
+            s.toggle_expanded("alpha:1b"),
+            None,
+            "cached: no new request"
+        );
+        assert!(s.is_expanded("alpha:1b"));
+        // Another row is independent.
+        assert_eq!(s.toggle_expanded("beta:3b"), Some("beta:3b".to_string()));
+        // A failed lookup is retried the next time the row opens.
+        s.on_details("beta:3b", &Err("boom".into()));
+        assert_eq!(
+            s.details_of("beta:3b"),
+            Some(&DetailsState::Error("boom".into()))
+        );
+        s.toggle_expanded("beta:3b");
+        assert_eq!(s.toggle_expanded("beta:3b"), Some("beta:3b".to_string()));
+    }
+
+    #[test]
+    fn delete_ok_removes_row_and_toasts() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        s.toggle_expanded("alpha:1b");
+        assert!(
+            s.on_delete_done("alpha:1b", &Ok(()), t0),
+            "asks for a refresh"
+        );
+        assert!(names(&s).iter().all(|n| n != "alpha:1b"));
+        assert_eq!(s.rows().len(), 3);
+        assert!(!s.is_expanded("alpha:1b"));
+        assert_eq!(
+            s.toast(t0).map(|t| t.text.as_str()),
+            Some("Deleted alpha:1b")
+        );
+    }
+
+    #[test]
+    fn delete_error_keeps_row_and_shows_error() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        assert!(!s.on_delete_done("alpha:1b", &Err("model is in use".into()), t0));
+        assert_eq!(s.rows().len(), 4);
+        let text = s.toast(t0).map(|t| t.text.clone()).unwrap_or_default();
+        assert!(text.contains("model is in use"), "{text}");
+        assert!(text.contains("alpha:1b"), "{text}");
+    }
+
+    #[test]
+    fn toast_expires_after_4_seconds() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        s.on_delete_done("alpha:1b", &Ok(()), t0);
+        assert!(s.toast(t0 + Duration::from_millis(3_999)).is_some());
+        assert!(s.toast(t0 + Duration::from_secs(4)).is_none());
+        assert_eq!(s.tick(t0), Some(t0 + Duration::from_secs(4)));
+        assert_eq!(s.tick(t0 + Duration::from_secs(4)), None);
+    }
+
+    #[test]
+    fn list_errors_keep_the_message_and_reload_clears_it() {
+        let mut s = InstalledState::new();
+        assert_eq!(s.status, ListStatus::Loading);
+        s.on_installed_loaded(&Err("Ollama is not reachable".into()));
+        assert_eq!(
+            s.status,
+            ListStatus::Error("Ollama is not reachable".into())
+        );
+        s.on_installed_loaded(&Ok(vec![]));
+        assert_eq!(s.status, ListStatus::Loaded);
     }
 }
