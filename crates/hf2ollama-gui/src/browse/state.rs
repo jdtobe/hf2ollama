@@ -255,8 +255,15 @@ impl BrowseState {
     /// Folds a search answer in. Answers to other queries are ignored.
     pub fn on_search_done(&mut self, q: &SearchQuery, r: Result<Vec<ModelSummary>, String>) {
         if self.related_query.as_ref() == Some(q) {
-            let _ = r;
-            unimplemented!()
+            match r {
+                Ok(list) => {
+                    let own = self.related_for.clone().unwrap_or_default();
+                    self.related_list = list.into_iter().filter(|s| s.id != own).collect();
+                    self.related = SearchStatus::Done;
+                }
+                Err(e) => self.related = SearchStatus::Failed(friendly_error(&e)),
+            }
+            return;
         }
         if self.current_query.as_ref() != Some(q) {
             return;
@@ -326,14 +333,25 @@ impl BrowseState {
     /// Asks for the repository details of `id` once it is visible. Repos
     /// already requested are never requested again.
     pub fn want_info(&mut self, id: &str) {
-        let _ = id;
-        unimplemented!()
+        if !self.requested.contains(id) && !self.queued.iter().any(|q| q == id) {
+            self.queued.push_back(id.to_string());
+        }
     }
 
     /// Takes the lookups to start now: FIFO, at most `MAX_INFO_IN_FLIGHT`
     /// running at once.
     pub fn next_info_requests(&mut self) -> Vec<String> {
-        unimplemented!()
+        let mut out = Vec::new();
+        while self.in_flight.len() < MAX_INFO_IN_FLIGHT {
+            let Some(id) = self.queued.pop_front() else {
+                break;
+            };
+            if self.requested.insert(id.clone()) {
+                self.in_flight.insert(id.clone());
+                out.push(id);
+            }
+        }
+        out
     }
 
     /// True while the lookup of `id` has been asked for but not answered.
@@ -343,13 +361,37 @@ impl BrowseState {
 
     /// Forgets a failed lookup so it is asked for again (Retry button).
     pub fn retry_info(&mut self, id: &str) {
-        let _ = id;
-        unimplemented!()
+        self.infos.remove(id);
+        self.requested.remove(id);
+        self.in_flight.remove(id);
+        self.queued.retain(|q| q != id);
+        self.queued.push_front(id.to_string());
+        if self.selected.as_deref() == Some(id) {
+            self.rebuild_plan();
+        }
     }
 
     /// The related-GGUF search for an unsupported selection, sent once.
     pub fn next_related_request(&mut self) -> Option<SearchQuery> {
-        unimplemented!()
+        let id = self.selected.clone()?;
+        let unsupported = matches!(
+            self.plan.as_ref().map(|p| &p.kind),
+            Some(PlanKind::Unsupported(_))
+        );
+        if !unsupported || self.related_for.as_deref() == Some(id.as_str()) {
+            return None;
+        }
+        let q = SearchQuery {
+            text: id.rsplit('/').next().unwrap_or(&id).to_string(),
+            formats: vec![FormatFilter::Gguf],
+            sort: hf2ollama_core::hf::SortKey::Downloads,
+            limit: RELATED_LIMIT,
+        };
+        self.related_for = Some(id);
+        self.related_query = Some(q.clone());
+        self.related = SearchStatus::Loading;
+        self.related_list.clear();
+        Some(q)
     }
 
     pub fn related_repos(&self) -> &[ModelSummary] {
@@ -374,6 +416,7 @@ impl BrowseState {
 
     /// Stores a repository answer and rebuilds the plan if it is selected.
     pub fn on_model_info(&mut self, id: &str, result: Result<ModelInfo, String>) {
+        self.in_flight.remove(id);
         self.infos.insert(id.to_string(), result.map(Arc::new));
         self.apply_filters();
         if self.selected.as_deref() == Some(id) {
@@ -427,6 +470,10 @@ impl BrowseState {
             return;
         }
         self.selected = Some(id.to_string());
+        if !self.requested.contains(id) {
+            self.queued.retain(|q| q != id);
+            self.queued.push_front(id.to_string());
+        }
         // An edited name belonged to the previous repository.
         self.name_edited = false;
         self.name.clear();
