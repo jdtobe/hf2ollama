@@ -358,24 +358,68 @@ pub fn visible_columns(width: f32) -> Vec<Column> {
 
 /// Horizontal extent `(column, left, right)` of each column in a row
 /// `width` wide: fixed widths, gaps between, and Model taking the rest.
-pub fn column_spans(_cols: &[Column], _width: f32) -> Vec<(Column, f32, f32)> {
-    unimplemented!("column_spans")
+pub fn column_spans(cols: &[Column], width: f32) -> Vec<(Column, f32, f32)> {
+    let others: f32 = cols
+        .iter()
+        .filter(|c| **c != Column::Model)
+        .map(|c| column_width(*c) + COLUMN_GAP)
+        .sum();
+    let model = (width - others).max(0.0);
+    let mut x = 0.0;
+    cols.iter()
+        .map(|c| {
+            let w = if *c == Column::Model {
+                model
+            } else {
+                x += COLUMN_GAP;
+                column_width(*c)
+            };
+            let span = (*c, x, x + w);
+            x += w;
+            span
+        })
+        .collect()
 }
 
 /// What to paste in a terminal to chat with a model. Names with anything
 /// unusual in them are single-quoted so they stay one word.
-pub fn run_command(_name: &str) -> String {
-    unimplemented!("run_command")
+pub fn run_command(name: &str) -> String {
+    let plain = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@'));
+    if plain {
+        format!("ollama run {name}")
+    } else {
+        format!("ollama run '{}'", name.replace('\'', "'\\''"))
+    }
 }
 
 /// `sha256:` plus the first 12 hex characters, or the whole short string.
-pub fn short_digest(_digest: &str) -> String {
-    unimplemented!("short_digest")
+pub fn short_digest(digest: &str) -> String {
+    let digest = digest.trim();
+    if digest.is_empty() {
+        return "unknown".to_string();
+    }
+    match digest.strip_prefix("sha256:") {
+        Some(hex) if hex.chars().count() > 12 => {
+            format!("sha256:{}", hex.chars().take(12).collect::<String>())
+        }
+        _ => digest.to_string(),
+    }
 }
 
 /// `32768` as `32,768`.
-pub fn thousands(_n: u64) -> String {
-    unimplemented!("thousands")
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Seconds since the Unix epoch for an RFC 3339 timestamp such as
