@@ -354,6 +354,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hf_client_debug_redacts_the_token() {
+        let with = HfClient::new("http://localhost", Some("hf_secret_value".to_string()));
+        let shown = format!("{with:?}");
+        assert!(!shown.contains("hf_secret_value"), "{shown}");
+        assert!(shown.contains("<redacted>"), "{shown}");
+        let without = format!("{:?}", HfClient::new("http://localhost", None));
+        assert!(without.contains("token: None"), "{without}");
+    }
+
     #[tokio::test]
     async fn search_parses_fixture_into_summaries() {
         let server = MockServer::start().await;
