@@ -108,7 +108,7 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Res
     }))
     .fill(if enabled { t.accent } else { t.line })
     .stroke(Stroke::NONE)
-    .min_size(vec2(0.0, 36.0));
+    .min_size(vec2(0.0, 32.0));
     ui.add_enabled(enabled, b)
 }
 

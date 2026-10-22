@@ -127,7 +127,11 @@ pub fn step_chips(ui: &mut egui::Ui, labels: &[&str]) -> Vec<egui::Rect> {
 
 /// Draws the card for the selected repository and sends the import when the
 /// primary button is pressed.
-pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+///
+/// `budget` is the tallest the card may be. The name field and the button
+/// are always shown in full; the step chips, size lines and the disabled
+/// reason scroll inside whatever height is left.
+pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>, budget: f32) {
     let t = tokens(ui);
     let reachable = app.ollama.as_ref().map(|o| o.is_some());
     let reason = app.browse.import_block_reason(reachable);
@@ -162,9 +166,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
         .fill(t.surface2)
         .stroke(Stroke::new(1.0, t.line))
         .corner_radius(8.0)
-        .inner_margin(14.0)
+        .inner_margin(10.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let start = ui.cursor().top();
             caption(ui, "Model name in Ollama");
             let btn_w = ui
                 .painter()
@@ -177,10 +183,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
             let mut clicked = false;
             let edit = |ui: &mut egui::Ui, w: f32, app: &mut AppState| {
                 let r = ui.add_sized(
-                    vec2(w, 36.0),
+                    vec2(w, 32.0),
                     egui::TextEdit::singleline(&mut app.browse.name)
                         .font(mono(13.0))
-                        .margin(Margin::symmetric(10, 9)),
+                        .margin(Margin::symmetric(10, 7)),
                 );
                 if r.changed() {
                     app.browse.name_edited = true;
@@ -194,6 +200,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 ui.horizontal(|ui| {
                     edit(ui, avail - btn_w - 14.0, app);
                     let b = primary_button(ui, &label, reason.is_none());
+                    let b = match &reason {
+                        Some(r) => b.on_disabled_hover_text(r),
+                        None => b,
+                    };
                     #[cfg(test)]
                     {
                         app.browse.probe.button = Some(b.rect);
@@ -203,6 +213,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
             } else {
                 edit(ui, avail, app);
                 let b = primary_button(ui, &label, reason.is_none());
+                let b = match &reason {
+                    Some(r) => b.on_disabled_hover_text(r),
+                    None => b,
+                };
                 #[cfg(test)]
                 {
                     app.browse.probe.button = Some(b.rect);
@@ -214,25 +228,35 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                     out.push(BackendRequest::Core(Command::StartImport(req)));
                 }
             }
-            if let Some(r) = &reason {
-                ui.label(RichText::new(r).size(12.0).color(t.warn));
-            }
-            if let Some((is_gguf, quantize, download, final_bytes, estimated)) = facts {
-                ui.add_space(2.0);
-                let labels = steps(is_gguf, quantize, delete_after);
-                step_chips(ui, &labels);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let dim = |s: &str| RichText::new(s.to_string()).size(12.0).color(t.fg3);
-                    let val = |s: String| RichText::new(s).font(mono(12.0));
-                    ui.label(dim("Temporary space"));
-                    ui.label(val(format!("{:.2} GB", gb(download))));
-                    ui.add_space(12.0);
-                    ui.label(dim("Final in Ollama"));
-                    let est = if estimated { "~" } else { "" };
-                    ui.label(val(format!("{est}{:.2} GB", gb(final_bytes))));
+            let used = ui.cursor().top() - start;
+            let secondary_max = (budget - 22.0 - used).max(0.0);
+            egui::ScrollArea::vertical()
+                .id_salt("card_secondary")
+                .min_scrolled_height(0.0)
+                .max_height(secondary_max)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if let Some(r) = &reason {
+                        ui.label(RichText::new(r).size(12.0).color(t.warn));
+                    }
+                    if let Some((is_gguf, quantize, download, final_bytes, estimated)) = facts {
+                        ui.add_space(2.0);
+                        let labels = steps(is_gguf, quantize, delete_after);
+                        step_chips(ui, &labels);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let dim =
+                                |s: &str| RichText::new(s.to_string()).size(12.0).color(t.fg3);
+                            let val = |s: String| RichText::new(s).font(mono(12.0));
+                            ui.label(dim("Temporary space"));
+                            ui.label(val(format!("{:.2} GB", gb(download))));
+                            ui.add_space(12.0);
+                            ui.label(dim("Final in Ollama"));
+                            let est = if estimated { "~" } else { "" };
+                            ui.label(val(format!("{est}{:.2} GB", gb(final_bytes))));
+                        });
+                    }
                 });
-            }
         })
         .response
         .rect;

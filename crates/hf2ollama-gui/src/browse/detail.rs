@@ -9,7 +9,8 @@ use crate::runtime::BackendRequest;
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::{caption, fit_pill_kind, fit_pill_label, fit_text, pill_colors, small_button};
 use eframe::egui::{
-    self, vec2, Align2, CornerRadius, FontId, Margin, Rect, RichText, Sense, Stroke, StrokeKind,
+    self, vec2, Align2, Color32, CornerRadius, FontId, Margin, Rect, RichText, Sense, Stroke,
+    StrokeKind,
 };
 use hf2ollama_core::fit::{fit, Machine};
 use hf2ollama_core::hf::ModelInfo;
@@ -155,6 +156,8 @@ pub struct TableOut {
     pub header: Option<Rect>,
 }
 
+/// Height of the header bar that sticks to the top of the scroll area.
+const STICKY_H: f32 = 30.0;
 const TABLE_PAD: f32 = 14.0;
 const BAR_W: f32 = 56.0;
 const NOTE_MIN: f32 = 80.0;
@@ -164,7 +167,9 @@ const NOTE_MIN: f32 = 80.0;
 /// second line so nothing is clipped.
 pub fn options_table(
     ui: &mut egui::Ui,
+    title: &str,
     first_col: &str,
+    label: Option<Rect>,
     rows: &[OptionRow],
     selected: Option<usize>,
     machine: &Machine,
@@ -198,6 +203,30 @@ pub fn options_table(
     let quality_w = w - (TABLE_PAD * 4.0 + name_w + size_w + pill_w);
     let wide = quality_w >= BAR_W + 10.0 + NOTE_MIN;
 
+    let paint_header_labels = |ui: &egui::Ui, left: f32, cy: f32| {
+        let size_right = TABLE_PAD + name_w + TABLE_PAD + size_w;
+        let q_x = size_right + TABLE_PAD;
+        let pill_x = w - TABLE_PAD - pill_w;
+        for (x, text, right) in [
+            (TABLE_PAD, first_col, false),
+            (size_right, "SIZE", true),
+            (q_x, "QUALITY", false),
+            (pill_x, "ON YOUR MACHINE", false),
+        ] {
+            ui.painter().text(
+                egui::pos2(left + x, cy),
+                if right {
+                    Align2::RIGHT_CENTER
+                } else {
+                    Align2::LEFT_CENTER
+                },
+                text.to_uppercase(),
+                semibold(11.0),
+                t.fg3,
+            );
+        }
+    };
+
     let mut clicked = None;
     let mut top = None;
     let mut bottom = 0.0;
@@ -217,27 +246,7 @@ pub fn options_table(
             },
             t.surface2,
         );
-        let size_right = TABLE_PAD + name_w + TABLE_PAD + size_w;
-        let q_x = size_right + TABLE_PAD;
-        let pill_x = w - TABLE_PAD - pill_w;
-        for (x, label, right) in [
-            (TABLE_PAD, first_col, false),
-            (size_right, "SIZE", true),
-            (q_x, "QUALITY", false),
-            (pill_x, "ON YOUR MACHINE", false),
-        ] {
-            ui.painter().text(
-                egui::pos2(head.min.x + x, head.center().y),
-                if right {
-                    Align2::RIGHT_CENTER
-                } else {
-                    Align2::LEFT_CENTER
-                },
-                label.to_uppercase(),
-                semibold(11.0),
-                t.fg3,
-            );
-        }
+        paint_header_labels(ui, head.min.x, head.center().y);
     }
     let row_h = if wide { 38.0 } else { 62.0 };
     for (i, r) in rows.iter().enumerate() {
@@ -249,9 +258,20 @@ pub fn options_table(
         let sel = selected == Some(i);
         if sel {
             out.selected = Some(row);
-            // Only when it is out of view, so a short table keeps the header on screen.
-            if scroll_to_selected && !ui.clip_rect().contains_rect(row) {
-                ui.scroll_to_rect(row, Some(egui::Align::Center));
+            if scroll_to_selected {
+                // Show the section label, header and the row together when
+                // they fit the viewport; otherwise centre the row (the
+                // header is then kept on screen by the sticky bar).
+                let view = ui.clip_rect();
+                let from = label.map_or(top.map_or(row.top(), |p| p.y), |l| l.top());
+                let block = Rect::from_min_max(egui::pos2(row.left(), from), row.right_bottom());
+                if block.height() <= view.height() {
+                    if !view.contains_rect(block) {
+                        ui.scroll_to_rect(block, Some(egui::Align::Center));
+                    }
+                } else if !view.contains_rect(row) {
+                    ui.scroll_to_rect(row, Some(egui::Align::Center));
+                }
             }
             ui.painter().rect_filled(row, 0.0, t.accent_soft);
             ui.painter().rect_filled(
@@ -364,6 +384,26 @@ pub fn options_table(
         let table = Rect::from_min_max(top, egui::pos2(top.x + w, bottom));
         ui.painter()
             .rect_stroke(table, 8.0, Stroke::new(1.0, t.line), StrokeKind::Inside);
+        // Keep the header on screen while its rows scroll under it.
+        let view = ui.clip_rect();
+        if top.y < view.top() - 0.5 && bottom > view.top() + STICKY_H {
+            let bar = Rect::from_min_size(egui::pos2(top.x, view.top()), vec2(w, STICKY_H));
+            ui.painter().rect_filled(bar, 0.0, t.surface2);
+            ui.painter()
+                .hline(bar.x_range(), bar.bottom(), Stroke::new(1.0, t.line));
+            if wide {
+                paint_header_labels(ui, bar.min.x, bar.center().y);
+            } else {
+                ui.painter().text(
+                    egui::pos2(bar.min.x + TABLE_PAD, bar.center().y),
+                    Align2::LEFT_CENTER,
+                    title.to_uppercase(),
+                    semibold(11.0),
+                    t.fg3,
+                );
+            }
+            out.header = Some(bar);
+        }
     }
     ui.spacing_mut().item_spacing.y = 6.0;
     clicked
@@ -382,9 +422,17 @@ fn metadata(info: &ModelInfo) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Smallest height the scrolling part of the pane keeps when the pinned
-/// import card is tall (narrow windows wrap its chips).
-const MIN_SCROLL_H: f32 = 200.0;
+/// Smallest height the scrolling part of the pane keeps at any window size
+/// the app allows (see `MIN_WINDOW` in main.rs).
+const MIN_SCROLL_H: f32 = 160.0;
+/// Vertical margins of the detail pane (top plus bottom).
+const PANE_MARGIN_V: f32 = 28.0;
+/// Space between the header, the notices and the scroll area.
+const GAP: f32 = 6.0;
+/// What the header needs before it has been measured once.
+const DEFAULT_HEADER_H: f32 = 90.0;
+/// Smallest the pinned card may get: caption, name field and button.
+const CARD_MIN_H: f32 = 132.0;
 
 /// The detail pane: scrolling header, metadata and options, with the import
 /// card pinned below so the primary action is always visible.
@@ -394,8 +442,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     let card_visible = selected.as_deref().is_some_and(|id| {
         matches!(app.browse.info_for(id), Some(Ok(_))) || app.browse.selected_is_gated()
     });
+    // Height budget: header, notices, scroll area and the pinned card share
+    // the pane. The header and notices heights are measured every frame and
+    // reused by the card on the next one.
+    let budget_id = ui.id().with("detail_budget");
+    let (header_h, notices_h): (f32, f32) = ui
+        .ctx()
+        .data(|d| d.get_temp(budget_id))
+        .unwrap_or((DEFAULT_HEADER_H, 0.0));
+    let pane_h = ui.available_height();
+    let card_max = (pane_h - PANE_MARGIN_V - header_h - notices_h - MIN_SCROLL_H).max(CARD_MIN_H);
     if card_visible {
-        let max_h = (ui.available_height() - MIN_SCROLL_H).max(120.0);
+        let max_h = card_max;
         let card_panel = egui::Panel::bottom("plan_card")
             .resizable(false)
             .max_size(max_h)
@@ -406,11 +464,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                     .inner_margin(Margin {
                         left: 24,
                         right: 24,
-                        top: 12,
-                        bottom: 12,
+                        top: 8,
+                        bottom: 8,
                     }),
             )
-            .show(ui, |ui| plan_card::show(ui, app, out));
+            .show(ui, |ui| plan_card::show(ui, app, out, max_h - 18.0));
         #[cfg(test)]
         {
             app.browse.probe.card_panel = Some(card_panel.response.rect);
@@ -422,7 +480,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
         .frame(
             egui::Frame::new()
                 .fill(t.surface)
-                .inner_margin(Margin::symmetric(24, 20)),
+                .inner_margin(Margin::symmetric(24, 14)),
         )
         .show(ui, |ui| {
             let Some(id) = selected else {
@@ -432,19 +490,26 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 );
                 return;
             };
-            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.spacing_mut().item_spacing.y = GAP;
             let info = app.browse.info_for(&id).cloned();
+            let top = ui.cursor().top();
             header(
                 ui,
                 &id,
                 info.as_ref().and_then(|r| r.as_ref().ok()).map(|i| &**i),
             );
+            let measured_header_h = ui.cursor().top() - top;
             #[cfg(test)]
             {
                 app.browse.probe.pane = Some(ui.max_rect());
                 app.browse.probe.notices.clear();
             }
-            notices(ui, app, &id, info.as_ref());
+            let notices_used = notices(ui, app, &id, info.as_ref());
+            let now = (measured_header_h, notices_used);
+            if (now.0 - header_h).abs() > 0.5 || (now.1 - notices_h).abs() > 0.5 {
+                ui.ctx().data_mut(|d| d.insert_temp(budget_id, now));
+                ui.ctx().request_repaint();
+            }
             let scroll = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -478,7 +543,7 @@ fn notices(
     app: &mut AppState,
     id: &str,
     info: Option<&Result<std::sync::Arc<ModelInfo>, String>>,
-) {
+) -> f32 {
     let unsupported = match app.browse.plan().map(|p| &p.kind) {
         Some(PlanKind::Unsupported(reason)) => Some(reason.clone()),
         _ => None,
@@ -489,11 +554,42 @@ fn notices(
         None => false,
     };
     if !has_notice {
-        return;
+        return 0.0;
     }
-    let max_h = (ui.available_height() - MIN_SCROLL_H).max(60.0);
+    // Size the region to the measured height of its content, never more
+    // than what leaves the scroll area its minimum.
+    let width = ui.available_width();
+    let mut texts: Vec<String> = Vec::new();
+    let mut retry = false;
+    match info {
+        Some(Err(e)) => {
+            texts.push(if is_gated_error(e) {
+                GATED_MESSAGE.to_string()
+            } else {
+                crate::browse::state::friendly_error(e)
+            });
+            retry = true;
+        }
+        Some(Ok(_)) => {
+            if app.browse.selected_info_gated() {
+                texts.push(GATED_REPO_WARNING.to_string());
+            }
+            if let Some(reason) = &unsupported {
+                texts.push(format!("Ollama cannot import this repository. {reason}"));
+            }
+        }
+        None => {}
+    }
+    let mut natural: f32 = texts.iter().map(|t| callout_height(ui, t, width)).sum();
+    natural += GAP * texts.len().saturating_sub(1) as f32;
+    if retry {
+        natural += GAP + 24.0;
+    }
+    let cap = (ui.available_height() - GAP - MIN_SCROLL_H).max(0.0);
+    let max_h = (natural + 2.0).min(cap);
     let region = egui::ScrollArea::vertical()
         .id_salt("notices")
+        .min_scrolled_height(0.0)
         .max_height(max_h)
         .auto_shrink([false, true])
         .show(ui, |ui| {
@@ -512,12 +608,9 @@ fn notices(
                     }
                 }
                 Some(Ok(_)) => {
+                    // The header already links to the repository.
                     if app.browse.selected_info_gated() {
                         shown.push(callout(ui, true, GATED_REPO_WARNING));
-                        ui.hyperlink_to(
-                            RichText::new("Open on huggingface.co ↗").size(12.0),
-                            format!("https://huggingface.co/{id}"),
-                        );
                     }
                     if let Some(reason) = &unsupported {
                         shown.push(callout(
@@ -542,7 +635,18 @@ fn notices(
     }
     #[cfg(not(test))]
     let _ = region;
-    ui.add_space(6.0);
+    max_h + GAP
+}
+
+/// Height `callout` will take for `text` in a pane `width` wide.
+fn callout_height(ui: &egui::Ui, text: &str, width: f32) -> f32 {
+    let galley = ui.painter().layout(
+        text.to_string(),
+        FontId::proportional(13.0),
+        Color32::WHITE,
+        (width - 30.0).max(1.0),
+    );
+    galley.size().y + 22.0
 }
 
 fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
@@ -564,7 +668,7 @@ fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
             format!("https://huggingface.co/{id}"),
         );
     });
-    ui.add_space(10.0);
+    ui.add_space(2.0);
 }
 
 fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
@@ -585,6 +689,7 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
     match &plan.kind {
         PlanKind::Gguf(_) => {
             let label = caption(ui, "Choose a file");
+            let label_rect = label.rect;
             #[cfg(test)]
             {
                 app.browse.probe.table_label = Some(label.rect);
@@ -593,7 +698,9 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
             let _ = label;
             clicked = options_table(
                 ui,
+                "Choose a file",
                 "File",
+                Some(label_rect),
                 &plan.rows,
                 selected,
                 &app.machine,
@@ -613,6 +720,7 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
             );
             ui.add_space(6.0);
             let label = caption(ui, "Choose a quantization");
+            let label_rect = label.rect;
             #[cfg(test)]
             {
                 app.browse.probe.table_label = Some(label.rect);
@@ -621,7 +729,9 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
             let _ = label;
             clicked = options_table(
                 ui,
+                "Choose a quantization",
                 "Quantization",
+                Some(label_rect),
                 &plan.rows,
                 selected,
                 &app.machine,
@@ -842,7 +952,7 @@ mod tests {
             let before = app.browse.probe.card.expect("card painted");
             let start = app.browse.probe.scroll_offset;
             assert!(
-                (820.0 - before.bottom() - 13.0).abs() < 2.5,
+                (820.0 - before.bottom() - 9.0).abs() < 2.5,
                 "dark={dark}: card bottom {} not pinned near the pane bottom",
                 before.bottom()
             );

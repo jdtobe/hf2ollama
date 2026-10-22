@@ -18,12 +18,18 @@ fn theme_override() -> Option<ThemeChoice> {
     }
 }
 
-/// `HF2O_SIZE=WxH` overrides the initial window size, e.g. `900x820`. Only
-/// meant for taking screenshots at several widths.
+/// Smallest window the layout is designed and tested for (the detail pane
+/// budget in `browse::detail` assumes at least this much room).
+const MIN_WINDOW: [f32; 2] = [900.0, 640.0];
+
+/// `HF2O_SIZE=WxH` overrides the initial window size, e.g. `900x640`. Only
+/// meant for taking screenshots at several widths; it cannot go below
+/// `MIN_WINDOW`.
 fn size_override() -> Option<[f32; 2]> {
     let raw = std::env::var("HF2O_SIZE").ok()?;
     let (w, h) = raw.split_once('x')?;
-    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+    let (w, h): (f32, f32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    Some([w.max(MIN_WINDOW[0]), h.max(MIN_WINDOW[1])])
 }
 
 /// `HF2O_QUERY=text` fills the search box and `HF2O_SELECT=owner/name`
@@ -54,6 +60,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(size_override().unwrap_or([1180.0, 820.0]))
+            .with_min_inner_size(MIN_WINDOW)
             .with_title("hf2ollama"),
         ..Default::default()
     };
