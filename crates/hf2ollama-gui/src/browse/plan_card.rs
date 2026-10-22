@@ -1,12 +1,37 @@
 //! The import plan card: model name, pipeline step chips, sizes and the
 //! primary button.
 
-use eframe::egui;
+use super::options::gb;
+use super::results::format_size;
+use super::state::PlanKind;
+use crate::app::AppState;
+use crate::runtime::BackendRequest;
+use crate::theme::{mono, semibold, tokens};
+use crate::widgets::{caption, primary_button};
+use eframe::egui::{self, vec2, Margin, RichText, Sense, Stroke};
+use hf2ollama_core::events::Command;
 
 /// Pipeline steps shown as chips for the chosen import.
 pub fn steps(is_gguf: bool, quantize: bool, delete_after: bool) -> Vec<&'static str> {
-    let _ = (is_gguf, quantize, delete_after);
-    unimplemented!()
+    let mut v = vec![
+        "Download",
+        "Verify sha256",
+        if is_gguf {
+            "Upload blob(s)"
+        } else {
+            "Upload blobs"
+        },
+    ];
+    if !is_gguf && quantize {
+        v.push("Quantize");
+    }
+    v.push("Create model");
+    v.push(if delete_after {
+        "Delete staging"
+    } else {
+        "Keep files"
+    });
+    v
 }
 
 /// Where one chip goes: its row and x offset from the left edge.
@@ -19,15 +44,182 @@ pub struct ChipSlot {
 /// Flows chips of the given widths into rows no wider than `avail`. Chips on
 /// the same row are separated by `gap + sep_w + gap`.
 pub fn layout_chips(widths: &[f32], gap: f32, sep_w: f32, avail: f32) -> Vec<ChipSlot> {
-    let _ = (widths, gap, sep_w, avail);
-    unimplemented!()
+    let mut slots = Vec::with_capacity(widths.len());
+    let (mut row, mut end) = (0usize, None::<f32>);
+    for &w in widths {
+        let x = match end {
+            None => 0.0,
+            Some(e) => {
+                let next = e + gap + sep_w + gap;
+                if next + w > avail {
+                    row += 1;
+                    0.0
+                } else {
+                    next
+                }
+            }
+        };
+        slots.push(ChipSlot { row, x });
+        end = Some(x + w);
+    }
+    slots
 }
 
+/// Horizontal padding added to a chip label (7 px each side).
+pub const CHIP_PAD: f32 = 14.0;
+const CHIP_H: f32 = 20.0;
+const CHIP_ROW_GAP: f32 = 6.0;
+const CHIP_GAP: f32 = 4.0;
+const CHIP_SEP_W: f32 = 8.0;
+
 /// Draws the chips (wrapping to as many rows as needed) and returns their
-/// rectangles.
+/// rectangles. Chip widths are measured from the labels, so no label wraps.
 pub fn step_chips(ui: &mut egui::Ui, labels: &[&str]) -> Vec<egui::Rect> {
-    let _ = (ui, labels);
-    Vec::new()
+    let t = tokens(ui);
+    let galleys: Vec<_> = labels
+        .iter()
+        .map(|l| {
+            ui.painter()
+                .layout_no_wrap((*l).to_string(), mono(11.0), t.fg2)
+        })
+        .collect();
+    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + CHIP_PAD).collect();
+    let avail = ui.available_width();
+    let slots = layout_chips(&widths, CHIP_GAP, CHIP_SEP_W, avail);
+    let rows = slots.last().map_or(0, |s| s.row + 1);
+    if rows == 0 {
+        return Vec::new();
+    }
+    let height = rows as f32 * CHIP_H + (rows - 1) as f32 * CHIP_ROW_GAP;
+    let (area, _) = ui.allocate_exact_size(vec2(avail, height), Sense::hover());
+    let mut rects: Vec<egui::Rect> = Vec::with_capacity(labels.len());
+    for ((slot, w), galley) in slots.iter().zip(&widths).zip(galleys) {
+        let min = area.min + vec2(slot.x, slot.row as f32 * (CHIP_H + CHIP_ROW_GAP));
+        let rect = egui::Rect::from_min_size(min, vec2(*w, CHIP_H));
+        if let Some(prev) = rects.last() {
+            if (prev.min.y - rect.min.y).abs() < 0.5 {
+                let sep = egui::Rect::from_min_max(
+                    egui::pos2(prev.max.x, rect.min.y),
+                    egui::pos2(rect.min.x, rect.max.y),
+                );
+                ui.painter().text(
+                    sep.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "›",
+                    egui::FontId::proportional(12.0),
+                    t.fg3,
+                );
+            }
+        }
+        ui.painter().rect_filled(rect, 4.0, t.surface);
+        ui.painter().rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(1.0, t.line),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter()
+            .galley(rect.center() - galley.size() / 2.0, galley, t.fg2);
+        rects.push(rect);
+    }
+    rects
+}
+
+/// Draws the card for the selected repository and sends the import when the
+/// primary button is pressed.
+pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+    let t = tokens(ui);
+    let reachable = matches!(app.ollama, Some(Some(_)));
+    let reason = app.browse.import_block_reason(reachable);
+    let delete_after = app.delete_after_import;
+
+    // (is_gguf, quantize chosen, download bytes, final bytes, final is an estimate)
+    let mut facts = None;
+    if let (Some(plan), Some(i)) = (app.browse.plan(), app.browse.selected_option()) {
+        if let Some(row) = plan.rows.get(i) {
+            let is_gguf = matches!(plan.kind, PlanKind::Gguf(_));
+            let download = match plan.kind {
+                PlanKind::Safetensors(_) => {
+                    plan.rows.first().map_or(row.size_bytes, |r| r.size_bytes)
+                }
+                _ => row.size_bytes,
+            };
+            facts = Some((
+                is_gguf,
+                row.quantize.is_some(),
+                download,
+                row.size_bytes,
+                row.estimated,
+            ));
+        }
+    }
+    let label = match facts {
+        Some((_, _, download, _, _)) => format!("Download & import · {}", format_size(download)),
+        None => "Download & import".to_string(),
+    };
+
+    egui::Frame::new()
+        .fill(t.surface2)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(8.0)
+        .inner_margin(14.0)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            caption(ui, "Model name in Ollama");
+            let btn_w = ui
+                .painter()
+                .layout_no_wrap(label.clone(), semibold(14.0), t.fg)
+                .size()
+                .x
+                + 28.0;
+            let avail = ui.available_width();
+            let side_by_side = avail >= btn_w + 14.0 + 220.0;
+            let mut clicked = false;
+            let edit = |ui: &mut egui::Ui, w: f32, app: &mut AppState| {
+                let r = ui.add_sized(
+                    vec2(w, 36.0),
+                    egui::TextEdit::singleline(&mut app.browse.name)
+                        .font(mono(13.0))
+                        .margin(Margin::symmetric(10, 9)),
+                );
+                if r.changed() {
+                    app.browse.name_edited = true;
+                }
+            };
+            if side_by_side {
+                ui.horizontal(|ui| {
+                    edit(ui, avail - btn_w - 14.0, app);
+                    clicked = primary_button(ui, &label, reason.is_none());
+                });
+            } else {
+                edit(ui, avail, app);
+                clicked = primary_button(ui, &label, reason.is_none());
+            }
+            if clicked {
+                if let Some(req) = app.browse.import_request() {
+                    out.push(BackendRequest::Core(Command::StartImport(req)));
+                }
+            }
+            if let Some(r) = &reason {
+                ui.label(RichText::new(r).size(12.0).color(t.warn));
+            }
+            if let Some((is_gguf, quantize, download, final_bytes, estimated)) = facts {
+                ui.add_space(2.0);
+                let labels = steps(is_gguf, quantize, delete_after);
+                step_chips(ui, &labels);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let dim = |s: &str| RichText::new(s.to_string()).size(12.0).color(t.fg3);
+                    let val = |s: String| RichText::new(s).font(mono(12.0));
+                    ui.label(dim("Temporary space"));
+                    ui.label(val(format!("{:.2} GB", gb(download))));
+                    ui.add_space(12.0);
+                    ui.label(dim("Final in Ollama"));
+                    let est = if estimated { "~" } else { "" };
+                    ui.label(val(format!("{est}{:.2} GB", gb(final_bytes))));
+                });
+            }
+        });
 }
 
 #[cfg(test)]
@@ -129,6 +321,3 @@ mod tests {
         }
     }
 }
-
-/// Horizontal padding added to a chip label (7 px each side).
-pub const CHIP_PAD: f32 = 14.0;

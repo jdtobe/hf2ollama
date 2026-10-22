@@ -1,5 +1,6 @@
 //! Application shell: top bar, downloads dock, status bar and view bodies.
 
+use crate::browse::state::BrowseState;
 use crate::runtime::{BackendRequest, UiEvent};
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::segmented_nav;
@@ -39,6 +40,7 @@ pub struct AppState {
     pub delete_after_import: bool,
     /// Detected or overridden once at startup; NVML probing is not free.
     pub machine: Machine,
+    pub browse: BrowseState,
     /// Where the status pill was last painted (for layout tests).
     pub pill_rect: Option<egui::Rect>,
 }
@@ -57,6 +59,10 @@ impl AppState {
                 ram_gb: 0.0,
                 vram_gb: None,
             },
+            browse: BrowseState::new(Machine {
+                ram_gb: 0.0,
+                vram_gb: None,
+            }),
             pill_rect: None,
         }
     }
@@ -78,8 +84,16 @@ impl AppState {
                 self.installed_count = Some(models.len());
                 None
             }
-            // Job, search, detail and delete events belong to the views that
-            // are built next.
+            UiEvent::SearchDone(q, r) => {
+                self.browse.on_search_done(q, r.clone());
+                None
+            }
+            UiEvent::ModelInfoLoaded(id, r) => {
+                self.browse.on_model_info(id, r.clone());
+                None
+            }
+            // Job, installed and delete events belong to the views that are
+            // built next.
             _ => None,
         }
     }
@@ -118,6 +132,7 @@ impl App {
         state.ollama_host = host_of(&settings.ollama_url);
         state.staging_dir = staging_dir;
         state.delete_after_import = settings.delete_after_import;
+        state.browse = BrowseState::new(machine.clone());
         state.machine = machine;
         App { state, tx, rx }
     }
@@ -272,21 +287,29 @@ impl App {
                 });
             });
 
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(t.surface)
-                    .inner_margin(Margin::symmetric(24, 20)),
-            )
-            .show(ui, |ui| {
-                let text = match self.state.view {
-                    View::Browse => "Browse coming next",
-                    View::Installed => "Installed models coming next",
-                    View::Settings => "Settings coming next",
-                };
-                ui.heading(self.state.view.label());
-                ui.label(RichText::new(text).color(t.fg3));
-            });
+        if self.state.view == View::Browse {
+            let mut requests = Vec::new();
+            crate::browse::show(ui, &mut self.state, &mut requests);
+            for r in requests {
+                let _ = self.tx.send(r);
+            }
+        } else {
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(t.surface)
+                        .inner_margin(Margin::symmetric(24, 20)),
+                )
+                .show(ui, |ui| {
+                    let text = match self.state.view {
+                        View::Browse => "",
+                        View::Installed => "Installed models coming next",
+                        View::Settings => "Settings coming next",
+                    };
+                    ui.heading(self.state.view.label());
+                    ui.label(RichText::new(text).color(t.fg3));
+                });
+        }
     }
 }
 

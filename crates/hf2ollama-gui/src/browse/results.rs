@@ -1,6 +1,14 @@
 //! The results list: rows, loading, error and empty states, plus the small
 //! number and date formatters the Browse view shares.
 
+use super::state::SearchStatus;
+use crate::app::AppState;
+use crate::runtime::BackendRequest;
+use crate::theme::{semibold, tokens};
+use crate::widgets::{small_button, tag};
+use eframe::egui::{self, vec2, Margin, Rect, RichText, Sense, Stroke, UiBuilder};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 /// `412300` -> `412k`, `1_900_000` -> `1.9M`, small numbers as they are.
 pub fn compact_count(n: u64) -> String {
     let scaled = |div: f64, unit: &str| {
@@ -64,6 +72,184 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.2} GB", bytes as f64 / 1e9)
     } else {
         format!("{} MB", bytes / 1_000_000)
+    }
+}
+
+/// Shortens long architecture names so the tags row never overflows.
+fn shorten(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
+const ROW_H: f32 = 88.0;
+
+/// The results column.
+pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+    let t = tokens(ui);
+    egui::Panel::left("results")
+        .default_size(350.0)
+        .size_range(300.0..=420.0)
+        .frame(
+            egui::Frame::new()
+                .fill(t.surface)
+                .stroke(Stroke::new(1.0, t.line)),
+        )
+        .show(ui, |ui| {
+            let visible = app.browse.visible_len();
+            let loaded = app.browse.loaded_len();
+            let head = match (&app.browse.search, visible == loaded) {
+                (SearchStatus::Loading, _) if loaded == 0 => "Searching…".to_string(),
+                (_, true) => format!("{visible} results"),
+                (_, false) => format!("{visible} of {loaded} results"),
+            };
+            egui::Frame::new()
+                .inner_margin(Margin::symmetric(16, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(head).size(12.0).color(t.fg3));
+                });
+            ui.painter().hline(
+                ui.min_rect().x_range(),
+                ui.min_rect().bottom(),
+                Stroke::new(1.0, t.line),
+            );
+            match app.browse.search.clone() {
+                SearchStatus::Loading if loaded == 0 => {
+                    message_box(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new("Searching Hugging Face…").color(t.fg3));
+                        });
+                    });
+                }
+                SearchStatus::Failed(msg) => {
+                    message_box(ui, |ui| {
+                        ui.label(RichText::new("The search did not work").font(semibold(14.0)));
+                        ui.label(RichText::new(msg).size(13.0).color(t.fg2));
+                        if small_button(ui, "Retry") {
+                            let q = app.browse.search_now(&app.query);
+                            out.push(BackendRequest::Search(q));
+                        }
+                    });
+                }
+                _ if visible == 0 => {
+                    let text = if loaded > 0 {
+                        format!(
+                            "{loaded} results are hidden by your filters. Loosen the filters on the left to see them."
+                        )
+                    } else if app.query.trim().is_empty() {
+                        "No models came back from Hugging Face.".to_string()
+                    } else {
+                        format!("No models found for “{}”. Try different words.", app.query.trim())
+                    };
+                    if app.browse.search != SearchStatus::Idle {
+                        message_box(ui, |ui| {
+                            ui.label(RichText::new(text).size(13.0).color(t.fg2));
+                        });
+                    }
+                }
+                _ => rows(ui, app),
+            }
+        });
+}
+
+fn message_box(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .inner_margin(Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+}
+
+fn rows(ui: &mut egui::Ui, app: &mut AppState) {
+    let t = tokens(ui);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let list: Vec<_> = app
+        .browse
+        .visible()
+        .map(|s| app.browse.enriched(s))
+        .collect();
+    let selected = app.browse.selected_id().map(str::to_string);
+    let mut picked = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (i, m) in list.iter().enumerate() {
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+                if ui.is_rect_visible(rect) {
+                    app.browse.want_info(&m.id);
+                }
+                let on = selected.as_deref() == Some(m.id.as_str());
+                if on {
+                    ui.painter().rect_filled(rect, 0.0, t.accent_soft);
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(rect.min, vec2(3.0, rect.height())),
+                        0.0,
+                        t.accent,
+                    );
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(rect, 0.0, t.surface2);
+                }
+                ui.painter()
+                    .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, t.line));
+                ui.scope_builder(
+                    UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 10.0))),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.label(RichText::new(format!("{}/", m.owner)).color(t.fg3));
+                            ui.add(
+                                egui::Label::new(RichText::new(&m.name).font(semibold(14.0)))
+                                    .truncate(),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if m.is_safetensors && !m.is_gguf {
+                                tag(ui, "Safetensors", t.warn, t.warn_soft);
+                            } else if m.is_gguf {
+                                tag(ui, "GGUF", t.ok, t.ok_soft);
+                            } else {
+                                tag(ui, "Other", t.fg2, t.surface2);
+                            }
+                            let pending = app.browse.info_pending(&m.id);
+                            for value in [&m.params, &m.arch] {
+                                match value {
+                                    Some(v) => tag(ui, &shorten(v, 16), t.fg2, t.surface2),
+                                    None if pending => tag(ui, "…", t.fg3, t.surface2),
+                                    None => {}
+                                }
+                            }
+                        });
+                        ui.label(
+                            RichText::new(format!(
+                                "↓ {}  ·  {} likes  ·  {}",
+                                compact_count(m.downloads),
+                                compact_count(m.likes),
+                                relative_age(&m.updated, now)
+                            ))
+                            .size(12.0)
+                            .color(t.fg3),
+                        );
+                    },
+                );
+                if resp.clicked() {
+                    picked = Some(i);
+                }
+            }
+        });
+    if let Some(i) = picked {
+        app.browse.select_model(i);
     }
 }
 

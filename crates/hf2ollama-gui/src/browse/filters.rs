@@ -1,6 +1,10 @@
 //! Filter model for the Browse rail. Format and sort re-query Hugging Face;
 //! parameter, task and "fits my machine" filters apply to loaded results.
 
+use crate::app::AppState;
+use crate::theme::tokens;
+use crate::widgets::caption;
+use eframe::egui::{self, Margin, RichText, Stroke};
 use hf2ollama_core::fit::Machine;
 use hf2ollama_core::hf::{FormatFilter, ModelSummary, SortKey};
 
@@ -176,6 +180,99 @@ pub fn passes(summary: &ModelSummary, f: &Filters, machine: &Machine) -> bool {
 const FOUR_BIT_GB_PER_B: f32 = 0.6;
 const FIT_OVERHEAD_GB: f32 = 1.5;
 
+/// The "Detected ..." line under "Only models that fit".
+pub fn machine_line(m: &Machine) -> String {
+    let ram = if m.ram_gb > 0.0 {
+        format!("{:.0} GB RAM", m.ram_gb)
+    } else {
+        "RAM not detected".to_string()
+    };
+    match m.vram_gb {
+        Some(v) => format!("Detected {v:.0} GB VRAM, {ram}"),
+        None => format!("VRAM not detected, {ram}. You can set VRAM yourself in Settings."),
+    }
+}
+
+fn sort_label(s: SortKey) -> &'static str {
+    match s {
+        SortKey::Downloads => "Most downloads",
+        SortKey::Trending => "Trending",
+        SortKey::Updated => "Recently updated",
+        SortKey::Likes => "Most likes",
+    }
+}
+
+/// The left filter rail.
+pub fn show(ui: &mut egui::Ui, app: &mut AppState) {
+    let t = tokens(ui);
+    let before = app.browse.filters.clone();
+    let machine = app.machine.clone();
+    let f = &mut app.browse.filters;
+    egui::Panel::left("filters")
+        .exact_size(200.0)
+        .resizable(false)
+        .frame(
+            egui::Frame::new()
+                .fill(t.surface2)
+                .inner_margin(Margin::same(16))
+                .stroke(Stroke::new(1.0, t.line)),
+        )
+        .show(ui, |ui| {
+            caption(ui, "Format");
+            ui.checkbox(&mut f.gguf, "GGUF");
+            ui.checkbox(&mut f.safetensors, "Safetensors");
+            ui.checkbox(&mut f.other, "PyTorch / other");
+            ui.add_space(10.0);
+
+            caption(ui, "Parameters");
+            egui::ComboBox::from_id_salt("params")
+                .selected_text(f.params.label())
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for p in ParamRange::ALL {
+                        ui.selectable_value(&mut f.params, p, p.label());
+                    }
+                });
+            ui.add_space(10.0);
+
+            caption(ui, "Fits my machine");
+            ui.checkbox(&mut f.only_fit, "Only models that fit");
+            ui.add(
+                egui::Label::new(
+                    RichText::new(machine_line(&machine))
+                        .size(12.0)
+                        .color(t.fg3),
+                )
+                .wrap(),
+            );
+            ui.add_space(10.0);
+
+            caption(ui, "Task");
+            ui.checkbox(&mut f.text, "Text generation");
+            ui.checkbox(&mut f.embeddings, "Embeddings");
+            ui.checkbox(&mut f.vision, "Vision / multimodal");
+            ui.add_space(10.0);
+
+            caption(ui, "Sort by");
+            egui::ComboBox::from_id_salt("sort")
+                .selected_text(sort_label(f.sort))
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for s in [
+                        SortKey::Downloads,
+                        SortKey::Trending,
+                        SortKey::Updated,
+                        SortKey::Likes,
+                    ] {
+                        ui.selectable_value(&mut f.sort, s, sort_label(s));
+                    }
+                });
+        });
+    if app.browse.filters != before {
+        app.browse.apply_filters();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +297,17 @@ mod tests {
             ram_gb: ram,
             vram_gb: vram,
         }
+    }
+
+    #[test]
+    fn machine_line_is_honest_about_unknown_vram() {
+        assert_eq!(
+            machine_line(&machine(32.0, Some(16.0))),
+            "Detected 16 GB VRAM, 32 GB RAM"
+        );
+        let unknown = machine_line(&machine(32.0, None));
+        assert!(unknown.contains("VRAM not detected") && unknown.contains("Settings"));
+        assert!(machine_line(&machine(0.0, None)).contains("RAM not detected"));
     }
 
     #[test]

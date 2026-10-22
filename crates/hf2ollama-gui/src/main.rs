@@ -1,7 +1,3 @@
-// The Browse, Installed and Settings views (next tasks) consume the rest of
-// the widget and backend API; until then parts of it are unused.
-#![allow(dead_code)]
-
 mod app;
 mod browse;
 mod runtime;

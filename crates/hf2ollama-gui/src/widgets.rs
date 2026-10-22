@@ -86,6 +86,8 @@ pub fn tag(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) {
         });
 }
 
+// TODO(task 16 Installed): used by the Installed table.
+#[allow(dead_code)]
 /// Thin horizontal quality bar; `frac` is clamped to 0..=1.
 pub fn quality_bar(ui: &mut egui::Ui, frac: f32, width: f32) {
     let t = tokens(ui);
@@ -183,6 +185,8 @@ pub fn segmented_nav(
     clicked
 }
 
+// TODO(task 16 Installed): used by the Installed table.
+#[allow(dead_code)]
 /// Rounded status pill showing the fit estimate.
 pub fn fit_pill(ui: &mut egui::Ui, fit: Fit) {
     let t = tokens(ui);
