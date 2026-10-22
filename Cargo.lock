@@ -1894,6 +1894,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "hf2ollama-core",
+ "serde_json",
  "tempfile",
  "tokio",
  "wiremock",
