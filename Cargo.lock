@@ -1894,7 +1894,9 @@ dependencies = [
  "eframe",
  "egui_extras",
  "hf2ollama-core",
+ "tempfile",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]

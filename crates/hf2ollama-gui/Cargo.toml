@@ -7,4 +7,8 @@ edition = "2021"
 eframe = "0.37"
 egui_extras = "0.37"
 hf2ollama-core = { version = "0.1.0", path = "../hf2ollama-core" }
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+wiremock = "0.6.5"
