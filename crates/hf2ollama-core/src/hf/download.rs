@@ -47,6 +47,21 @@ pub fn safe_join(base: &Path, rel: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// The start offset of a `Content-Range: bytes N-M/T` header, if well formed.
+fn content_range_start(resp: &reqwest::Response) -> Option<u64> {
+    let v = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)?
+        .to_str()
+        .ok()?;
+    v.strip_prefix("bytes ")?
+        .split('-')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 fn part_path(final_path: &Path) -> PathBuf {
     let mut s = final_path.as_os_str().to_os_string();
     s.push(".part");
@@ -133,13 +148,20 @@ impl HfClient {
             existing = 0;
         }
         if resp.is_none() && existing == 0 {
-            resp = Some(self.send_checked(self.get(url), Some(repo_id)).await?);
+            resp = Some(
+                self.send_checked(self.get(url.clone()), Some(repo_id))
+                    .await?,
+            );
         }
-        // A 200 answer to a ranged request means the server ignored the range.
-        let resumed =
-            matches!(&resp, Some(r) if r.status() == reqwest::StatusCode::PARTIAL_CONTENT);
-        if resp.is_some() && !resumed {
-            existing = 0;
+        if let Some(r) = &resp {
+            if r.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                // A 200 answer to a ranged request: the server ignored the range.
+                existing = 0;
+            } else if content_range_start(r) != Some(existing) {
+                // A 206 that does not start where we resume: restart in full.
+                existing = 0;
+                resp = Some(self.send_checked(self.get(url), Some(repo_id)).await?);
+            }
         }
 
         let mut hashers = Hashers::new(file);
@@ -370,7 +392,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/acme/model/resolve/main/m.gguf"))
             .and(header("range", "bytes=4000-"))
-            .respond_with(ResponseTemplate::new(206).set_body_bytes(data[4000..].to_vec()))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("content-range", "bytes 4000-9999/10000")
+                    .set_body_bytes(data[4000..].to_vec()),
+            )
             .expect(1)
             .mount(&server)
             .await;
