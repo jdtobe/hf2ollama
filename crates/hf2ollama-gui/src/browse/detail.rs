@@ -446,7 +446,7 @@ fn metadata(info: &ModelInfo) -> Vec<(&'static str, String)> {
 /// the app allows (see `MIN_WINDOW` in main.rs). The `Files | About` switch
 /// is pinned above it (it used to scroll, so this was 160 with the switch
 /// inside it).
-pub(crate) const MIN_SCROLL_H: f32 = 120.0;
+pub(crate) const MIN_SCROLL_H: f32 = 108.0;
 /// Vertical margins of the detail pane (top plus bottom).
 const PANE_MARGIN_V: f32 = 28.0;
 /// Space between the header, the notices and the scroll area.
