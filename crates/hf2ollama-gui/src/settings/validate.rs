@@ -1,38 +1,129 @@
 //! Pure validation of settings fields. No egui in here.
 
-#![allow(dead_code)] // stubs until the Settings state uses them
+#![allow(dead_code)] // used from the settings state in the next commit
 
 use std::path::Path;
+
+const URL_HINT: &str =
+    "Enter an address starting with http:// or https://, like http://localhost:11434";
 
 /// A server address: `http://` or `https://`, a host, an optional port.
 /// Returns the trimmed value without a trailing slash.
 pub fn validate_ollama_url(raw: &str) -> Result<String, String> {
-    let _ = raw;
-    Err("not implemented".to_string())
+    validate_url(raw)
 }
 
 /// Same rules as the Ollama address.
 pub fn validate_hf_endpoint(raw: &str) -> Result<String, String> {
-    let _ = raw;
-    Err("not implemented".to_string())
+    validate_url(raw)
+}
+
+fn validate_url(raw: &str) -> Result<String, String> {
+    let url = raw.trim();
+    if url.is_empty() {
+        return Err(URL_HINT.to_string());
+    }
+    let lower = url.to_ascii_lowercase();
+    let rest = if lower.starts_with("http://") {
+        &url["http://".len()..]
+    } else if lower.starts_with("https://") {
+        &url["https://".len()..]
+    } else {
+        return Err(URL_HINT.to_string());
+    };
+    if rest.chars().any(char::is_whitespace) {
+        return Err("The address cannot contain spaces.".to_string());
+    }
+    if rest.contains('?') || rest.contains('#') {
+        return Err("Leave out the query and fragment: use only host, port and path.".to_string());
+    }
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return Err("Do not put a user name or password in the address.".to_string());
+    }
+    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
+        let (host, after) = inner
+            .split_once(']')
+            .ok_or_else(|| "The address has an unclosed [".to_string())?;
+        (host, after.strip_prefix(':'))
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        return Err("The address needs a host name, like localhost.".to_string());
+    }
+    if let Some(p) = port {
+        match p.parse::<u16>() {
+            Ok(n) if n >= 1 => {}
+            _ => return Err("The port must be a number from 1 to 65535.".to_string()),
+        }
+    }
+    Ok(url.trim_end_matches('/').to_string())
 }
 
 /// An existing writable directory, or a missing path whose parent exists and
 /// is a writable directory. A file path is never accepted.
 pub fn validate_staging_dir(path: &Path) -> Result<(), String> {
-    let _ = path;
-    Ok(())
+    if path.as_os_str().is_empty() {
+        return Err("Enter a folder path.".to_string());
+    }
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_dir() => writable(path),
+        Ok(_) => Err("That path is not a folder (it is a file).".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            match std::fs::metadata(parent) {
+                Ok(m) if m.is_dir() => writable(parent),
+                Ok(_) => Err("The parent of that path is not a folder.".to_string()),
+                Err(_) => Err("The parent folder does not exist.".to_string()),
+            }
+        }
+        Err(e) => Err(format!("Cannot read that path: {e}")),
+    }
+}
+
+/// Creates and removes a tiny file to find out whether `dir` accepts writes.
+fn writable(dir: &Path) -> Result<(), String> {
+    let probe = dir.join(format!(".hf2ollama-write-test-{}", std::process::id()));
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(_) => Err("That folder is not writable.".to_string()),
+    }
 }
 
 /// Simultaneous downloads stay within 1 to 3.
 pub fn clamp_max_parallel(n: u8) -> u8 {
-    n
+    n.clamp(1, 3)
 }
+
+/// Largest value accepted: 100 000 GB (100 TB) is beyond any real machine.
+const MAX_GB: f32 = 100_000.0;
 
 /// A positive, finite number of gigabytes (a comma is accepted as decimal point).
 pub fn parse_gb(raw: &str) -> Result<f32, String> {
-    let _ = raw;
-    Ok(0.0)
+    let text = raw.trim().replace(',', ".");
+    if text.is_empty() {
+        return Err("Enter a number of GB.".to_string());
+    }
+    let n: f32 = text
+        .parse()
+        .map_err(|_| "Enter a number, like 16.".to_string())?;
+    if !n.is_finite() || n <= 0.0 {
+        return Err("Enter a number greater than 0.".to_string());
+    }
+    if n > MAX_GB {
+        return Err("That is more memory than any machine has.".to_string());
+    }
+    Ok(n)
 }
 
 #[cfg(test)]
