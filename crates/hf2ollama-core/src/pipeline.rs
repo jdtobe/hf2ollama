@@ -39,9 +39,38 @@ pub const DEFAULT_RETRY_BASE: Duration = Duration::from_secs(1);
 
 /// How long to wait before retry number `attempt` (1-based) of a failed
 /// download, or `None` when the error is not worth retrying.
-fn retry_wait(_err: &Error, _attempt: u32, _base: Duration) -> Option<Duration> {
-    None
+fn retry_wait(err: &Error, attempt: u32, base: Duration) -> Option<Duration> {
+    let hint = match err {
+        Error::Network(_) => None,
+        Error::Http { status, body } if *status == 429 || (500..600).contains(status) => {
+            retry_after_hint(body)
+        }
+        _ => return None,
+    };
+    let backoff = base.saturating_mul(1u32 << attempt.saturating_sub(1).min(16));
+    Some(backoff.max(hint.unwrap_or_default()).min(MAX_RETRY_WAIT))
 }
+
+/// The most a single retry waits, whatever the server asks for.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
+
+/// The wait from a "retry after Ns" note in an error body.
+fn retry_after_hint(body: &str) -> Option<Duration> {
+    let rest = body.split("retry after ").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok().map(Duration::from_secs)
+}
+
+fn wait_text(d: Duration) -> String {
+    if d.subsec_millis() == 0 {
+        format!("{} s", d.as_secs())
+    } else {
+        format!("{} ms", d.as_millis())
+    }
+}
+
+/// Retries per file after the first attempt.
+const MAX_RETRIES: u32 = 3;
 
 /// `HH:MM:SS` in UTC.
 fn utc_clock(now: SystemTime) -> String {
@@ -238,18 +267,44 @@ impl Run<'_> {
             ctl.checkpoint().await?;
             let (id, tx) = (self.id, self.tx);
             let offset = base;
-            let d = raced(
-                ctl,
-                ctx.hf
-                    .download(&req.repo_id, file, &dir_path, ctl, &mut |done, _| {
-                        let _ = tx.send(JobEvent::Progress {
-                            id,
-                            done: offset + done,
-                            total,
-                        });
-                    }),
-            )
-            .await?;
+            let mut high = offset;
+            let mut retries = 0u32;
+            let d = loop {
+                let attempt = raced(
+                    ctl,
+                    ctx.hf
+                        .download(&req.repo_id, file, &dir_path, ctl, &mut |done, _| {
+                            high = high.max(offset.saturating_add(done));
+                            let _ = tx.send(JobEvent::Progress {
+                                id,
+                                done: high,
+                                total,
+                            });
+                        }),
+                )
+                .await;
+                let err = match attempt {
+                    Ok(d) => break d,
+                    Err(e) => e,
+                };
+                let Some(wait) = (retries < MAX_RETRIES)
+                    .then(|| retry_wait(&err, retries + 1, ctx.retry_base))
+                    .flatten()
+                else {
+                    return Err(err);
+                };
+                retries += 1;
+                self.log.log(&format!(
+                    "{err}; retrying in {} (attempt {retries} of {MAX_RETRIES})",
+                    wait_text(wait)
+                ));
+                tokio::select! {
+                    biased;
+                    () = ctl.cancelled() => return Err(Error::Cancelled),
+                    () = tokio::time::sleep(wait) => {}
+                }
+                ctl.checkpoint().await?;
+            };
             base += file.size;
             let _ = self.tx.send(JobEvent::Progress {
                 id,
