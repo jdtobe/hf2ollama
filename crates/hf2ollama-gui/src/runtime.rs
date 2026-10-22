@@ -186,6 +186,7 @@ impl Shared {
             settings: settings.clone(),
             history: Arc::clone(&self.history),
             log_dir: self.paths.log_dir.clone(),
+            retry_base: hf2ollama_core::pipeline::DEFAULT_RETRY_BASE,
         }
     }
 

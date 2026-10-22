@@ -313,6 +313,7 @@ impl Harness {
             settings,
             history: Arc::new(Mutex::new(history)),
             log_dir: dir.path().join("logs"),
+            retry_base: hf2ollama_core::pipeline::DEFAULT_RETRY_BASE,
         };
         Harness {
             _dir: dir,

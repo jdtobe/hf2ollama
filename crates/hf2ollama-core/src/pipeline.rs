@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Everything a job needs besides its own request.
 #[derive(Clone)]
@@ -30,6 +30,17 @@ pub struct PipelineCtx {
     pub settings: Settings,
     pub history: Arc<Mutex<History>>,
     pub log_dir: PathBuf,
+    /// First wait before retrying a failed download; doubles on each retry.
+    pub retry_base: Duration,
+}
+
+/// The default first retry wait: 1 s, then 2 s, then 4 s.
+pub const DEFAULT_RETRY_BASE: Duration = Duration::from_secs(1);
+
+/// How long to wait before retry number `attempt` (1-based) of a failed
+/// download, or `None` when the error is not worth retrying.
+fn retry_wait(_err: &Error, _attempt: u32, _base: Duration) -> Option<Duration> {
+    None
 }
 
 /// `HH:MM:SS` in UTC.
@@ -613,6 +624,7 @@ mod tests {
                     History::load(&tmp.path().join("history.json")).unwrap(),
                 )),
                 log_dir: tmp.path().join("logs"),
+                retry_base: Duration::from_millis(10),
             };
             Env {
                 hf,
@@ -1478,5 +1490,328 @@ mod tests {
             let r = raced(&ctl, async { Ok::<u32, Error>(7) }).await;
             assert_eq!(r, Ok(7));
         }
+    }
+
+    // ---- download retry ----
+
+    enum Step {
+        /// Announce the full length, send `n` bytes, then close.
+        Drop(usize),
+        /// Serve normally, honouring a `Range: bytes=N-` request.
+        Serve,
+    }
+
+    /// A raw HTTP server that follows `script` (the last step repeats) and
+    /// records each request head.
+    async fn flaky_server(data: Vec<u8>, script: Vec<Step>) -> (String, Arc<Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            let mut n = 0usize;
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let mut got = Vec::new();
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(k) => got.extend_from_slice(&buf[..k]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&got).to_string();
+                let start: usize = head
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("range: bytes=")
+                            .map(str::to_string)
+                    })
+                    .and_then(|r| r.trim_end_matches('-').parse().ok())
+                    .unwrap_or(0);
+                log.lock().unwrap().push(head);
+                let step = &script[n.min(script.len() - 1)];
+                n += 1;
+                match step {
+                    Step::Drop(k) => {
+                        let h = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                            data.len()
+                        );
+                        let _ = sock.write_all(h.as_bytes()).await;
+                        let _ = sock.write_all(&data[..*k]).await;
+                        let _ = sock.shutdown().await;
+                    }
+                    Step::Serve => {
+                        let h = if start > 0 {
+                            format!(
+                                "HTTP/1.1 206 Partial Content\r\ncontent-range: bytes {start}-{}/{}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                                data.len() - 1,
+                                data.len(),
+                                data.len() - start
+                            )
+                        } else {
+                            format!(
+                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                                data.len()
+                            )
+                        };
+                        let _ = sock.write_all(h.as_bytes()).await;
+                        let _ = sock.write_all(&data[start..]).await;
+                        let _ = sock.shutdown().await;
+                    }
+                }
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    fn retry_lines(events: &[JobEvent]) -> Vec<String> {
+        log_lines(events)
+            .into_iter()
+            .filter(|l| l.contains("retrying in"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn download_retries_after_a_dropped_connection_and_resumes_from_the_part_file() {
+        let mut env = Env::new().await;
+        let data = payload(20_000, 1);
+        let (url, seen) = flaky_server(data.clone(), vec![Step::Drop(7000), Step::Serve]).await;
+        env.ctx.hf = HfClient::new(&url, None);
+        env.ollama_basics(&[]).await;
+        env.blob(&data, 404).await;
+        env.create_ok(json!({
+            "model": "tiny",
+            "files": {"tiny.gguf": digest_of(&data)},
+            "stream": true
+        }))
+        .await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            env.run(1, request("tiny", vec![lfs_file("tiny.gguf", &data)])),
+        )
+        .await
+        .expect("hung");
+        let events = env.events();
+        assert_eq!(result, Ok(()), "{:?}", log_lines(&events));
+        let retries = retry_lines(&events);
+        assert_eq!(retries.len(), 1, "{retries:?}");
+        assert!(retries[0].contains("network error"), "{retries:?}");
+        assert!(retries[0].contains("attempt 1 of 3"), "{retries:?}");
+        let heads = seen.lock().unwrap().clone();
+        assert_eq!(heads.len(), 2, "{heads:?}");
+        assert!(
+            heads[1].to_ascii_lowercase().contains("range: bytes=7000-"),
+            "{}",
+            heads[1]
+        );
+        let progress: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                JobEvent::Progress { done, .. } => Some(*done),
+                _ => None,
+            })
+            .collect();
+        assert!(progress.windows(2).all(|w| w[0] <= w[1]), "{progress:?}");
+        // The blob mock matches the exact bytes and digest, so the file and hash were right.
+    }
+
+    #[tokio::test]
+    async fn retry_gives_up_after_three_attempts_with_the_last_error() {
+        let env = Env::new().await;
+        env.ollama_basics(&[]).await;
+        let data = payload(100, 2);
+        Mock::given(method("GET"))
+            .and(path(format!("/{REPO}/resolve/main/tiny.gguf")))
+            .respond_with(ResponseTemplate::new(503).set_body_string("down"))
+            .expect(4)
+            .mount(&env.hf)
+            .await;
+        let err = env
+            .run(1, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Http { status: 503, .. }), "{err:?}");
+        let events = env.events();
+        assert_eq!(retry_lines(&events).len(), 3, "{:?}", log_lines(&events));
+        assert!(matches!(events.last(), Some(JobEvent::Failed { .. })));
+    }
+
+    #[tokio::test]
+    async fn retry_is_not_attempted_for_hash_mismatch_or_gated() {
+        // Hash mismatch: served once, never retried.
+        let (env, req) = mismatch_env().await;
+        let err = env.run(1, req).await.unwrap_err();
+        assert!(matches!(err, Error::HashMismatch { .. }), "{err:?}");
+        assert!(retry_lines(&env.events()).is_empty());
+
+        // Gated: one request only.
+        let env = Env::new().await;
+        env.ollama_basics(&[]).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{REPO}/resolve/main/tiny.gguf")))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&env.hf)
+            .await;
+        let data = payload(100, 4);
+        let err = env
+            .run(2, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::GatedRepo(_)), "{err:?}");
+        assert!(retry_lines(&env.events()).is_empty());
+
+        // A 404 is not transient either.
+        let env = Env::new().await;
+        env.ollama_basics(&[]).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{REPO}/resolve/main/tiny.gguf")))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&env.hf)
+            .await;
+        let err = env
+            .run(3, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Http { status: 404, .. }), "{err:?}");
+        assert!(retry_lines(&env.events()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_backoff_returns_cancelled_promptly() {
+        let mut env = Env::new().await;
+        env.ctx.retry_base = Duration::from_secs(30);
+        env.ollama_basics(&[]).await;
+        let data = payload(100, 5);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&env.hf)
+            .await;
+        let ctl = JobControl::new();
+        let (ctx, tx) = (env.ctx.clone(), env.tx.clone());
+        let req = request("tiny", vec![lfs_file("tiny.gguf", &data)]);
+        let c2 = ctl.clone();
+        let task = tokio::spawn(async move { run_import(&ctx, JobId(1), req, c2, tx).await });
+        let started = std::time::Instant::now();
+        loop {
+            let seen = env
+                .rx
+                .try_iter()
+                .any(|e| matches!(e, JobEvent::Log { line, .. } if line.contains("retrying in")));
+            if seen {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "no retry started"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        ctl.cancel();
+        let r = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("cancel during backoff hung")
+            .unwrap();
+        assert_eq!(r, Err(Error::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn retry_after_5xx_then_success() {
+        let env = Env::new().await;
+        let data = payload(5000, 0);
+        Mock::given(method("GET"))
+            .and(path(format!("/{REPO}/resolve/main/tiny.gguf")))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&env.hf)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{REPO}/resolve/main/tiny.gguf")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(data.clone()))
+            .with_priority(5)
+            .mount(&env.hf)
+            .await;
+        env.ollama_basics(&[]).await;
+        env.blob(&data, 404).await;
+        env.create_ok(json!({
+            "model": "tiny",
+            "files": {"tiny.gguf": digest_of(&data)},
+            "stream": true
+        }))
+        .await;
+        env.run(1, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+            .await
+            .unwrap();
+        let events = env.events();
+        assert_eq!(retry_lines(&events).len(), 1);
+        assert!(
+            retry_lines(&events)[0].contains("503"),
+            "{:?}",
+            retry_lines(&events)
+        );
+    }
+
+    #[test]
+    fn retry_policy_covers_network_5xx_and_429_only_and_caps_the_hint() {
+        let base = Duration::from_secs(1);
+        assert!(retry_wait(&Error::Network("x".into()), 1, base).is_some());
+        assert!(retry_wait(
+            &Error::Http {
+                status: 502,
+                body: String::new()
+            },
+            1,
+            base
+        )
+        .is_some());
+        assert!(retry_wait(
+            &Error::Http {
+                status: 429,
+                body: String::new()
+            },
+            1,
+            base
+        )
+        .is_some());
+        for e in [
+            Error::Http {
+                status: 404,
+                body: String::new(),
+            },
+            Error::Http {
+                status: 403,
+                body: String::new(),
+            },
+            Error::HashMismatch { file: "f".into() },
+            Error::GatedRepo("r".into()),
+            Error::UnsafePath("p".into()),
+            Error::Cancelled,
+            Error::InsufficientSpace {
+                needed: 1,
+                available: 0,
+            },
+            Error::Io("x".into()),
+        ] {
+            assert!(retry_wait(&e, 1, base).is_none(), "{e:?}");
+        }
+        let net = Error::Network("x".into());
+        assert_eq!(retry_wait(&net, 1, base), Some(Duration::from_secs(1)));
+        assert_eq!(retry_wait(&net, 2, base), Some(Duration::from_secs(2)));
+        assert_eq!(retry_wait(&net, 3, base), Some(Duration::from_secs(4)));
+        let limited = Error::Http {
+            status: 429,
+            body: "rate limited, retry after 12s".into(),
+        };
+        assert_eq!(retry_wait(&limited, 1, base), Some(Duration::from_secs(12)));
+        let huge = Error::Http {
+            status: 429,
+            body: "rate limited, retry after 9999s".into(),
+        };
+        assert_eq!(retry_wait(&huge, 1, base), Some(Duration::from_secs(30)));
     }
 }
