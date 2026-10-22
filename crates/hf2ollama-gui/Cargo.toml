@@ -1,7 +1,12 @@
 [package]
 name = "hf2ollama-gui"
 version = "0.1.0"
-edition = "2021"
+description = "Desktop app that finds models on Hugging Face and imports them into a local Ollama."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [features]
 # Screenshot and trial hooks (in-memory token store). Off in release builds.
