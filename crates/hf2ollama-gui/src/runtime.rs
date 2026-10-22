@@ -11,6 +11,7 @@ use hf2ollama_core::paths::Paths;
 use hf2ollama_core::pipeline::{JobManager, PipelineCtx};
 use hf2ollama_core::secrets::{KeychainStore, TokenStore};
 use hf2ollama_core::staging::Staging;
+use std::ops::Not;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -143,6 +144,22 @@ impl Shared {
         clients.ollama = ollama;
         clients.managers.push(manager);
     }
+}
+
+/// The recorded source of an installed name; tags from `/api/tags` are
+/// full (`name:tag`), while history may hold the short form of `:latest`.
+fn source_for(history: &History, name: &str) -> Option<String> {
+    let short = name.strip_suffix(":latest");
+    history
+        .source_of(name)
+        .or_else(|| short.and_then(|s| history.source_of(s)))
+        .or_else(|| {
+            name.contains(':')
+                .not()
+                .then(|| history.source_of(&format!("{name}:latest")))
+                .flatten()
+        })
+        .map(str::to_string)
 }
 
 fn text<T>(r: hf2ollama_core::error::Result<T>) -> Result<T, String> {
@@ -315,11 +332,12 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         }
         BackendRequest::ListInstalled => {
             let r = text(ollama.list().await).map(|models| {
+                let history = shared.history();
                 models
                     .into_iter()
                     .map(|model| InstalledEntry {
+                        source_repo: source_for(&history, &model.name),
                         model,
-                        source_repo: None,
                     })
                     .collect()
             });
