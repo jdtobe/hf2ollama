@@ -124,7 +124,36 @@ impl InstalledState {
 
     /// Rows after the text filter, the source filter and the sort.
     pub fn visible(&self) -> Vec<&InstalledRow> {
-        unimplemented!("visible")
+        let needle = self.filter_text.trim().to_lowercase();
+        let mut rows: Vec<&InstalledRow> = self
+            .rows
+            .iter()
+            .filter(|r| needle.is_empty() || r.name().to_lowercase().contains(&needle))
+            .filter(|r| match self.source {
+                SourceFilter::All => true,
+                SourceFilter::Imported => r.source_repo.is_some(),
+                SourceFilter::Library => r.source_repo.is_none(),
+            })
+            .collect();
+        match self.sort {
+            SortKey::Size => rows.sort_by(|a, b| {
+                b.model
+                    .size
+                    .cmp(&a.model.size)
+                    .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
+            }),
+            SortKey::Name => rows.sort_by_key(|r| r.name().to_lowercase()),
+            SortKey::Modified => rows.sort_by(|a, b| {
+                let (ta, tb) = (
+                    parse_rfc3339(&a.model.modified),
+                    parse_rfc3339(&b.model.modified),
+                );
+                // `Some` beats `None`, and a later time beats an earlier one.
+                tb.cmp(&ta)
+                    .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
+            }),
+        }
+        rows
     }
 }
 
