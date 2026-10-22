@@ -240,7 +240,6 @@ impl JobsState {
     }
 
     /// Ids of queued, running and paused jobs.
-    #[allow(dead_code)] // used by the quit confirmation
     pub fn unsettled_ids(&self) -> Vec<JobId> {
         self.rows
             .iter()

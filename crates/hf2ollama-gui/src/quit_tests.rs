@@ -219,6 +219,9 @@ fn held_enter_key_never_confirms_quit_and_cancel() {
     let (mut app, rx) = app_with_jobs();
     let mut h = Harness::new(false);
     let (w, hh) = size;
+    // Enter goes down before the dialog exists and stays down (a held key).
+    run(&mut app, &mut h, size, 2);
+    h.frame(vec2(w, hh), vec![key(true, false)], |ui| app.show(ui));
     app.process_close(true, Instant::now());
     run(&mut app, &mut h, size, 4);
     let id = app
