@@ -27,26 +27,83 @@ pub struct Startup {
 /// The staging folder to use and, when the saved one was unusable, a notice.
 /// A saved folder must be an absolute path without `..` or a leading `~`.
 pub fn effective_staging_dir(settings: &Settings, paths: &Paths) -> (PathBuf, Option<String>) {
-    let _ = (settings, paths);
-    todo!()
+    match &settings.staging_dir {
+        None => (paths.default_staging.clone(), None),
+        Some(dir) if saved_staging_is_usable(dir) => (dir.clone(), None),
+        Some(_) => (
+            paths.default_staging.clone(),
+            Some("ignored an invalid saved staging folder".to_string()),
+        ),
+    }
+}
+
+fn saved_staging_is_usable(dir: &Path) -> bool {
+    dir.is_absolute()
+        && !dir.to_string_lossy().starts_with('~')
+        && !dir
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// Resolves paths and settings. Reads files, never writes or creates any.
 pub fn startup(exe_dir: &Path, os: OsDirs) -> Startup {
-    let _ = (exe_dir, os);
-    todo!()
+    let paths = Paths::resolve(exe_dir, os);
+    let mut settings = Settings::load(&paths.config_file).unwrap_or_else(|e| {
+        eprintln!("could not load settings ({e}); using defaults");
+        Settings::default()
+    });
+    let (staging_dir, notice) = effective_staging_dir(&settings, &paths);
+    if notice.is_some() {
+        // The backend reads the same field; keep both on the same folder.
+        settings.staging_dir = None;
+    }
+    Startup {
+        paths,
+        settings,
+        staging_dir,
+        notice,
+    }
 }
 
 /// Removes abandoned job folders from `staging_dir` and returns the report
 /// line, which is also appended to `<log_dir>/startup.log`. Never fails.
 pub fn sweep_staging(staging_dir: &Path, log_dir: &Path, now: SystemTime) -> String {
-    let _ = (staging_dir, log_dir, now);
-    todo!()
+    let line = match Staging::new(staging_dir.to_path_buf()).sweep(now, PARTIAL_TTL) {
+        Ok(r) => format!(
+            "staging sweep: removed {} orphan and {} expired job folders, kept {} partial, freed {} bytes",
+            r.removed_orphans, r.removed_expired, r.kept_partials, r.freed_bytes
+        ),
+        Err(e) => format!("staging sweep failed: {e}"),
+    };
+    append_log(log_dir, &line);
+    line
+}
+
+/// Best effort: a log that cannot be written goes to stderr instead.
+pub fn append_log(log_dir: &Path, line: &str) {
+    use std::io::Write;
+    let written = std::fs::create_dir_all(log_dir).and_then(|()| {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("startup.log"))?;
+        writeln!(f, "{line}")
+    });
+    if let Err(e) = written {
+        eprintln!("hf2ollama: {line} (could not write the startup log: {e})");
+    }
 }
 
 /// Runs [`sweep_staging`] on its own thread so the window never waits for it.
 pub fn spawn_sweep(staging_dir: PathBuf, log_dir: PathBuf) {
-    let _ = (staging_dir, log_dir);
+    let spawned = std::thread::Builder::new()
+        .name("hf2ollama-sweep".into())
+        .spawn(move || {
+            sweep_staging(&staging_dir, &log_dir, SystemTime::now());
+        });
+    if let Err(e) = spawned {
+        eprintln!("could not start the staging sweep: {e}");
+    }
 }
 
 #[cfg(test)]

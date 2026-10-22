@@ -827,6 +827,67 @@ mod tests {
     }
 
     #[test]
+    fn startup_notice_is_shown_in_the_status_bar_and_stays_inside_the_window() {
+        let long = format!("/Users/someone/{}", "very-long-folder-name/".repeat(5));
+        for (dark, path) in [(false, "/tmp/staging"), (true, long.as_str())] {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            ctx.set_theme(if dark {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            });
+            let (tx, _) = std::sync::mpsc::channel();
+            let (_, rx) = std::sync::mpsc::channel();
+            let mut app = App::new(
+                &Settings::default(),
+                PathBuf::from(path),
+                Machine {
+                    ram_gb: 16.0,
+                    vram_gb: None,
+                },
+                tx,
+                rx,
+            );
+            app.set_startup_notice(Some("ignored an invalid saved staging folder".into()));
+            assert_eq!(
+                app.state.startup_notice.as_deref(),
+                Some("ignored an invalid saved staging folder")
+            );
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 640.0));
+            let mut painted = String::new();
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                let out = ctx.run_ui(input, |ui| app.show(ui));
+                painted = out
+                    .shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        egui::epaint::Shape::Text(t) => Some(t.galley.job.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
+                out.drop_without_applying_deltas();
+            }
+            let r = app.state.status_rect.expect("status bar painted");
+            assert!(
+                r.right() <= 900.0 - 16.0 + 0.5,
+                "dark={dark}: status bar content {r:?} leaves the window"
+            );
+            if !dark {
+                assert!(
+                    painted.contains("ignored an invalid saved staging folder"),
+                    "notice not painted: {painted}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn status_bar_path_is_truncated_inside_the_window() {
         let long = format!("/Users/someone/{}", "very-long-folder-name/".repeat(5));
         assert!(long.chars().count() >= 100);
