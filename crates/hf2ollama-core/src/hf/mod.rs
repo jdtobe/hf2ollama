@@ -1,6 +1,9 @@
 //! Hugging Face Hub client: model search and repository metadata.
 
+mod card;
 mod download;
+
+pub use card::ModelCard;
 
 pub use download::{safe_join, Downloaded};
 mod search;
