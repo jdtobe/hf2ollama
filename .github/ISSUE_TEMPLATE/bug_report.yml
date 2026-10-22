@@ -1,0 +1,65 @@
+name: Bug report
+description: Something does not work as documented
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. hf2ollama is pre-release, so please check the README and docs/ROADMAP.md for known gaps first.
+        Do not paste Hugging Face tokens. For security problems, do not use this form; see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the Hugging Face repo and file or quantization if relevant.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: hf2ollama version or commit
+      description: Release version, or the git commit if you built from source.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: ollama-version
+    attributes:
+      label: Ollama version and platform
+      description: For example the output of `ollama --version`, and whether Ollama is local or remote.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Job log or error text
+      description: Copy the job log from the downloads dock, or the error message. Remove anything private.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for a duplicate.
+          required: true
+        - label: I removed tokens and private information from this report.
+          required: true
