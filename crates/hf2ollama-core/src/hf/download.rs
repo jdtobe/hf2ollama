@@ -809,4 +809,66 @@ mod tests {
         let fut = client.download(REPO, &file, dir, &ctl, &mut progress);
         assert_send(&fut);
     }
+
+    #[tokio::test]
+    async fn endless_body_is_cut_off_as_soon_as_it_exceeds_the_declared_size() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let mut got = Vec::new();
+                    while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => got.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
+                        .await;
+                    let chunk = vec![7u8; 16 * 1024];
+                    loop {
+                        let head = format!("{:x}\r\n", chunk.len());
+                        if sock.write_all(head.as_bytes()).await.is_err()
+                            || sock.write_all(&chunk).await.is_err()
+                            || sock.write_all(b"\r\n").await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let data = payload(1000);
+        let client = HfClient::new(&format!("http://{addr}"), None);
+        let mut seen_max = 0u64;
+        let err = timeout(
+            Duration::from_secs(3),
+            client.download(
+                REPO,
+                &lfs_file("m.gguf", &data),
+                dir.path(),
+                &JobControl::new(),
+                &mut |done, _| seen_max = seen_max.max(done),
+            ),
+        )
+        .await
+        .expect("download kept reading an endless body")
+        .unwrap_err();
+        assert_eq!(
+            err,
+            Error::HashMismatch {
+                file: "m.gguf".to_string()
+            }
+        );
+        assert!(!dir.path().join("m.gguf.part").exists());
+        assert!(!dir.path().join("m.gguf").exists());
+        assert!(
+            seen_max < 1_000_000,
+            "read {seen_max} bytes before stopping"
+        );
+    }
 }
