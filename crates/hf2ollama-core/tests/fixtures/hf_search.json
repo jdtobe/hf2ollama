@@ -1,0 +1,531 @@
+[
+  {
+    "_id": "6ab000f1a587030ee97d13cf",
+    "id": "abenzerps/Qwen-Image-2.1-Uncensored-Quantized",
+    "author": "abenzerps",
+    "gated": false,
+    "lastModified": "2026-10-12T07:10:55.000Z",
+    "likes": 4786,
+    "trendingScore": 308,
+    "private": false,
+    "sha": "7959e658915f52274897fb573ffeda49de8dc16b",
+    "downloads": 2738344,
+    "tags": [
+      "gguf",
+      "qwen",
+      "image-generation",
+      "comfyui",
+      "comfyui-gguf",
+      "mlx",
+      "fp8",
+      "nvfp4",
+      "text-to-image",
+      "base_model:Qwen/Qwen-Image-2.1",
+      "base_model:quantized:Qwen/Qwen-Image-2.1",
+      "license:other",
+      "region:us"
+    ],
+    "pipeline_tag": "text-to-image",
+    "library_name": "gguf",
+    "createdAt": "2026-09-20T15:51:13.000Z",
+    "modelId": "abenzerps/Qwen-Image-2.1-Uncensored-Quantized",
+    "siblings": [
+      {
+        "rfilename": ".gitattributes"
+      },
+      {
+        "rfilename": "README.md"
+      },
+      {
+        "rfilename": "SHA256SUMS"
+      },
+      {
+        "rfilename": "assets/Qwen-Image-2.1-Benchmark.png"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-BF16.gguf"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-MLX-4bit.safetensors"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-MLX-6bit.safetensors"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-MLX-8bit.safetensors"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-NVFP4.safetensors"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-Q4_0.gguf"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-Q4_K_M.gguf"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-Q5_K_M.gguf"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-Q6_K.gguf"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-Q8_0.gguf"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-fp8.safetensors"
+      },
+      {
+        "rfilename": "qwen-image-2.1-UC-int8_convrot.safetensors"
+      },
+      {
+        "rfilename": "qwen-image-2.1-uncensored-lora.safetensors"
+      },
+      {
+        "rfilename": "text_encoders/qwen3vl_8b_bf16.safetensors"
+      },
+      {
+        "rfilename": "text_encoders/qwen3vl_8b_int8_convrot.safetensors"
+      },
+      {
+        "rfilename": "vae/qwen_image_2.1_vae_bf16.safetensors"
+      }
+    ]
+  },
+  {
+    "_id": "6a9678354e2541b828b4a40e",
+    "id": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF",
+    "author": "DavidAU",
+    "gated": false,
+    "lastModified": "2026-10-17T22:34:07.000Z",
+    "likes": 1952,
+    "trendingScore": 138,
+    "private": false,
+    "sha": "b9bce7e859c9b5047aca884e5bff76f8a0443de1",
+    "downloads": 1726519,
+    "tags": [
+      "gguf",
+      "unsloth",
+      "fine tune",
+      "heretic",
+      "uncensored",
+      "abliterated",
+      "ara",
+      "MTP GGUF Quants",
+      "Regular GGUF Quants",
+      "qwen3_8",
+      "qwen3_6",
+      "qwen3_5",
+      "multi-stage tuned",
+      "thinking",
+      "reasoning",
+      "all use cases",
+      "coder",
+      "creative",
+      "creative writing",
+      "all genres",
+      "story",
+      "writing",
+      "fiction",
+      "roleplaying",
+      "bfloat16",
+      "multi-stage-tune",
+      "multi-state-merge",
+      "image-text-to-text",
+      "en",
+      "zh",
+      "dataset:DavidAU/Polar-STRICT-Datasets",
+      "dataset:DavidAU/F451-STRICT-Datasets",
+      "base_model:DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NM-DAU",
+      "base_model:quantized:DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NM-DAU",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "imatrix",
+      "conversational"
+    ],
+    "pipeline_tag": "image-text-to-text",
+    "createdAt": "2026-09-01T07:01:09.000Z",
+    "modelId": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF",
+    "siblings": [
+      {
+        "rfilename": ".gitattributes"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-IQ2_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-IQ3_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-IQ4_XS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-LOW-MTP-IQ4_XS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-LOW-MTP-Q6_K.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-IQ2_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-IQ3_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-IQ4_XS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q5_K_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q5_K_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q8_0.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q4_K_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q4_K_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q5_K_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q5_K_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q6_K.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-Q8_0.gguf"
+      },
+      {
+        "rfilename": "README.md"
+      },
+      {
+        "rfilename": "mmproj-BF16.gguf"
+      },
+      {
+        "rfilename": "mmproj-F16.gguf"
+      },
+      {
+        "rfilename": "mmproj-F32.gguf"
+      },
+      {
+        "rfilename": "qwen38-27b-turbo-tfcf735.png"
+      },
+      {
+        "rfilename": "star-wars-hans-solo.gif"
+      }
+    ]
+  },
+  {
+    "_id": "6a7d8038d813eea1a14a8db4",
+    "id": "unsloth/Qwen3.8-27B-GGUF",
+    "author": "unsloth",
+    "gated": false,
+    "lastModified": "2026-08-20T12:04:25.000Z",
+    "likes": 5262,
+    "trendingScore": 135,
+    "private": false,
+    "sha": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+    "downloads": 6291461,
+    "tags": [
+      "gguf",
+      "qwen3_5",
+      "unsloth",
+      "base_model:Qwen/Qwen3.8-27B",
+      "base_model:quantized:Qwen/Qwen3.8-27B",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "imatrix",
+      "conversational"
+    ],
+    "createdAt": "2026-08-13T08:28:40.000Z",
+    "modelId": "unsloth/Qwen3.8-27B-GGUF",
+    "siblings": [
+      {
+        "rfilename": ".gitattributes"
+      },
+      {
+        "rfilename": "BF16/Qwen3.8-27B-BF16-00001-of-00002.gguf"
+      },
+      {
+        "rfilename": "BF16/Qwen3.8-27B-BF16-00002-of-00002.gguf"
+      },
+      {
+        "rfilename": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Q4_0.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Q4_1.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Q8_0.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-IQ1_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-IQ1_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-IQ2_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-IQ2_XXS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-IQ3_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-IQ3_XXS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-IQ4_XS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q2_K_XL.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q3_K_XL.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q4_K_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q4_K_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q5_K_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q5_K_S.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q5_K_XL.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q6_K.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q6_K_L.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q6_K_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q6_K_XL.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q8_K_L.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-UD-Q8_K_XL.gguf"
+      },
+      {
+        "rfilename": "README.md"
+      },
+      {
+        "rfilename": "config.json"
+      },
+      {
+        "rfilename": "imatrix_unsloth.gguf"
+      },
+      {
+        "rfilename": "mmproj-BF16.gguf"
+      },
+      {
+        "rfilename": "mmproj-F16.gguf"
+      }
+    ]
+  },
+  {
+    "_id": "6a832587e74e9a9edfb67ff9",
+    "id": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
+    "author": "HauhauCS",
+    "gated": false,
+    "lastModified": "2026-08-17T22:02:10.000Z",
+    "likes": 1993,
+    "trendingScore": 117,
+    "private": false,
+    "sha": "993a5971fda8f30dd1b7eb2654792ba4415c7460",
+    "downloads": 2354693,
+    "tags": [
+      "gguf",
+      "uncensored",
+      "qwen3.8",
+      "multimodal",
+      "vision",
+      "mtp",
+      "speculative-decoding",
+      "fastmtp",
+      "image-text-to-text",
+      "en",
+      "zh",
+      "multilingual",
+      "base_model:Qwen/Qwen3.8-27B",
+      "base_model:quantized:Qwen/Qwen3.8-27B",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "conversational"
+    ],
+    "pipeline_tag": "image-text-to-text",
+    "createdAt": "2026-08-17T15:15:19.000Z",
+    "modelId": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
+    "siblings": [
+      {
+        "rfilename": ".gitattributes"
+      },
+      {
+        "rfilename": "FastMTP-PROVENANCE.json"
+      },
+      {
+        "rfilename": "FastMTP-PROVENANCE.json.sig"
+      },
+      {
+        "rfilename": "HauhauCS-FastMTP-Ed25519-PUBLIC.pem"
+      },
+      {
+        "rfilename": "HauhauCS-FastMTP-llama.cpp.patch"
+      },
+      {
+        "rfilename": "HauhauCS-RELEASE-MANIFEST.json"
+      },
+      {
+        "rfilename": "HauhauCS-RELEASE-MANIFEST.json.sig"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-FastMTP-32K.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ3_XS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q2_K_P.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q6_K_P.gguf"
+      },
+      {
+        "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+      },
+      {
+        "rfilename": "README.md"
+      },
+      {
+        "rfilename": "SHA256SUMS"
+      },
+      {
+        "rfilename": "mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+      }
+    ]
+  },
+  {
+    "_id": "6ac916b8a58766dba416dd3f",
+    "id": "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF",
+    "author": "AtomicChat",
+    "gated": false,
+    "lastModified": "2026-10-13T20:02:46.000Z",
+    "likes": 598,
+    "trendingScore": 105,
+    "private": false,
+    "sha": "df96693dbdfb8738c0bf1bbd0337d149808db948",
+    "downloads": 444083,
+    "tags": [
+      "gguf",
+      "atomic-chat",
+      "qwen",
+      "qwen-image",
+      "qwen3-vl",
+      "text-encoder",
+      "stable-diffusion.cpp",
+      "abliteration",
+      "refusal-direction",
+      "text-to-image",
+      "base_model:Qwen/Qwen3-VL-8B-Instruct",
+      "base_model:finetune:Qwen/Qwen3-VL-8B-Instruct",
+      "license:apache-2.0",
+      "endpoints_compatible",
+      "region:us",
+      "imatrix",
+      "conversational"
+    ],
+    "pipeline_tag": "text-to-image",
+    "library_name": "gguf",
+    "createdAt": "2026-10-09T16:30:48.000Z",
+    "modelId": "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF",
+    "siblings": [
+      {
+        "rfilename": ".gitattributes"
+      },
+      {
+        "rfilename": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q2_K.gguf"
+      },
+      {
+        "rfilename": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q3_K.gguf"
+      },
+      {
+        "rfilename": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q4_K.gguf"
+      },
+      {
+        "rfilename": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q5_K.gguf"
+      },
+      {
+        "rfilename": "Qwen-Image-2.1-Turbo-Uncensored-AD-Q6_K.gguf"
+      },
+      {
+        "rfilename": "Qwen-Image-2.1-Turbo-Uncensored-BF16.gguf"
+      },
+      {
+        "rfilename": "Qwen-Image-2.1-Turbo-Uncensored-Q8_0.gguf"
+      },
+      {
+        "rfilename": "README.md"
+      },
+      {
+        "rfilename": "mmproj-Qwen-Image-2.1-Turbo-Uncensored-BF16.gguf"
+      },
+      {
+        "rfilename": "mmproj-Qwen-Image-2.1-Turbo-Uncensored-F16.gguf"
+      }
+    ]
+  }
+]

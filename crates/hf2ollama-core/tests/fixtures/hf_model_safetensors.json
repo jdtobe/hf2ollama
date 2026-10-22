@@ -1,0 +1,151 @@
+{
+  "_id": "65d2f8e7818f0593469640cb",
+  "id": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+  "private": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "onnx",
+    "safetensors",
+    "llama",
+    "text-generation",
+    "conversational",
+    "arxiv:1910.09700",
+    "text-generation-inference",
+    "endpoints_compatible",
+    "region:us"
+  ],
+  "downloads": 5055635,
+  "likes": 4,
+  "modelId": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+  "author": "hf-internal-testing",
+  "sha": "9fb191250dd56d0ba7ec9785a025ed29c03d5998",
+  "lastModified": "2025-10-31T16:43:28.000Z",
+  "gated": false,
+  "disabled": false,
+  "widgetData": [
+    {
+      "text": "Hi, what can you help me with?"
+    },
+    {
+      "text": "What is 84 * 3 / 2?"
+    },
+    {
+      "text": "Tell me an interesting fact about the universe!"
+    },
+    {
+      "text": "Explain quantum computing in simple terms."
+    }
+  ],
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "LlamaForCausalLM"
+    ],
+    "model_type": "llama",
+    "tokenizer_config": {
+      "bos_token": "<s>",
+      "chat_template": "{% if messages[0]['role'] == 'system' %}{% set loop_messages = messages[1:] %}{% set system_message = messages[0]['content'] %}{% elif USE_DEFAULT_PROMPT == true and not '<<SYS>>' in messages[0]['content'] %}{% set loop_messages = messages %}{% set system_message = 'DEFAULT_SYSTEM_MESSAGE' %}{% else %}{% set loop_messages = messages %}{% set system_message = false %}{% endif %}{% for message in loop_messages %}{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}{{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}{% endif %}{% if loop.index0 == 0 and system_message != false %}{% set content = '<<SYS>>\n' + system_message + '\n<</SYS>>\n\n' + message['content'] %}{% else %}{% set content = message['content'] %}{% endif %}{% if message['role'] == 'user' %}{{ bos_token + '[INST] ' + content.strip() + ' [/INST]' }}{% elif message['role'] == 'system' %}{{ '<<SYS>>\n' + content.strip() + '\n<</SYS>>\n\n' }}{% elif message['role'] == 'assistant' %}{{ ' '  + content.strip() + ' ' + eos_token }}{% endif %}{% endfor %}",
+      "eos_token": "</s>",
+      "pad_token": "<unk>",
+      "unk_token": "<unk>",
+      "use_default_system_prompt": true
+    }
+  },
+  "cardData": {
+    "library_name": "transformers",
+    "tags": []
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModelForCausalLM",
+    "pipeline_tag": "text-generation",
+    "processor": "AutoTokenizer"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+      "size": 1519
+    },
+    {
+      "rfilename": "README.md",
+      "blobId": "cacd7c317b49e2ff5c8009b286ccab8ed385251f",
+      "size": 5178
+    },
+    {
+      "rfilename": "config.json",
+      "blobId": "705aabd46343ea21e243acb1a505f13282831a7a",
+      "size": 721
+    },
+    {
+      "rfilename": "generation_config.json",
+      "blobId": "752c4fa4342a82db9f21877a5f7601c7bb7a5311",
+      "size": 116
+    },
+    {
+      "rfilename": "model.safetensors",
+      "blobId": "aa76de552c6cf845bcc071d37493a9eade0340b0",
+      "size": 4131280,
+      "lfs": {
+        "sha256": "49c20f32c6c597480fcaec5df2f86c645eabea765cbea1e67886dbae45e5c992",
+        "size": 4131280,
+        "pointerSize": 132
+      }
+    },
+    {
+      "rfilename": "onnx/model.onnx",
+      "blobId": "153d6a8c17e08a25f86c8b720040121f16a2f100",
+      "size": 8398936,
+      "lfs": {
+        "sha256": "f2c87402ad46c39f45071afc4d5cc539ffa157c9dc439471d9b964b015176f72",
+        "size": 8398936,
+        "pointerSize": 132
+      }
+    },
+    {
+      "rfilename": "special_tokens_map.json",
+      "blobId": "8bedc05a6476080d7f473a9da72394f2cee48340",
+      "size": 552
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "blobId": "de7fb35fdc108a6bbd23dccf5537e6937d46ff01",
+      "size": 1842764
+    },
+    {
+      "rfilename": "tokenizer.model",
+      "blobId": "6c00c742ce03c627d6cd5b795984876fa49fa899",
+      "size": 499723,
+      "lfs": {
+        "sha256": "9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347",
+        "size": 499723,
+        "pointerSize": 131
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "blobId": "8e7d17356251e1c53beb0d66c8dc55f49ddc8c67",
+      "size": 1918
+    }
+  ],
+  "spaces": [
+    "dark-pen/quant-my-repo",
+    "sohampadianeu/steering-arena",
+    "mohitk24/my-gradio-space-1759120621",
+    "mohitk24/my-gradio-space-1759120641",
+    "mohitk24/HW3_NLE",
+    "Arun111123Kumar/Zimbra-detector-api",
+    "SaranyaTripurari/SMM-AI-Chatbot",
+    "noqt/eggcracker",
+    "demonkingkaii/ad-fontes"
+  ],
+  "createdAt": "2024-02-19T06:44:55.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 1032272
+    },
+    "total": 1032272
+  },
+  "usedStorage": 17235874
+}
