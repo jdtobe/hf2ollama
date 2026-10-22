@@ -29,8 +29,26 @@ pub struct Probe {
     pub table_header: Option<egui::Rect>,
     /// The left filter rail panel.
     pub rail: Option<egui::Rect>,
+    /// The metadata strip and the `Files | About` switch below it.
+    pub meta_strip: Option<egui::Rect>,
+    pub switch: Option<egui::Rect>,
+    /// Which About state was drawn: loading, empty, error or card.
+    pub about_state: Option<&'static str>,
+    /// Every content widget of the About tab (text, code blocks, tables).
+    pub about_rects: Vec<egui::Rect>,
+    /// Painted links with their URLs.
+    pub about_links: Vec<(egui::Rect, String)>,
+    /// Table scroll viewport and the full width of the table inside it.
+    pub about_tables: Vec<(egui::Rect, f32)>,
+    pub about_retry: Option<egui::Rect>,
+    pub about_toggle: Option<egui::Rect>,
+    /// The "Description truncated" notice.
+    pub about_notice: Option<egui::Rect>,
 }
 
+pub mod about;
+#[cfg(test)]
+mod about_tests;
 pub mod detail;
 pub mod filters;
 pub mod markdown;
@@ -113,6 +131,34 @@ pub(crate) mod test_util {
                 egui::ThemePreference::Light
             });
             Harness { ctx, time: 0.0 }
+        }
+
+        /// Like `frame`, returning the URLs the UI asked the OS to open.
+        pub fn frame_urls(
+            &mut self,
+            size: egui::Vec2,
+            events: Vec<egui::Event>,
+            mut f: impl FnMut(&mut egui::Ui),
+        ) -> Vec<String> {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let out = self.ctx.run_ui(input, |ui| f(ui));
+            let urls = out
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::OpenUrl(o) => Some(o.url.clone()),
+                    _ => None,
+                })
+                .collect();
+            out.drop_without_applying_deltas();
+            urls
         }
 
         /// Runs one frame on a `size` screen with the given input events.

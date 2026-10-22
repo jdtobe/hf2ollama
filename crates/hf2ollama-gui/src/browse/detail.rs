@@ -1,13 +1,18 @@
 //! The detail pane for the selected repository.
 
+use super::about;
 use super::options::{gb, OptionRow};
 use super::plan_card;
 use super::results::{compact_count, format_size, relative_age};
-use super::state::{is_gated_error, PlanKind, SearchStatus, GATED_MESSAGE, GATED_REPO_WARNING};
+use super::state::{
+    is_gated_error, DetailTab, PlanKind, SearchStatus, GATED_MESSAGE, GATED_REPO_WARNING,
+};
 use crate::app::AppState;
 use crate::runtime::BackendRequest;
 use crate::theme::{mono, semibold, tokens};
-use crate::widgets::{caption, fit_pill_kind, fit_pill_label, fit_text, pill_colors, small_button};
+use crate::widgets::{
+    caption, fit_pill_kind, fit_pill_label, fit_text, pill_colors, segmented_nav, small_button,
+};
 use eframe::egui::{
     self, vec2, Align2, Color32, CornerRadius, FontId, Margin, Rect, RichText, Sense, Stroke,
     StrokeKind,
@@ -687,8 +692,46 @@ fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
 }
 
 fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
+    #[cfg(test)]
+    let strip_top = ui.cursor().top();
     meta_strip(ui, &metadata(info));
+    #[cfg(test)]
+    {
+        app.browse.probe.meta_strip = Some(Rect::from_min_max(
+            egui::pos2(ui.max_rect().left(), strip_top),
+            egui::pos2(ui.max_rect().right(), ui.cursor().top()),
+        ));
+    }
+    ui.add_space(10.0);
+    let tab = app.browse.tab();
+    let switch = ui.scope(|ui| {
+        segmented_nav(
+            ui,
+            &["Files", "About"],
+            &[],
+            usize::from(tab == DetailTab::About),
+        )
+    });
+    #[cfg(test)]
+    {
+        app.browse.probe.switch = Some(switch.response.rect);
+    }
+    if let Some(i) = switch.inner {
+        let next = if i == 1 {
+            DetailTab::About
+        } else {
+            DetailTab::Files
+        };
+        if next != tab {
+            app.browse.set_tab(next);
+            ui.ctx().request_repaint();
+        }
+    }
     ui.add_space(12.0);
+    if tab == DetailTab::About {
+        about::show(ui, app, info, &info.id);
+        return;
+    }
 
     let Some(plan) = app.browse.plan().cloned() else {
         return;
