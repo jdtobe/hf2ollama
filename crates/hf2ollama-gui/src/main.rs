@@ -5,6 +5,7 @@ mod dock;
 mod installed;
 mod runtime;
 mod settings;
+mod startup;
 mod theme;
 mod widgets;
 
