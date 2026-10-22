@@ -118,7 +118,9 @@ struct RawModel {
     #[serde(default)]
     gated: serde_json::Value,
     #[serde(default)]
-    tags: Vec<String>,
+    tags: serde_json::Value,
+    #[serde(default)]
+    pipeline_tag: serde_json::Value,
     #[serde(default, rename = "cardData")]
     card_data: Option<RawCardData>,
     #[serde(default)]
@@ -135,6 +137,7 @@ struct RawModel {
 struct RawCardData {
     license: Option<serde_json::Value>,
     base_model: Option<serde_json::Value>,
+    language: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -180,6 +183,20 @@ fn first_string(v: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// All non-empty strings of a JSON string or array; any other type is empty.
+fn all_strings(v: &serde_json::Value) -> Vec<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => vec![s.clone()],
+        serde_json::Value::Array(a) => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn tag_value(tags: &[String], prefix: &str) -> Option<String> {
     tags.iter()
         .find_map(|t| t.strip_prefix(prefix))
@@ -200,6 +217,11 @@ fn format_params(n: u64) -> String {
 
 impl From<RawModel> for ModelInfo {
     fn from(m: RawModel) -> Self {
+        let tags = if m.tags.is_array() {
+            all_strings(&m.tags)
+        } else {
+            Vec::new()
+        };
         let arch = m
             .gguf
             .as_ref()
@@ -220,18 +242,29 @@ impl From<RawModel> for ModelInfo {
             .as_ref()
             .and_then(|c| c.license.as_ref())
             .and_then(first_string)
-            .or_else(|| tag_value(&m.tags, "license:"));
+            .or_else(|| tag_value(&tags, "license:"));
         let base_model = m
             .card_data
             .as_ref()
             .and_then(|c| c.base_model.as_ref())
             .and_then(first_string)
-            .or_else(|| tag_value(&m.tags, "base_model:"));
+            .or_else(|| tag_value(&tags, "base_model:"));
         let gated = match &m.gated {
             serde_json::Value::Bool(b) => *b,
             serde_json::Value::String(s) => !s.is_empty() && s != "false",
             _ => false,
         };
+        let pipeline_tag = m
+            .pipeline_tag
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let languages = m
+            .card_data
+            .as_ref()
+            .and_then(|c| c.language.as_ref())
+            .map(all_strings)
+            .unwrap_or_default();
         ModelInfo {
             id: m.id,
             files: m
@@ -253,9 +286,9 @@ impl From<RawModel> for ModelInfo {
             likes: m.likes,
             updated: m.last_modified,
             gated,
-            pipeline_tag: None,
-            languages: Vec::new(),
-            tags: Vec::new(),
+            pipeline_tag,
+            languages,
+            tags,
         }
     }
 }
