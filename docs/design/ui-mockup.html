@@ -1,0 +1,577 @@
+<title>hf2ollama Mockup</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: desktop app shell. Top bar, filter rail | results | detail, and a downloads dock along the bottom. */
+:root {
+  --bg: #eef0f2;
+  --surface: #ffffff;
+  --surface-2: #f5f6f8;
+  --line: #dde0e5;
+  --fg: #16191d;
+  --fg-2: #535a64;
+  --fg-3: #8a919b;
+  --accent: #0b6e66;
+  --accent-fg: #ffffff;
+  --accent-soft: #dff1ee;
+  --ok: #1b7f3b;
+  --ok-soft: #e0f3e5;
+  --warn: #9a6200;
+  --warn-soft: #fbefd3;
+  --bad: #b3261e;
+  --bad-soft: #fbe3e1;
+  --sans: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101316; --surface: #171b1f; --surface-2: #1d2227; --line: #2a3036;
+    --fg: #e7eaee; --fg-2: #a3abb5; --fg-3: #6f7782;
+    --accent: #3cc2b3; --accent-fg: #06201d; --accent-soft: #14312e;
+    --ok: #5cc97b; --ok-soft: #15301c; --warn: #e5b04a; --warn-soft: #33270e;
+    --bad: #f0857d; --bad-soft: #3a1c1a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101316; --surface: #171b1f; --surface-2: #1d2227; --line: #2a3036;
+  --fg: #e7eaee; --fg-2: #a3abb5; --fg-3: #6f7782;
+  --accent: #3cc2b3; --accent-fg: #06201d; --accent-soft: #14312e;
+  --ok: #5cc97b; --ok-soft: #15301c; --warn: #e5b04a; --warn-soft: #33270e;
+  --bad: #f0857d; --bad-soft: #3a1c1a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; line-height: 1.45; padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)); padding-block: 16px; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.note { max-width: 1280px; margin: 0 auto 10px; color: var(--fg-3); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+
+.app { max-width: 1280px; margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: grid; grid-template-rows: auto 1fr auto auto; min-height: 780px; }
+
+/* top bar */
+.top { display: flex; gap: 14px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font-weight: 700; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
+.brand i { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); display: inline-block; position: relative; }
+.brand i::after { content: ""; position: absolute; inset: 6px; border: 2px solid var(--accent-fg); border-left-color: transparent; border-radius: 50%; }
+.search { flex: 1 1 280px; min-width: 0; display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; }
+.search input { flex: 1; min-width: 0; background: none; border: 0; padding: 8px 0; outline: none; }
+.search:focus-within { border-color: var(--accent); }
+kbd { font-family: var(--mono); font-size: 11px; color: var(--fg-3); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 500; border: 1px solid var(--line); background: var(--surface-2); color: var(--fg-2); white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.iconbtn { background: none; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; color: var(--fg-2); }
+.iconbtn:hover { background: var(--surface-2); }
+
+/* body columns */
+.cols { display: grid; grid-template-columns: 200px minmax(280px, 360px) minmax(0, 1fr); min-height: 0; }
+.rail { padding: 14px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 18px; background: var(--surface-2); }
+.rail h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-3); font-weight: 600; }
+.chk { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--fg-2); cursor: pointer; }
+.chk input { accent-color: var(--accent); }
+.chk span.n { margin-left: auto; color: var(--fg-3); font-family: var(--mono); font-size: 11px; }
+select { width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+
+.results { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+.results-head { padding: 10px 14px; display: flex; justify-content: space-between; color: var(--fg-3); font-size: 12px; border-bottom: 1px solid var(--line); }
+.res { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 12px 14px; cursor: pointer; border-left: 3px solid transparent; }
+.res:hover { background: var(--surface-2); }
+.res[aria-selected="true"] { background: var(--accent-soft); border-left-color: var(--accent); }
+.res .nm { font-weight: 600; word-break: break-word; }
+.res .nm small { font-weight: 400; color: var(--fg-3); }
+.res .row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; align-items: center; }
+.res .stats { margin-top: 6px; color: var(--fg-3); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
+.tag { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--line); color: var(--fg-2); }
+.tag.gguf { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.tag.st { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.tag.no { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+
+/* detail */
+.detail { padding: 18px 22px; min-width: 0; display: flex; flex-direction: column; gap: 18px; overflow: hidden; }
+.dh { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.dh h2 { margin: 0; font-size: 20px; letter-spacing: -.01em; text-wrap: balance; word-break: break-word; }
+.dh .by { color: var(--fg-3); font-size: 13px; }
+.link { color: var(--accent); text-decoration: none; font-size: 12px; }
+.link:hover { text-decoration: underline; }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.meta div { background: var(--surface); padding: 8px 12px; min-width: 0; }
+.meta dt { font-size: 11px; color: var(--fg-3); text-transform: uppercase; letter-spacing: .06em; }
+.meta dd { margin: 2px 0 0; font-weight: 600; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.sec-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.sec-h h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-2); }
+.sec-h span { color: var(--fg-3); font-size: 12px; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+table { width: 100%; border-collapse: collapse; min-width: 600px; }
+th { text-align: left; font-size: 11px; color: var(--fg-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--surface-2); }
+tbody tr.sel { background: var(--accent-soft); }
+td.r, th.r { text-align: right; }
+.qname { font-family: var(--mono); font-weight: 500; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); width: 90px; overflow: hidden; display: inline-block; vertical-align: middle; }
+.bar b { display: block; height: 100%; background: var(--accent); }
+.fit { font-size: 12px; font-weight: 500; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.fit.ok { background: var(--ok-soft); color: var(--ok); }
+.fit.tight { background: var(--warn-soft); color: var(--warn); }
+.fit.no { background: var(--bad-soft); color: var(--bad); }
+.rec { font-size: 11px; color: var(--accent); font-weight: 600; margin-left: 6px; }
+
+.callout { border-radius: 8px; padding: 12px 14px; display: flex; gap: 10px; font-size: 13px; }
+.callout.warn { background: var(--warn-soft); color: var(--fg); border: 1px solid var(--warn); }
+.callout.bad { background: var(--bad-soft); color: var(--fg); border: 1px solid var(--bad); }
+.callout b { font-weight: 600; }
+
+.plan { border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px 20px; align-items: end; }
+.plan label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-3); display: block; margin-bottom: 4px; }
+.plan input[type=text] { width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font-family: var(--mono); }
+.steps { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 4px; align-items: center; color: var(--fg-2); font-size: 12px; }
+.steps span { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1px 8px; }
+.steps i { color: var(--fg-3); font-style: normal; }
+.disk { grid-column: 1 / -1; font-size: 12px; color: var(--fg-2); display: flex; gap: 6px 16px; flex-wrap: wrap; }
+.disk b { font-family: var(--mono); font-weight: 500; color: var(--fg); }
+.btn { background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 8px; padding: 10px 18px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btn:hover { filter: brightness(1.08); }
+.btn[disabled] { background: var(--line); color: var(--fg-3); cursor: not-allowed; filter: none; }
+
+/* dock + status */
+.dock { border-top: 1px solid var(--line); background: var(--surface-2); padding: 8px 14px; }
+.dock-h { display: flex; justify-content: space-between; font-size: 12px; color: var(--fg-3); margin-bottom: 4px; }
+.log { grid-column: 1 / -1; margin: 0; max-height: 120px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--fg-2); white-space: pre-wrap; }
+.ctl { display: inline-flex; gap: 6px; }
+.job { display: grid; grid-template-columns: minmax(160px, 1.2fr) minmax(120px, 2fr) auto auto; gap: 6px 14px; align-items: center; padding: 5px 0; font-size: 13px; }
+.job .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job .nm small { color: var(--fg-3); }
+.prog { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.prog b { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.job .st { color: var(--fg-2); font-size: 12px; white-space: nowrap; font-family: var(--mono); }
+.status { border-top: 1px solid var(--line); padding: 6px 14px; display: flex; gap: 8px 18px; flex-wrap: wrap; font-size: 12px; color: var(--fg-3); }
+.status b { color: var(--fg-2); font-weight: 500; font-family: var(--mono); }
+
+/* nav + secondary views */
+.nav { display: flex; gap: 2px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.nav button { background: none; border: 0; border-radius: 6px; padding: 5px 12px; cursor: pointer; color: var(--fg-2); font-weight: 500; }
+.nav button:hover { color: var(--fg); }
+.nav button[aria-current="page"] { background: var(--surface); color: var(--fg); box-shadow: 0 0 0 1px var(--line); }
+.nav .ct { font-family: var(--mono); font-size: 11px; color: var(--fg-3); margin-left: 4px; }
+.view { padding: 18px 22px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.vhead { display: flex; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; align-items: flex-end; }
+.vhead h2 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
+.vhead .sub { color: var(--fg-3); font-size: 13px; }
+.vtools { display: flex; gap: 8px; flex-wrap: wrap; }
+.vtools input[type=search], .vtools select, .field { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: auto; }
+.usage { display: grid; gap: 6px; }
+.usage .stack { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); }
+.usage .stack b { display: block; height: 100%; }
+.usage .leg { display: flex; gap: 6px 18px; flex-wrap: wrap; font-size: 12px; color: var(--fg-2); }
+.usage .leg i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.src { font-size: 12px; color: var(--fg-2); }
+.src.hf { color: var(--accent); font-weight: 500; }
+.act { display: flex; gap: 6px; justify-content: flex-end; }
+.sbtn { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; color: var(--fg-2); white-space: nowrap; }
+.sbtn:hover { background: var(--surface-2); color: var(--fg); }
+.sbtn.danger:hover { color: var(--bad); border-color: var(--bad); }
+.sbtn.confirm { background: var(--bad); border-color: var(--bad); color: #fff; }
+tr.exp td { background: var(--surface-2); cursor: default; }
+tr.exp:hover { background: none; }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 24px; padding: 4px 0; }
+.kv dt { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-3); }
+.kv dd { margin: 2px 0 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.toast { align-self: flex-start; background: var(--fg); color: var(--bg); border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+.set { display: grid; gap: 22px; max-width: 860px; }
+.card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.card > h3 { margin: 0; padding: 10px 16px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-2); background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.srow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 340px); gap: 8px 24px; padding: 14px 16px; border-bottom: 1px solid var(--line); align-items: center; }
+.srow:last-child { border-bottom: 0; }
+.srow .l b { display: block; font-weight: 600; }
+.srow .l span { color: var(--fg-3); font-size: 12px; }
+.srow .c { display: flex; gap: 8px; align-items: center; justify-content: flex-end; min-width: 0; flex-wrap: wrap; }
+.srow .c .field { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; }
+.srow .c .ro { font-family: var(--mono); font-size: 13px; color: var(--fg-2); overflow-wrap: anywhere; text-align: right; }
+.sw { position: relative; width: 38px; height: 22px; flex: none; }
+.sw input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
+.sw i { position: absolute; inset: 0; border-radius: 11px; background: var(--line); transition: background .15s; }
+.sw i::after { content: ""; position: absolute; width: 16px; height: 16px; top: 3px; left: 3px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.sw input:checked + i { background: var(--accent); }
+.sw input:checked + i::after { transform: translateX(16px); }
+.sw input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+.crow { display: flex; justify-content: space-between; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; flex-wrap: wrap; }
+.crow:last-child { border-bottom: 0; }
+.crow span:last-child { font-family: var(--mono); color: var(--fg-2); }
+.badge-d { font-size: 11px; font-weight: 600; color: var(--ok); background: var(--ok-soft); border-radius: 4px; padding: 0 6px; }
+
+@media (max-width: 1000px) {
+  .srow { grid-template-columns: 1fr; }
+  .srow .c { justify-content: flex-start; }
+  .cols { grid-template-columns: minmax(0, 1fr); }
+  .rail { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); }
+  .results { border-right: 0; border-bottom: 1px solid var(--line); }
+  .plan { grid-template-columns: 1fr; }
+  .job { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .prog b { transition: none; } }
+</style>
+
+<div class="note">
+  <span>Mockup 3. Everything here is sample data and runs only in this page. It never contacts Ollama or Hugging Face.</span>
+  <span>Window size ~1280&times;800</span>
+</div>
+
+<div class="app">
+  <header class="top">
+    <div class="brand"><i></i>hf2ollama</div>
+    <nav class="nav" aria-label="Views">
+      <button type="button" data-v="browse" aria-current="page">Browse</button>
+      <button type="button" data-v="installed">Installed<span class="ct" id="nav-ct">5</span></button>
+      <button type="button" data-v="settings">Settings</button>
+    </nav>
+    <label class="search" id="searchbar">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg>
+      <input id="q" type="search" value="qwen coder" placeholder="Search Hugging Face models" aria-label="Search Hugging Face models">
+      <kbd>Ctrl K</kbd>
+    </label>
+    <span class="pill"><span class="dot"></span>Ollama 0.9.2 &middot; localhost:11434</span>
+  </header>
+
+  <div class="cols" id="view-browse">
+    <aside class="rail" aria-label="Filters">
+      <div>
+        <h4>Format</h4>
+        <label class="chk"><input type="checkbox" checked> GGUF <span class="n">41k</span></label>
+        <label class="chk"><input type="checkbox" checked> Safetensors <span class="n">210k</span></label>
+        <label class="chk"><input type="checkbox"> PyTorch / other <span class="n">88k</span></label>
+      </div>
+      <div>
+        <h4>Parameters</h4>
+        <select id="sz" aria-label="Parameters"><option>Any size</option><option>Under 3B</option><option selected>3B to 14B</option><option>14B to 40B</option><option>40B+</option></select>
+      </div>
+      <div>
+        <h4>Fits my machine</h4>
+        <label class="chk"><input type="checkbox" checked> Only models that fit</label>
+        <div style="color:var(--fg-3);font-size:12px;margin-top:4px">Detected 16 GB VRAM, 32 GB RAM</div>
+      </div>
+      <div>
+        <h4>Task</h4>
+        <label class="chk"><input type="checkbox" checked> Text generation</label>
+        <label class="chk"><input type="checkbox"> Embeddings</label>
+        <label class="chk"><input type="checkbox"> Vision / multimodal</label>
+      </div>
+      <div>
+        <h4>Sort by</h4>
+        <select aria-label="Sort"><option>Most downloads</option><option>Trending</option><option>Recently updated</option><option>Most likes</option></select>
+      </div>
+    </aside>
+
+    <section class="results" aria-label="Results">
+      <div class="results-head"><span>3 of 1,284 results</span><span>Page 1</span></div>
+      <div id="list" role="listbox" aria-label="Model results"></div>
+    </section>
+
+    <main class="detail" id="detail" aria-live="polite"></main>
+  </div>
+
+  <div class="view" id="view-installed" hidden>
+    <div class="vhead">
+      <div><h2>Installed models</h2><div class="sub" id="inst-sub"></div></div>
+      <div class="vtools">
+        <input type="search" id="inst-q" placeholder="Filter installed" aria-label="Filter installed models">
+        <select id="inst-src" aria-label="Source"><option value="all">All sources</option><option value="hf">Imported with hf2ollama</option><option value="other">Pulled from Ollama</option></select>
+        <select id="inst-sort" aria-label="Sort"><option value="size">Largest first</option><option value="name">Name</option><option value="date">Recently modified</option></select>
+        <button class="sbtn" type="button" id="inst-refresh">Refresh</button>
+      </div>
+    </div>
+    <div class="usage" aria-label="Disk usage">
+      <div class="stack" id="inst-stack"></div>
+      <div class="leg" id="inst-leg"></div>
+    </div>
+    <div class="tablewrap"><table id="inst-table" style="min-width:760px"><thead><tr><th>Model</th><th>Params</th><th>Quant</th><th class="r">Size</th><th>Source</th><th>Modified</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div class="toast" id="toast" hidden></div>
+  </div>
+
+  <div class="view" id="view-settings" hidden>
+    <div class="vhead"><div><h2>Settings</h2><div class="sub">Changes apply immediately.</div></div></div>
+    <div class="set">
+      <section class="card"><h3>Ollama</h3>
+        <div class="srow"><div class="l"><b>Server address</b><span>The app talks to Ollama only through its HTTP API.</span></div>
+          <div class="c"><input class="field" id="s-host" type="text" value="http://localhost:11434" aria-label="Server address"><button class="sbtn" type="button" id="s-test">Test</button></div></div>
+        <div class="srow"><div class="l"><b>Models directory</b><span>Reported by the server, read only. Change it with OLLAMA_MODELS and restart Ollama.</span></div>
+          <div class="c"><span class="ro">E:\ollama\models</span></div></div>
+      </section>
+      <section class="card"><h3>Downloads</h3>
+        <div class="srow"><div class="l"><b>Staging folder</b><span>Where files are downloaded before they are sent to Ollama. Needs room for one model at a time.</span></div>
+          <div class="c"><input class="field" id="s-stage" type="text" value="D:\hf2ollama-staging" aria-label="Staging folder"><button class="sbtn" type="button">Browse</button></div></div>
+        <div class="srow"><div class="l"><b>Delete downloaded files after import</b><span>Removes the staging copy once Ollama has the model. Turn off to keep GGUF and safetensors files for reuse.</span></div>
+          <div class="c"><label class="sw"><input type="checkbox" id="s-clean" checked aria-label="Delete downloaded files after import"><i></i></label></div></div>
+        <div class="srow"><div class="l"><b>Keep partial downloads for 7 days</b><span>If a transfer fails or you close the app, resume it later instead of starting over. Cancelling always deletes the partial file.</span></div>
+          <div class="c"><label class="sw"><input type="checkbox" checked aria-label="Keep partial downloads"><i></i></label></div></div>
+        <div class="srow"><div class="l"><b>Auto-dismiss finished and cancelled jobs</b><span>Rows stay in the downloads list, with their log, until you dismiss them or this timer runs out.</span></div>
+          <div class="c"><select class="field" id="s-dismiss" style="flex:none;font-family:var(--sans)" aria-label="Auto-dismiss"><option value="0" selected>Never</option><option value="60000">After 1 minute</option><option value="300000">After 5 minutes</option><option value="3600000">After 1 hour</option></select></div></div>
+        <div class="srow"><div class="l"><b>Simultaneous downloads</b></div>
+          <div class="c"><select class="field" style="flex:none;font-family:var(--sans)" aria-label="Simultaneous downloads"><option>1</option><option selected>2</option><option>3</option></select></div></div>
+      </section>
+      <section class="card"><h3>Cached files</h3>
+        <div id="cache-rows"></div>
+        <div class="srow"><div class="l"><b id="cache-total"></b><span>Used in the staging folder right now.</span></div>
+          <div class="c"><button class="sbtn danger" type="button" id="cache-clear">Clear cached files</button></div></div>
+      </section>
+      <section class="card"><h3>Hugging Face</h3>
+        <div class="srow"><div class="l"><b>Access token</b><span>Needed for gated models such as Llama. Stored in the system keychain, never in a config file.</span></div>
+          <div class="c"><input class="field" type="password" value="hf_xxxxxxxxxxxxxxxx" aria-label="Access token"><span class="badge-d">Valid</span></div></div>
+        <div class="srow"><div class="l"><b>Endpoint</b><span>Change this to use a mirror.</span></div>
+          <div class="c"><input class="field" type="text" value="https://huggingface.co" aria-label="Endpoint"></div></div>
+      </section>
+      <section class="card"><h3>Hardware &amp; appearance</h3>
+        <div class="srow"><div class="l"><b>Detected hardware</b><span>Used for the "On your machine" fit badges. Override it if Ollama runs on another computer.</span></div>
+          <div class="c"><span class="ro">16 GB VRAM &middot; 32 GB RAM</span><button class="sbtn" type="button">Override</button></div></div>
+        <div class="srow"><div class="l"><b>Theme</b></div>
+          <div class="c"><select class="field" id="s-theme" style="flex:none;font-family:var(--sans)" aria-label="Theme"><option value="">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div>
+      </section>
+    </div>
+  </div>
+
+  <section class="dock" aria-label="Downloads">
+    <div class="dock-h"><span>Downloads &amp; imports</span><span><span id="dock-count">No active jobs</span> <button class="sbtn" type="button" id="clear-fin" hidden>Clear finished</button></span></div>
+    <div id="jobs"></div>
+  </section>
+
+  <footer class="status">
+    <span>Staging folder <b id="st-dir">D:\hf2ollama-staging</b> <span id="st-note">(files deleted after each import)</span></span>
+    <span>Free <b>412 GB</b></span>
+    <span>Ollama store <b>E:\ollama\models</b> (reported by server)</span>
+  </footer>
+</div>
+
+<script>
+const MODELS = [
+  { id: 'bartowski/Qwen2.5-Coder-7B-Instruct-GGUF', owner: 'bartowski', name: 'Qwen2.5-Coder-7B-Instruct-GGUF',
+    kind: 'gguf', dl: '412k', likes: '1.2k', upd: '3 weeks ago', params: '7.6B', arch: 'qwen2', ctx: '32,768', lic: 'apache-2.0',
+    base: 'Qwen/Qwen2.5-Coder-7B-Instruct', tpl: 'ChatML (from GGUF)', tags: ['gguf', 'code', 'chat'],
+    files: [
+      ['Q8_0', 8.10, 8.0, 'Near lossless', 100], ['Q6_K', 6.25, 6.6, 'Excellent', 96], ['Q5_K_M', 5.44, 5.7, 'Very good', 92],
+      ['Q4_K_M', 4.68, 4.9, 'Good, best balance', 86, true], ['Q4_0', 4.43, 4.5, 'Legacy, use Q4_K_M', 78], ['Q3_K_M', 3.81, 3.9, 'Noticeable loss', 66], ['Q2_K', 3.02, 3.0, 'Heavy loss', 45] ],
+    sel: 3 },
+  { id: 'mistralai/Mistral-7B-Instruct-v0.3', owner: 'mistralai', name: 'Mistral-7B-Instruct-v0.3',
+    kind: 'st', dl: '1.9M', likes: '2.1k', upd: '5 months ago', params: '7.25B', arch: 'MistralForCausalLM', ctx: '32,768', lic: 'apache-2.0',
+    base: 'mistralai/Mistral-7B-v0.3', tpl: 'From tokenizer_config.json', tags: ['safetensors', 'chat'], srcGB: 14.5,
+    quants: [['f16 (no quantization)', 14.5, 'Full precision, largest', 100], ['q8_0', 7.7, 'Near lossless', 99], ['q4_K_M', 4.4, 'Good, best balance', 86, true], ['q4_0', 4.1, 'Legacy', 78]],
+    sel: 2 },
+  { id: 'EleutherAI/gpt-j-6b', owner: 'EleutherAI', name: 'gpt-j-6b',
+    kind: 'no', dl: '188k', likes: '1.4k', upd: '2 years ago', params: '6.05B', arch: 'GPTJForCausalLM', ctx: '2,048', lic: 'apache-2.0',
+    base: '(base model)', tpl: 'None', tags: ['pytorch'] }
+];
+const VRAM = 16;
+let cur = 0, jobSeq = 0, cleanup = true;
+const $ = s => document.querySelector(s);
+const fmt = n => n.toFixed(n < 10 ? 2 : 1) + ' GB';
+const kindTag = k => k === 'gguf' ? '<span class="tag gguf">GGUF</span>' : k === 'st' ? '<span class="tag st">Safetensors</span>' : '<span class="tag no">PyTorch .bin</span>';
+const fitOf = gb => { const need = gb + 1.5; return need <= VRAM * .8 ? ['ok', 'Fits in VRAM'] : need <= VRAM ? ['tight', 'Tight fit'] : need <= 32 ? ['tight', 'Partial CPU offload'] : ['no', 'Too large']; };
+
+function renderList() {
+  $('#list').innerHTML = MODELS.map((m, i) => `
+    <button class="res" role="option" type="button" data-i="${i}" aria-selected="${i === cur}">
+      <div class="nm"><small>${m.owner}/</small>${m.name}</div>
+      <div class="row">${kindTag(m.kind)}<span class="tag">${m.params}</span><span class="tag">${m.arch.length > 14 ? m.arch.slice(0, 12) + '…' : m.arch}</span></div>
+      <div class="stats"><span>&darr; ${m.dl}</span><span>&hearts; ${m.likes}</span><span>${m.upd}</span></div>
+    </button>`).join('');
+}
+
+function renderDetail() {
+  const m = MODELS[cur];
+  const head = `
+    <div class="dh"><div><h2>${m.name}</h2><div class="by">by ${m.owner} &middot; ${m.dl} downloads &middot; updated ${m.upd}</div></div>
+    <a class="link" href="https://huggingface.co/${m.id}" target="_blank" rel="noopener">Open on huggingface.co &nearr;</a></div>
+    <dl class="meta" style="margin:0">
+      <div><dt>Parameters</dt><dd>${m.params}</dd></div><div><dt>Architecture</dt><dd>${m.arch}</dd></div>
+      <div><dt>Context</dt><dd>${m.ctx}</dd></div><div><dt>License</dt><dd>${m.lic}</dd></div>
+      <div><dt>Base model</dt><dd>${m.base}</dd></div><div><dt>Prompt template</dt><dd>${m.tpl}</dd></div>
+    </dl>`;
+  if (m.kind === 'no') {
+    $('#detail').innerHTML = head + `
+      <div class="callout bad"><span aria-hidden="true">&#9888;</span><div><b>Ollama can't import this model.</b><br>
+      It only ships PyTorch <span class="mono">.bin</span> weights and the <span class="mono">GPTJForCausalLM</span> architecture isn't supported by Ollama or llama.cpp's converter.
+      Try the 3 community conversions we found instead.</div></div>
+      <div class="tablewrap"><table><thead><tr><th>Related repo</th><th>Format</th><th class="r">Downloads</th></tr></thead><tbody>
+      <tr><td class="qname">TheBloke/GPT-J-6B-GGUF</td><td>${kindTag('gguf')}</td><td class="r mono">24k</td></tr>
+      <tr><td class="qname">mradermacher/gpt-j-6b-GGUF</td><td>${kindTag('gguf')}</td><td class="r mono">9k</td></tr>
+      <tr><td class="qname">EleutherAI/gpt-j-6b (safetensors branch)</td><td>${kindTag('st')}</td><td class="r mono">3k</td></tr></tbody></table></div>
+      <div class="plan" style="opacity:.6"><div><label>Model name in Ollama</label><input type="text" disabled value="—"></div><button class="btn" disabled>Download &amp; import</button></div>`;
+    return;
+  }
+  let table, srcGB, outGB, name, sizeLabel, steps, banner = '';
+  if (m.kind === 'gguf') {
+    const f = m.files[m.sel];
+    srcGB = f[1]; outGB = f[1]; name = 'qwen2.5-coder:7b-instruct-' + f[0].toLowerCase().replace(/_/g, '-');
+    table = `<div class="tablewrap"><table><thead><tr><th>Quantization</th><th class="r">File size</th><th class="r">Needs ~RAM</th><th>Quality</th><th>On your machine</th></tr></thead><tbody>` +
+      m.files.map((x, i) => { const fit = fitOf(x[1]); return `<tr data-q="${i}" class="${i === m.sel ? 'sel' : ''}" tabindex="0">
+        <td><span class="qname">${x[0]}</span>${x[5] ? '<span class="rec">Recommended</span>' : ''}</td>
+        <td class="r mono">${fmt(x[1])}</td><td class="r mono">${fmt(x[2] + 1.5)}</td>
+        <td><span class="bar"><b style="width:${x[4]}%"></b></span> <span style="color:var(--fg-3);font-size:12px">${x[3]}</span></td>
+        <td><span class="fit ${fit[0]}">${fit[1]}</span></td></tr>`; }).join('') + `</tbody></table></div>`;
+    sizeLabel = '7 files in this repo &middot; single-file GGUF';
+    steps = ['Download', 'Verify sha256', 'Upload blob', 'Create model', cleanup ? 'Delete staging' : 'Keep files'];
+  } else {
+    const q = m.quants[m.sel];
+    srcGB = m.srcGB; outGB = q[1]; name = 'mistral-7b-instruct:v0.3-' + q[0].split(' ')[0].toLowerCase().replace(/_/g, '-');
+    banner = `<div class="callout warn"><span aria-hidden="true">&#9432;</span><div><b>Safetensors, supported by Ollama.</b> Weights download in full precision (${fmt(m.srcGB)}) and Ollama converts and quantizes them when it creates the model. Pick the quantization you want below.</div></div>`;
+    table = `<div class="tablewrap"><table><thead><tr><th>Quantize to</th><th class="r">Result size</th><th>Quality</th><th>On your machine</th></tr></thead><tbody>` +
+      m.quants.map((x, i) => { const fit = fitOf(x[1]); return `<tr data-q="${i}" class="${i === m.sel ? 'sel' : ''}" tabindex="0">
+        <td><span class="qname">${x[0]}</span>${x[4] ? '<span class="rec">Recommended</span>' : ''}</td>
+        <td class="r mono">${fmt(x[1])}</td>
+        <td><span class="bar"><b style="width:${x[3]}%"></b></span> <span style="color:var(--fg-3);font-size:12px">${x[2]}</span></td>
+        <td><span class="fit ${fit[0]}">${fit[1]}</span></td></tr>`; }).join('') + `</tbody></table></div>`;
+    sizeLabel = '6 files &middot; model-0000x-of-00003.safetensors, tokenizer, config';
+    steps = ['Download 14.5 GB', 'Verify sha256', 'Upload blobs', 'Create + quantize', cleanup ? 'Delete staging' : 'Keep files'];
+  }
+  const staging = srcGB + (m.kind === 'st' ? 0 : 0);
+  $('#detail').innerHTML = head + banner + `
+    <div><div class="sec-h"><h3>${m.kind === 'gguf' ? 'Choose a file' : 'Choose a quantization'}</h3><span>${sizeLabel}</span></div>${table}</div>
+    <div class="plan">
+      <div><label for="oname">Model name in Ollama</label><input id="oname" type="text" value="${name}" spellcheck="false"></div>
+      <button class="btn" id="go" type="button">Download &amp; import &middot; ${fmt(srcGB)}</button>
+      <div class="steps">${steps.map(s => `<span>${s}</span>`).join('<i>&rsaquo;</i>')}</div>
+      <div class="disk"><span>${cleanup ? 'Temporary space' : 'Kept in staging'} <b>${fmt(srcGB)}</b></span><span>Final in Ollama <b>${fmt(outGB)}</b></span><span>Staging free <b>412 GB</b> &#10003;</span></div>
+    </div>`;
+}
+
+function renderJobs() {
+  const el = $('#jobs');
+  if (!el.children.length) el.innerHTML = '<div style="color:var(--fg-3);font-size:13px;padding:4px 0">Nothing running. Pick a model above to start.</div>';
+}
+
+function startJob(label, gb) {
+  const el = $('#jobs');
+  if (el.querySelector('[data-empty]') || el.firstElementChild && !el.firstElementChild.classList.contains('job')) el.innerHTML = '';
+  const id = ++jobSeq;
+  const row = document.createElement('div');
+  row.className = 'job';
+  row.innerHTML = `<div class="nm">${label} <small>${fmt(gb)}</small></div><div class="prog"><b style="width:0%"></b></div><div class="st">Downloading 0%</div>
+    <div class="act"><span class="ctl"><button class="sbtn" type="button" data-c="pause">Pause</button><button class="sbtn danger" type="button" data-c="cancel">Cancel</button></span><button class="sbtn" type="button" data-c="log" aria-expanded="false">Log</button></div>
+    <pre class="log" hidden aria-label="Job log"></pre>`;
+  el.prepend(row);
+  updateCount();
+  let p = 0, stage = 0, paused = false, t;
+  const logEl = row.querySelector('.log');
+  const log = m => { logEl.textContent += new Date().toTimeString().slice(0, 8) + '  ' + m + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+  log('Queued ' + label + ' (' + fmt(gb) + ')');
+  log('GET huggingface.co/…/resolve/main/… 200 OK, resumable');
+  const stages = ['Downloading', 'Verifying', 'Uploading to Ollama', 'Creating model', cleanup ? 'Cleaning staging' : 'Finishing'];
+  t = setInterval(() => {
+    if (paused) return;
+    p += stage === 0 ? 9 : 25;
+    if (p >= 100) { log('Done: ' + stages[stage]); p = 0; stage++; if (stage >= stages.length) { clearInterval(t); row.querySelector('.prog b').style.width = '100%'; row.querySelector('.st').textContent = 'Ready in Ollama'; row.querySelector('.st').style.color = 'var(--ok)'; log('POST /api/create ok. ' + label + ' is ready in Ollama'); settle(row); return; } }
+    row.querySelector('.prog b').style.width = (stage * 20 + p / 5) + '%';
+    row.querySelector('.st').textContent = stages[stage] + ' ' + p + '%';
+  }, 450);
+  row.addEventListener('click', e => {
+    const c = e.target.closest('[data-c]')?.dataset.c; if (!c) return;
+    if (c === 'log') { logEl.hidden = !logEl.hidden; e.target.setAttribute('aria-expanded', !logEl.hidden); }
+    if (c === 'pause') { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; log(paused ? 'Paused by user' : 'Resumed'); row.querySelector('.st').textContent = (paused ? 'Paused ' : stages[stage] + ' ') + p + '%'; }
+    if (c === 'cancel') { clearInterval(t); log('Cancelled by user. Partial file deleted from staging'); row.querySelector('.st').textContent = 'Cancelled'; settle(row); }
+    if (c === 'dismiss') dismiss(row);
+  });
+}
+
+document.addEventListener('click', e => {
+  const r = e.target.closest('.res'); if (r) { cur = +r.dataset.i; renderList(); renderDetail(); return; }
+  const q = e.target.closest('tr[data-q]'); if (q) { MODELS[cur].sel = +q.dataset.q; renderDetail(); return; }
+  if (e.target.closest('#go')) { const m = MODELS[cur]; startJob($('#oname').value, m.kind === 'gguf' ? m.files[m.sel][1] : m.srcGB); }
+});
+document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-q]')) { e.preventDefault(); e.target.click(); } });
+
+renderList(); renderDetail(); renderJobs();
+
+/* views */
+function showView(v) {
+  ['browse', 'installed', 'settings'].forEach(n => { $('#view-' + n).hidden = n !== v; });
+  document.querySelectorAll('.nav button').forEach(b => b.toggleAttribute('aria-current', b.dataset.v === v) || (b.removeAttribute('aria-current')));
+  document.querySelector('.nav button[data-v="' + v + '"]').setAttribute('aria-current', 'page');
+  $('#searchbar').style.visibility = v === 'browse' ? 'visible' : 'hidden';
+}
+document.querySelector('.nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) showView(b.dataset.v); });
+
+/* installed models (sample of what /api/tags + /api/show return) */
+let INST = [
+  { n: 'qwen2.5-coder:7b-instruct-q4-k-m', gb: 4.68, p: '7.6B', q: 'Q4_K_M', fam: 'qwen2', hf: 'bartowski/Qwen2.5-Coder-7B-Instruct-GGUF', mod: '2 days ago', ts: 2, ctx: '32,768', cap: 'completion, tools', dg: 'sha256:6f1a…c3d9' },
+  { n: 'mistral-7b-instruct:v0.3-q4-k-m', gb: 4.37, p: '7.25B', q: 'Q4_K_M', fam: 'llama', hf: 'mistralai/Mistral-7B-Instruct-v0.3', mod: '9 days ago', ts: 9, ctx: '32,768', cap: 'completion, tools', dg: 'sha256:a02b…77e1' },
+  { n: 'gemma3:12b', gb: 8.1, p: '12.2B', q: 'Q4_K_M', fam: 'gemma3', hf: null, mod: '3 weeks ago', ts: 21, ctx: '131,072', cap: 'completion, vision', dg: 'sha256:4c9e…1b05' },
+  { n: 'llama3.2:3b', gb: 2.0, p: '3.2B', q: 'Q4_K_M', fam: 'llama', hf: null, mod: '2 months ago', ts: 60, ctx: '131,072', cap: 'completion, tools', dg: 'sha256:d1f7…9a42' },
+  { n: 'nomic-embed-text:latest', gb: 0.27, p: '137M', q: 'F16', fam: 'nomic-bert', hf: null, mod: '4 months ago', ts: 120, ctx: '8,192', cap: 'embedding', dg: 'sha256:0b3c…e8f6' }
+];
+let openRow = null, armed = null;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 3000); }
+function renderInstalled() {
+  const q = $('#inst-q').value.toLowerCase(), src = $('#inst-src').value, sort = $('#inst-sort').value;
+  let rows = INST.filter(m => m.n.includes(q) && (src === 'all' || (src === 'hf') === !!m.hf));
+  rows.sort((a, b) => sort === 'size' ? b.gb - a.gb : sort === 'name' ? a.n.localeCompare(b.n) : a.ts - b.ts);
+  const tot = INST.reduce((s, m) => s + m.gb, 0), mine = INST.filter(m => m.hf).reduce((s, m) => s + m.gb, 0), free = 412;
+  $('#inst-sub').textContent = `${INST.length} models · ${tot.toFixed(1)} GB · read from Ollama at localhost:11434`;
+  $('#nav-ct').textContent = INST.length;
+  const span = tot + free;
+  $('#inst-stack').innerHTML = `<b style="width:${mine / span * 100}%;background:var(--accent)"></b><b style="width:${(tot - mine) / span * 100}%;background:var(--fg-3)"></b>`;
+  $('#inst-leg').innerHTML = `<span><i style="background:var(--accent)"></i>Imported with hf2ollama ${mine.toFixed(1)} GB</span><span><i style="background:var(--fg-3)"></i>Pulled from Ollama ${(tot - mine).toFixed(1)} GB</span><span><i style="background:var(--line)"></i>Free on E: ${free} GB</span>`;
+  $('#inst-table tbody').innerHTML = rows.length ? rows.map(m => {
+    const confirm = armed === m.n;
+    const main = `<tr data-n="${m.n}" tabindex="0"><td><span class="qname">${m.n}</span></td><td class="mono">${m.p}</td><td class="mono">${m.q}</td><td class="r mono">${m.gb < 1 ? Math.round(m.gb * 1000) + ' MB' : fmt(m.gb)}</td>
+      <td>${m.hf ? `<a class="link" href="https://huggingface.co/${m.hf}" target="_blank" rel="noopener">${m.hf} &nearr;</a>` : '<span class="src">Ollama library</span>'}</td><td style="color:var(--fg-3)">${m.mod}</td>
+      <td><div class="act"><button class="sbtn" type="button" data-act="info">${openRow === m.n ? 'Hide' : 'Details'}</button><button class="sbtn danger ${confirm ? 'confirm' : ''}" type="button" data-act="del">${confirm ? 'Confirm delete' : 'Delete'}</button></div></td></tr>`;
+    const more = openRow === m.n ? `<tr class="exp"><td colspan="7"><dl class="kv"><div><dt>Family</dt><dd>${m.fam}</dd></div><div><dt>Context</dt><dd>${m.ctx}</dd></div><div><dt>Capabilities</dt><dd>${m.cap}</dd></div><div><dt>Digest</dt><dd>${m.dg}</dd></div><div><dt>Run it</dt><dd>ollama run ${m.n}</dd></div></dl></td></tr>` : '';
+    return main + more;
+  }).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--fg-3);padding:28px">No installed models match this filter.</td></tr>';
+}
+$('#inst-table').addEventListener('click', e => {
+  if (e.target.closest('a')) return;
+  const tr = e.target.closest('tr[data-n]'); if (!tr) return;
+  const n = tr.dataset.n, act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'del') {
+    if (armed === n) { INST = INST.filter(m => m.n !== n); armed = null; toast('Sample data only. Nothing was deleted from your Ollama. Reload to reset.'); }
+    else { armed = n; clearTimeout(renderInstalled.t); renderInstalled.t = setTimeout(() => { armed = null; renderInstalled(); }, 4000); }
+  } else { armed = null; openRow = openRow === n ? null : n; }
+  renderInstalled();
+});
+['#inst-q', '#inst-src', '#inst-sort'].forEach(s => $(s).addEventListener('input', renderInstalled));
+$('#inst-refresh').addEventListener('click', () => toast('Refreshed from Ollama'));
+
+/* settings */
+let CACHE = [['Q6_K partial download (failed, resumes until Oct 29)', 3.1], ['Mistral-7B-Instruct-v0.3 safetensors (kept)', 14.5]];
+function renderCache() {
+  const rows = cleanup ? CACHE.filter(c => c[0].includes('partial')) : CACHE;
+  $('#cache-rows').innerHTML = rows.length ? rows.map(c => `<div class="crow"><span>${c[0]}</span><span>${c[1].toFixed(1)} GB</span></div>`).join('') : '<div class="crow"><span style="color:var(--fg-3)">Nothing cached.</span></div>';
+  $('#cache-total').textContent = 'Total ' + rows.reduce((s, c) => s + c[1], 0).toFixed(1) + ' GB';
+  $('#cache-clear').disabled = !rows.length;
+}
+$('#s-clean').addEventListener('change', e => {
+  cleanup = e.target.checked;
+  $('#st-note').textContent = cleanup ? '(files deleted after each import)' : '(files kept after import)';
+  renderCache(); renderDetail();
+});
+$('#cache-clear').addEventListener('click', () => { CACHE = []; renderCache(); });
+$('#s-stage').addEventListener('input', e => { $('#st-dir').textContent = e.target.value; });
+$('#s-theme').addEventListener('change', e => { if (e.target.value) document.documentElement.dataset.theme = e.target.value; else delete document.documentElement.dataset.theme; });
+$('#s-test').addEventListener('click', e => { e.target.textContent = 'Connected ✓'; setTimeout(() => e.target.textContent = 'Test', 2000); });
+/* job lifecycle: finished and cancelled rows stay until dismissed */
+let dismissMs = 0;
+const jobRows = () => [...document.querySelectorAll('#jobs .job')];
+function updateCount() {
+  const rows = jobRows(), act = rows.filter(r => !r.querySelector('.ctl').hidden).length;
+  $('#dock-count').textContent = act ? act + ' active' : rows.length ? 'All done' : 'No active jobs';
+  $('#clear-fin').hidden = rows.length === act;
+}
+function dismiss(row) { clearTimeout(row._t); row.remove(); renderJobs(); updateCount(); }
+function settle(row) {
+  row.querySelector('.ctl').hidden = true;
+  const d = document.createElement('button');
+  d.className = 'sbtn'; d.type = 'button'; d.dataset.c = 'dismiss'; d.textContent = 'Dismiss';
+  row.querySelector('.act').prepend(d);
+  if (dismissMs) row._t = setTimeout(() => dismiss(row), dismissMs);
+  updateCount();
+}
+$('#clear-fin').addEventListener('click', () => jobRows().filter(r => r.querySelector('.ctl').hidden).forEach(dismiss));
+$('#s-dismiss').addEventListener('change', e => {
+  dismissMs = +e.target.value;
+  jobRows().forEach(r => { clearTimeout(r._t); if (r.querySelector('.ctl').hidden && dismissMs) r._t = setTimeout(() => dismiss(r), dismissMs); });
+});
+
+renderInstalled(); renderCache(); showView('browse');
+</script>
