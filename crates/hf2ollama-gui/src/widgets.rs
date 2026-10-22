@@ -63,13 +63,13 @@ pub fn pill_colors(t: &crate::theme::Tokens, kind: PillKind) -> (Color32, Color3
 }
 
 /// Uppercase section caption.
-pub fn caption(ui: &mut egui::Ui, text: &str) {
+pub fn caption(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let t = tokens(ui);
     ui.label(
         RichText::new(text.to_uppercase())
             .font(semibold(11.0))
             .color(t.fg3),
-    );
+    )
 }
 
 /// Small monospace chip.
@@ -98,8 +98,8 @@ pub fn quality_bar(ui: &mut egui::Ui, frac: f32, width: f32) {
     ui.painter().rect_filled(fill, 3.0, t.accent);
 }
 
-/// Accent-filled primary action; returns true when clicked.
-pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
+/// Accent-filled primary action.
+pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     let t = tokens(ui);
     let b = egui::Button::new(RichText::new(text).font(semibold(14.0)).color(if enabled {
         t.accent_fg
@@ -109,7 +109,7 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
     .fill(if enabled { t.accent } else { t.line })
     .stroke(Stroke::NONE)
     .min_size(vec2(0.0, 36.0));
-    ui.add_enabled(enabled, b).clicked()
+    ui.add_enabled(enabled, b)
 }
 
 /// Compact secondary button; returns true when clicked.

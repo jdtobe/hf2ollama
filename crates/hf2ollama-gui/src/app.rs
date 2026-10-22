@@ -146,6 +146,11 @@ impl App {
 }
 
 impl App {
+    #[cfg(test)]
+    pub(crate) fn state_mut(&mut self) -> &mut AppState {
+        &mut self.state
+    }
+
     /// Screenshot helper: pre-fills the search box and selects a repository.
     pub fn preset(&mut self, query: Option<String>, select: Option<String>) {
         if let Some(q) = query {
@@ -189,7 +194,7 @@ impl eframe::App for App {
 
 impl App {
     /// The whole window; separate from `eframe::App::ui` so tests can run it headless.
-    fn show(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn show(&mut self, ui: &mut egui::Ui) {
         let t = tokens(ui);
         let dark = ui.visuals().dark_mode;
 

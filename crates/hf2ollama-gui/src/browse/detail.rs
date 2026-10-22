@@ -148,6 +148,13 @@ fn callout(ui: &mut egui::Ui, warn: bool, text: &str) -> Rect {
         .rect
 }
 
+/// Where the options table painted its parts (read by the layout tests).
+#[derive(Default)]
+pub struct TableOut {
+    pub selected: Option<Rect>,
+    pub header: Option<Rect>,
+}
+
 const TABLE_PAD: f32 = 14.0;
 const BAR_W: f32 = 56.0;
 const NOTE_MIN: f32 = 80.0;
@@ -162,7 +169,7 @@ pub fn options_table(
     selected: Option<usize>,
     machine: &Machine,
     scroll_to_selected: bool,
-    selected_rect: &mut Option<Rect>,
+    out: &mut TableOut,
 ) -> Option<usize> {
     let t = tokens(ui);
     let w = ui.available_width();
@@ -199,6 +206,7 @@ pub fn options_table(
         let (head, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
         top = Some(head.min);
         bottom = head.max.y;
+        out.header = Some(head);
         ui.painter().rect_filled(
             head,
             CornerRadius {
@@ -240,7 +248,7 @@ pub fn options_table(
         bottom = row.max.y;
         let sel = selected == Some(i);
         if sel {
-            *selected_rect = Some(row);
+            out.selected = Some(row);
             // Only when it is out of view, so a short table keeps the header on screen.
             if scroll_to_selected && !ui.clip_rect().contains_rect(row) {
                 ui.scroll_to_rect(row, Some(egui::Align::Center));
@@ -388,7 +396,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     });
     if card_visible {
         let max_h = (ui.available_height() - MIN_SCROLL_H).max(120.0);
-        egui::Panel::bottom("plan_card")
+        let card_panel = egui::Panel::bottom("plan_card")
             .resizable(false)
             .max_size(max_h)
             .frame(
@@ -403,6 +411,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                     }),
             )
             .show(ui, |ui| plan_card::show(ui, app, out));
+        #[cfg(test)]
+        {
+            app.browse.probe.card_panel = Some(card_panel.response.rect);
+        }
+        #[cfg(not(test))]
+        let _ = card_panel;
     }
     egui::CentralPanel::default()
         .frame(
@@ -478,7 +492,7 @@ fn notices(
         return;
     }
     let max_h = (ui.available_height() - MIN_SCROLL_H).max(60.0);
-    egui::ScrollArea::vertical()
+    let region = egui::ScrollArea::vertical()
         .id_salt("notices")
         .max_height(max_h)
         .auto_shrink([false, true])
@@ -522,6 +536,12 @@ fn notices(
             #[cfg(not(test))]
             let _ = shown;
         });
+    #[cfg(test)]
+    {
+        app.browse.probe.notices_view = Some(region.inner_rect);
+    }
+    #[cfg(not(test))]
+    let _ = region;
     ui.add_space(6.0);
 }
 
@@ -560,11 +580,17 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
         // The request counts frames; keep frames coming until it is done.
         ui.ctx().request_repaint();
     }
-    let mut selected_rect = None;
+    let mut table_out = TableOut::default();
     let mut clicked = None;
     match &plan.kind {
         PlanKind::Gguf(_) => {
-            caption(ui, "Choose a file");
+            let label = caption(ui, "Choose a file");
+            #[cfg(test)]
+            {
+                app.browse.probe.table_label = Some(label.rect);
+            }
+            #[cfg(not(test))]
+            let _ = label;
             clicked = options_table(
                 ui,
                 "File",
@@ -572,7 +598,7 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
                 selected,
                 &app.machine,
                 scroll,
-                &mut selected_rect,
+                &mut table_out,
             );
         }
         PlanKind::Safetensors(_) => {
@@ -586,7 +612,13 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
                 ),
             );
             ui.add_space(6.0);
-            caption(ui, "Choose a quantization");
+            let label = caption(ui, "Choose a quantization");
+            #[cfg(test)]
+            {
+                app.browse.probe.table_label = Some(label.rect);
+            }
+            #[cfg(not(test))]
+            let _ = label;
             clicked = options_table(
                 ui,
                 "Quantization",
@@ -594,7 +626,7 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
                 selected,
                 &app.machine,
                 scroll,
-                &mut selected_rect,
+                &mut table_out,
             );
         }
         PlanKind::Unsupported(reason) => {
@@ -604,10 +636,11 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
     }
     #[cfg(test)]
     {
-        app.browse.probe.selected_row = selected_rect;
+        app.browse.probe.selected_row = table_out.selected;
+        app.browse.probe.table_header = table_out.header;
     }
     #[cfg(not(test))]
-    let _ = selected_rect;
+    let _ = table_out;
     if let Some(i) = clicked {
         app.browse.select_option(i);
     }
@@ -839,7 +872,7 @@ mod tests {
     /// Runs the pane for several frames, scrolls it with the mouse wheel and
     /// checks that every pinned notice stays inside the pane, above the
     /// scroll area, and does not move.
-    fn assert_notices_pinned(mut app: AppState, what: &str, expect_scroll: bool) {
+    fn assert_notices_pinned(mut app: AppState, what: &str) {
         use crate::browse::test_util::Harness;
         for dark in [false, true] {
             let mut h = Harness::new(dark);
@@ -874,12 +907,10 @@ mod tests {
             for _ in 0..12 {
                 h.frame(size, vec![], |ui| show(ui, &mut app2, &mut Vec::new()));
             }
-            if expect_scroll {
-                assert!(
-                    (app2.browse.probe.scroll_offset - start).abs() > 5.0,
-                    "{what} dark={dark}: did not scroll"
-                );
-            }
+            assert!(
+                (app2.browse.probe.scroll_offset - start).abs() > 5.0,
+                "{what} dark={dark}: did not scroll"
+            );
             assert_eq!(
                 before, app2.browse.probe.notices,
                 "{what} dark={dark}: notice moved"
@@ -890,45 +921,227 @@ mod tests {
 
     #[test]
     fn gated_warning_stays_inside_the_pane_and_does_not_scroll_away() {
-        assert_notices_pinned(many_options_app(true), "gated", true);
+        assert_notices_pinned(many_options_app(true), "gated");
     }
 
-    #[test]
-    fn unsupported_reason_stays_inside_the_pane() {
-        let id = "EleutherAI/gpt-j-6b";
-        let mut app = many_options_app(false);
-        app.browse.on_model_info(
-            id,
-            Ok(ModelInfo {
-                id: id.into(),
-                files: vec![hf2ollama_core::model::RepoFile {
-                    path: "pytorch_model.bin".into(),
-                    size: 1_000_000_000,
-                    sha256: None,
-                    blob_id: None,
-                }],
-                arch: None,
-                params: None,
-                context: None,
-                license: None,
-                base_model: None,
-                downloads: 1,
-                likes: 1,
-                updated: String::new(),
-                gated: false,
-            }),
+    // ---- full-window layout tests (top bar, bars and dock included) ----
+
+    use crate::app::App;
+    use crate::browse::test_util::Harness;
+    use hf2ollama_core::config::Settings;
+    use hf2ollama_core::model::RepoFile;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Kind {
+        ManyGated,
+        Many,
+        Unsupported,
+        Forbidden,
+        /// Safetensors with quantize chips and Ollama unreachable (longest card).
+        SafetensorsUnreachable,
+    }
+
+    const SIZES: [(f32, f32); 2] = [(1180.0, 820.0), (900.0, 640.0)];
+
+    fn rf(path: &str, size: u64) -> RepoFile {
+        RepoFile {
+            path: path.into(),
+            size,
+            sha256: Some(format!("sha-{path}")),
+            blob_id: None,
+        }
+    }
+
+    fn info_for(id: &str, files: Vec<RepoFile>, arch: Option<&str>, gated: bool) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            files,
+            arch: arch.map(str::to_string),
+            params: Some("7B".into()),
+            context: Some(32768),
+            license: Some("apache-2.0".into()),
+            base_model: Some("mistralai/Mistral-7B-v0.3".into()),
+            downloads: 1_000,
+            likes: 10,
+            updated: "2026-01-01T00:00:00.000Z".into(),
+            gated,
+        }
+    }
+
+    fn app_for(kind: Kind) -> App {
+        use hf2ollama_core::fit::Machine;
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, rx) = std::sync::mpsc::channel();
+        let machine = Machine {
+            ram_gb: 64.0,
+            vram_gb: Some(24.0),
+        };
+        let mut app = App::new(
+            &Settings::default(),
+            std::path::PathBuf::from("/tmp/staging"),
+            machine.clone(),
+            tx,
+            rx,
         );
-        app.browse.select_repo(id);
-        assert_notices_pinned(app, "unsupported", false);
+        let st = app.state_mut();
+        st.ollama = Some(Some("0.9".into()));
+        let id = "o/repo";
+        let many = || {
+            let mut files: Vec<RepoFile> = (1..=25)
+                .map(|i| {
+                    rf(
+                        &format!("m-IQ{i}_XS.gguf"),
+                        10_000_000_000 + i as u64 * 100_000_000,
+                    )
+                })
+                .collect();
+            files.push(rf("m-Q4_K_M.gguf", 4_680_000_000));
+            files
+        };
+        match kind {
+            Kind::ManyGated => st
+                .browse
+                .on_model_info(id, Ok(info_for(id, many(), Some("llama"), true))),
+            Kind::Many => st
+                .browse
+                .on_model_info(id, Ok(info_for(id, many(), Some("llama"), false))),
+            Kind::Unsupported => st.browse.on_model_info(
+                id,
+                Ok(info_for(
+                    id,
+                    vec![rf("pytorch_model.bin", 1_000_000_000)],
+                    None,
+                    false,
+                )),
+            ),
+            Kind::Forbidden => st
+                .browse
+                .on_model_info(id, Err("HTTP 403: Forbidden".into())),
+            Kind::SafetensorsUnreachable => {
+                st.ollama = Some(None);
+                st.browse.on_model_info(
+                    id,
+                    Ok(info_for(
+                        id,
+                        vec![
+                            rf("config.json", 600),
+                            rf("tokenizer.json", 3_000_000),
+                            rf("model.safetensors", 14_000_000_000),
+                        ],
+                        Some("MistralForCausalLM"),
+                        false,
+                    )),
+                );
+            }
+        }
+        st.browse.select_repo(id);
+        app
+    }
+
+    fn laid_out(kind: Kind, dark: bool, (w, h): (f32, f32)) -> App {
+        let mut app = app_for(kind);
+        let mut harness = Harness::new(dark);
+        for _ in 0..10 {
+            harness.frame(vec2(w, h), vec![], |ui| app.show(ui));
+        }
+        app
+    }
+
+    fn inside(inner: Rect, outer: Rect) -> bool {
+        inner.top() >= outer.top() - 0.5
+            && inner.bottom() <= outer.bottom() + 0.5
+            && inner.left() >= outer.left() - 0.5
+            && inner.right() <= outer.right() + 0.5
+    }
+
+    const NOTICE_KINDS: [Kind; 3] = [Kind::ManyGated, Kind::Unsupported, Kind::Forbidden];
+    const ALL_KINDS: [Kind; 5] = [
+        Kind::ManyGated,
+        Kind::Many,
+        Kind::Unsupported,
+        Kind::Forbidden,
+        Kind::SafetensorsUnreachable,
+    ];
+
+    #[test]
+    fn notices_are_fully_visible_inside_their_region() {
+        for kind in NOTICE_KINDS {
+            for size in SIZES {
+                for dark in [false, true] {
+                    let mut app = laid_out(kind, dark, size);
+                    let p = &app.state_mut().browse.probe;
+                    let view = p.notices_view.expect("notices region");
+                    let pane = p.pane.expect("pane");
+                    assert!(
+                        !p.notices.is_empty(),
+                        "{kind:?} {size:?} dark={dark}: no notice"
+                    );
+                    for n in &p.notices {
+                        assert!(
+                            inside(*n, view) && inside(*n, pane),
+                            "{kind:?} {size:?} dark={dark}: notice {n:?} clipped by region {view:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
-    fn blocking_token_error_stays_inside_the_pane() {
-        let id = "meta-llama/Llama-3.2-1B";
-        let mut app = many_options_app(false);
-        app.browse
-            .on_model_info(id, Err("HTTP 403: Forbidden".into()));
-        app.browse.select_repo(id);
-        assert_notices_pinned(app, "403", false);
+    fn scroll_area_keeps_min_height_at_minimum_window_size() {
+        for kind in ALL_KINDS {
+            for size in SIZES {
+                for dark in [false, true] {
+                    let mut app = laid_out(kind, dark, size);
+                    let view = app.state_mut().browse.probe.viewport.expect("viewport");
+                    assert!(
+                        view.height() >= MIN_SCROLL_H - 0.5,
+                        "{kind:?} {size:?} dark={dark}: scroll area only {} px",
+                        view.height()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn card_name_field_and_button_are_fully_visible() {
+        for kind in [Kind::SafetensorsUnreachable, Kind::ManyGated, Kind::Many] {
+            for size in SIZES {
+                for dark in [false, true] {
+                    let mut app = laid_out(kind, dark, size);
+                    let p = &app.state_mut().browse.probe;
+                    let panel = p.card_panel.expect("card panel");
+                    let field = p.name_field.expect("name field");
+                    let button = p.button.expect("button");
+                    let window = Rect::from_min_size(egui::Pos2::ZERO, vec2(size.0, size.1));
+                    assert!(
+                        inside(field, panel) && inside(button, panel) && inside(panel, window),
+                        "{kind:?} {size:?} dark={dark}: field {field:?} button {button:?} panel {panel:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selected_row_and_table_header_are_visible_after_the_first_frames() {
+        for size in SIZES {
+            for dark in [false, true] {
+                let mut app = laid_out(Kind::Many, dark, size);
+                let p = &app.state_mut().browse.probe;
+                let view = p.viewport.expect("viewport");
+                let row = p.selected_row.expect("selected row");
+                assert!(
+                    inside(row, view),
+                    "{size:?} dark={dark}: row {row:?} outside {view:?}"
+                );
+                let head = p.table_header.or(p.table_label).expect("header or label");
+                assert!(
+                    inside(head, view),
+                    "{size:?} dark={dark}: header {head:?} outside {view:?}"
+                );
+            }
+        }
     }
 }

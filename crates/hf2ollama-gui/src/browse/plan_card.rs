@@ -185,15 +185,29 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 if r.changed() {
                     app.browse.name_edited = true;
                 }
+                #[cfg(test)]
+                {
+                    app.browse.probe.name_field = Some(r.rect);
+                }
             };
             if side_by_side {
                 ui.horizontal(|ui| {
                     edit(ui, avail - btn_w - 14.0, app);
-                    clicked = primary_button(ui, &label, reason.is_none());
+                    let b = primary_button(ui, &label, reason.is_none());
+                    #[cfg(test)]
+                    {
+                        app.browse.probe.button = Some(b.rect);
+                    }
+                    clicked = b.clicked();
                 });
             } else {
                 edit(ui, avail, app);
-                clicked = primary_button(ui, &label, reason.is_none());
+                let b = primary_button(ui, &label, reason.is_none());
+                #[cfg(test)]
+                {
+                    app.browse.probe.button = Some(b.rect);
+                }
+                clicked = b.clicked();
             }
             if clicked {
                 if let Some(req) = app.browse.import_request() {

@@ -17,6 +17,16 @@ pub struct Probe {
     pub notices: Vec<egui::Rect>,
     /// Content rectangle of the detail pane (inside its margins).
     pub pane: Option<egui::Rect>,
+    /// Visible rectangle of the notices region.
+    pub notices_view: Option<egui::Rect>,
+    /// Rectangle of the pinned import card panel.
+    pub card_panel: Option<egui::Rect>,
+    pub name_field: Option<egui::Rect>,
+    pub button: Option<egui::Rect>,
+    /// The section caption above the options table.
+    pub table_label: Option<egui::Rect>,
+    /// The options table header as painted (in place, or stuck at the top).
+    pub table_header: Option<egui::Rect>,
 }
 
 pub mod detail;
