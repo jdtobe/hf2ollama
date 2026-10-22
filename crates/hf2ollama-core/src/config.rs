@@ -15,7 +15,12 @@ pub enum AutoDismiss {
 
 impl AutoDismiss {
     pub fn duration(&self) -> Option<Duration> {
-        todo!()
+        match self {
+            AutoDismiss::Never => None,
+            AutoDismiss::OneMinute => Some(Duration::from_secs(60)),
+            AutoDismiss::FiveMinutes => Some(Duration::from_secs(300)),
+            AutoDismiss::OneHour => Some(Duration::from_secs(3600)),
+        }
     }
 }
 
@@ -43,21 +48,49 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        todo!()
+        Settings {
+            ollama_url: "http://localhost:11434".into(),
+            staging_dir: None,
+            delete_after_import: true,
+            keep_partials: true,
+            max_parallel: 2,
+            auto_dismiss: AutoDismiss::Never,
+            hf_endpoint: "https://huggingface.co".into(),
+            hardware_override: None,
+            theme: ThemeChoice::System,
+        }
     }
 }
 
 impl Settings {
     /// Loads settings; a missing file yields defaults, a corrupt one `Error::Parse`.
     pub fn load(path: &Path) -> Result<Settings> {
-        let _ = (path, Error::Cancelled);
-        todo!()
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
+            Err(e) => return Err(Error::Io(e.to_string())),
+        };
+        let mut settings: Settings =
+            toml::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+        settings.max_parallel = settings.max_parallel.clamp(1, 3);
+        Ok(settings)
     }
 
     /// Saves atomically: temp file in the same directory, then rename.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let _ = path;
-        todo!()
+        let text = toml::to_string_pretty(self).map_err(|e| Error::Parse(e.to_string()))?;
+        let io = |e: std::io::Error| Error::Io(e.to_string());
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(io)?;
+        }
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, text).map_err(io)?;
+        std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            io(e)
+        })
     }
 }
 
