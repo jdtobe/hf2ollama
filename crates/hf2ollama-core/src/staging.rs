@@ -407,6 +407,49 @@ mod tests {
         assert!(!p.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn clear_cached_removes_partial_dirs_but_never_active_or_foreign_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = staging(&tmp);
+        let root = tmp.path().join("staging");
+        // foreign directory
+        fs::create_dir_all(root.join("photos")).unwrap();
+        write(&root.join("photos").join("a.jpg"), 11);
+        // unmarked job-9 (not ours)
+        fs::create_dir_all(root.join("job-9")).unwrap();
+        write(&root.join("job-9").join("mine.txt"), 12);
+        // symlinked job dir pointing at a marked directory outside
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        write(&outside.join("precious.txt"), 13);
+        write(&outside.join(".hf2ollama-job"), 0);
+        write(&outside.join(".partial"), 0);
+        std::os::unix::fs::symlink(&outside, root.join("job-3")).unwrap();
+        // active job: our marker only, no .kept/.partial
+        let active = s.create_job(JobId(4), 0).unwrap();
+        write(&active.path().join("a.part"), 14);
+        // kept and partial
+        let kept = s.create_job(JobId(5), 0).unwrap();
+        write(&kept.path().join("k.bin"), 100);
+        let kept_path = kept.path().to_path_buf();
+        kept.finish(true).unwrap();
+        let partial = s.create_job(JobId(6), 0).unwrap();
+        write(&partial.path().join("p.part"), 200);
+        partial.mark_partial().unwrap();
+        let partial_path = partial.path().to_path_buf();
+
+        let freed = s.clear_cached().unwrap();
+        assert_eq!(freed, 300);
+        assert!(!kept_path.exists());
+        assert!(!partial_path.exists());
+        assert!(root.join("photos").join("a.jpg").is_file());
+        assert!(root.join("job-9").join("mine.txt").is_file());
+        assert!(outside.join("precious.txt").is_file());
+        assert!(root.join("job-3").exists());
+        assert!(active.path().join("a.part").is_file());
+    }
+
     #[test]
     fn clear_cached_returns_freed_bytes() {
         let tmp = tempfile::tempdir().unwrap();

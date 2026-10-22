@@ -128,6 +128,17 @@ pub fn cached_total(rows: &[CachedRow]) -> String {
     )
 }
 
+/// Help text for the "keep partial downloads" toggle.
+pub const KEEP_PARTIALS_HELP: &str = "If a transfer fails or you close the app, resume it later instead of starting over. Cancelling always deletes the partial file.";
+
+/// Help text under the cached files total.
+pub const CACHED_HELP: &str = "Used in the staging folder right now. Partial downloads are kept for resuming and expire after 7 days.";
+
+/// True when the Clear button may be used: any listed row can be removed.
+pub fn has_clearable(rows: &[CachedRow]) -> bool {
+    rows.iter().any(|r| !r.partial)
+}
+
 /// The machine used for fit estimates: the override, else what was detected.
 pub fn effective_machine(settings: &Settings, detected: &Machine) -> Machine {
     settings
@@ -1030,6 +1041,26 @@ mod tests {
         assert_eq!(cached_total(&rows()), "2 folders, 5.00 GB");
         assert_eq!(cached_total(&rows()[..1]), "1 folder, 4.68 GB");
         assert_eq!(cached_total(&[]), "Nothing cached");
+    }
+
+    #[test]
+    fn clear_is_enabled_when_only_partial_rows_exist() {
+        let only_partial = vec![CachedRow {
+            label: "job-2".into(),
+            bytes: 320_000_000,
+            partial: true,
+        }];
+        assert!(has_clearable(&only_partial));
+        assert!(has_clearable(&rows()));
+        assert!(!has_clearable(&[]));
+    }
+
+    #[test]
+    fn wording_no_longer_promises_resuming() {
+        for text in [KEEP_PARTIALS_HELP, CACHED_HELP] {
+            assert!(!text.contains("resume it later"), "{text}");
+            assert!(!text.contains("kept for resuming"), "{text}");
+        }
     }
 
     #[test]

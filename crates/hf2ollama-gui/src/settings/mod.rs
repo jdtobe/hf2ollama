@@ -17,8 +17,9 @@ use eframe::egui::{
 use hf2ollama_core::config::{AutoDismiss, Settings, ThemeChoice};
 use hf2ollama_core::fit::Machine;
 use state::{
-    cached_total, connection_message, detected_line, token_badge, BadgeKind, CachedStatus,
-    ConnectionState, SaveIndicator, SettingsChange, SettingsState, CLEAR_KEY,
+    cached_total, connection_message, detected_line, has_clearable, token_badge, BadgeKind,
+    CachedStatus, ConnectionState, SaveIndicator, SettingsChange, SettingsState, CACHED_HELP,
+    CLEAR_KEY, KEEP_PARTIALS_HELP,
 };
 use std::path::PathBuf;
 use std::time::Instant;
@@ -499,7 +500,7 @@ fn downloads_card(
             ui,
             cx,
             "Keep partial downloads for 7 days",
-            "If a transfer fails or you close the app, resume it later instead of starting over. Cancelling always deletes the partial file.",
+            KEEP_PARTIALS_HELP,
             22.0,
             false,
             |ui, cx, _| {
@@ -580,53 +581,52 @@ fn cached_card(ui: &mut egui::Ui, cx: &mut Cx, state: &mut SettingsState, width:
             }
         }
         let (total, clearable) = match &state.cached {
-            CachedStatus::Loaded(rows) => (cached_total(rows), rows.iter().any(|r| !r.partial)),
+            CachedStatus::Loaded(rows) => (cached_total(rows), has_clearable(rows)),
             _ => ("Cached files".to_string(), false),
         };
-        row(
-            ui,
-            cx,
-            &total,
-            "Used in the staging folder right now. Partial downloads are kept for resuming and expire after 7 days.",
-            FIELD_H,
-            true,
-            |ui, cx, _| {
-                ui.vertical(|ui| {
-                    let now = cx.now;
-                    let armed = state.clear.is_armed(CLEAR_KEY, now);
-                    let ready = state.clear.ready(CLEAR_KEY, now);
-                    let held = crate::confirm::activation_key_held(ui);
-                    let (text, fill) = if armed {
-                        let red = bad(cx.dark);
-                        (
-                            "Confirm clear",
-                            if ready { red } else { red.gamma_multiply(0.45) },
-                        )
-                    } else {
-                        ("Clear cached files", ui.visuals().widgets.inactive.weak_bg_fill)
-                    };
-                    let color = if armed { egui::Color32::WHITE } else { cx.t.fg2 };
-                    let b = ui.add_enabled(
-                        clearable || armed,
-                        egui::Button::new(RichText::new(text).size(12.0).color(color))
-                            .fill(fill)
-                            .wrap_mode(egui::TextWrapMode::Extend)
-                            .min_size(vec2(CLEAR_W, FIELD_H)),
-                    );
-                    cx.rec("clear-cached", b.rect);
-                    #[cfg(test)]
-                    {
-                        cx.probe.clear_id = Some(b.id);
-                    }
-                    if b.clicked() && !held {
-                        state.click_clear_cached(now);
-                    }
-                    if let Some((note, _)) = &state.note {
-                        ui.label(RichText::new(note.as_str()).size(12.0).color(cx.t.fg2));
-                    }
-                });
-            },
-        );
+        row(ui, cx, &total, CACHED_HELP, FIELD_H, true, |ui, cx, _| {
+            ui.vertical(|ui| {
+                let now = cx.now;
+                let armed = state.clear.is_armed(CLEAR_KEY, now);
+                let ready = state.clear.ready(CLEAR_KEY, now);
+                let held = crate::confirm::activation_key_held(ui);
+                let (text, fill) = if armed {
+                    let red = bad(cx.dark);
+                    (
+                        "Confirm clear",
+                        if ready { red } else { red.gamma_multiply(0.45) },
+                    )
+                } else {
+                    (
+                        "Clear cached files",
+                        ui.visuals().widgets.inactive.weak_bg_fill,
+                    )
+                };
+                let color = if armed {
+                    egui::Color32::WHITE
+                } else {
+                    cx.t.fg2
+                };
+                let b = ui.add_enabled(
+                    clearable || armed,
+                    egui::Button::new(RichText::new(text).size(12.0).color(color))
+                        .fill(fill)
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .min_size(vec2(CLEAR_W, FIELD_H)),
+                );
+                cx.rec("clear-cached", b.rect);
+                #[cfg(test)]
+                {
+                    cx.probe.clear_id = Some(b.id);
+                }
+                if b.clicked() && !held {
+                    state.click_clear_cached(now);
+                }
+                if let Some((note, _)) = &state.note {
+                    ui.label(RichText::new(note.as_str()).size(12.0).color(cx.t.fg2));
+                }
+            });
+        });
     });
 }
 
