@@ -138,13 +138,17 @@ impl AppState {
             self.ollama = None;
         }
         if change.hardware {
-            let detected = self.settings_view.state.detected().cloned();
-            let machine = settings.hardware_override.clone().unwrap_or_else(|| {
-                detected.unwrap_or(Machine {
+            // Unknown hardware stays unknown rather than guessed.
+            let detected = self
+                .settings_view
+                .state
+                .detected()
+                .cloned()
+                .unwrap_or(Machine {
                     ram_gb: 0.0,
                     vram_gb: None,
-                })
-            });
+                });
+            let machine = crate::settings::state::effective_machine(settings, &detected);
             self.machine = machine.clone();
             self.browse.set_machine(machine);
         }

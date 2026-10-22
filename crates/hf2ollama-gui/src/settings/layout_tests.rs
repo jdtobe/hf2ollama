@@ -504,24 +504,20 @@ fn held_enter_key_never_clears_cached_files() {
         let mut h = Harness::new(false);
         run(&mut app, &mut h, size, 4);
         reveal(&mut app, &mut h, size, "clear-cached");
-        // Focus the button with Tab navigation until it is armed by Enter.
+        // Focus the button and press Enter: that arms it.
         let (w, hh) = size;
-        let mut armed = false;
-        for _ in 0..40 {
-            h.frame(vec2(w, hh), vec![tab()], |ui| app.show(ui));
-            h.frame(vec2(w, hh), vec![key(true, false)], |ui| app.show(ui));
-            h.frame(vec2(w, hh), vec![key(false, false)], |ui| app.show(ui));
-            if app
-                .state_mut()
-                .settings_view
-                .state
-                .clear
-                .is_armed(crate::settings::state::CLEAR_KEY, Instant::now())
-            {
-                armed = true;
-                break;
-            }
-        }
+        let id = probe(&mut app).clear_id.expect("clear button painted");
+        h.frame(vec2(w, hh), vec![], |ui| {
+            app.show(ui);
+            ui.memory_mut(|m| m.request_focus(id));
+        });
+        h.frame(vec2(w, hh), vec![key(true, false)], |ui| app.show(ui));
+        let armed = app
+            .state_mut()
+            .settings_view
+            .state
+            .clear
+            .is_armed(crate::settings::state::CLEAR_KEY, Instant::now());
         assert!(armed, "{size:?}: Enter on the focused button arms");
         std::thread::sleep(PAST_DELAY);
         for _ in 0..3 {
@@ -533,6 +529,18 @@ fn held_enter_key_never_clears_cached_files() {
                 .iter()
                 .any(|q| matches!(q, BackendRequest::ClearCached)),
             "{size:?}: a held key cleared: {reqs:?}"
+        );
+        // Release, then a fresh press is a deliberate confirmation.
+        h.frame(vec2(w, hh), vec![key(false, false)], |ui| app.show(ui));
+        h.frame(vec2(w, hh), vec![key(true, false)], |ui| app.show(ui));
+        h.frame(vec2(w, hh), vec![key(false, false)], |ui| app.show(ui));
+        let reqs: Vec<_> = sent.try_iter().collect();
+        assert_eq!(
+            reqs.iter()
+                .filter(|q| matches!(q, BackendRequest::ClearCached))
+                .count(),
+            1,
+            "{size:?}: fresh Enter press: {reqs:?}"
         );
     }
 }

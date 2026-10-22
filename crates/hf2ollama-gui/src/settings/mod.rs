@@ -11,7 +11,9 @@ use crate::browse::results::format_size;
 use crate::runtime::{BackendRequest, CachedRow, HfTokenStatus};
 use crate::theme::{mono, semibold, tokens, Tokens};
 use crate::widgets::toggle;
-use eframe::egui::{self, vec2, Align, Layout, Margin, Rect, RichText, Stroke};
+use eframe::egui::{
+    self, vec2, Align, Align2, CornerRadius, Layout, Margin, Rect, RichText, Sense, Stroke,
+};
 use hf2ollama_core::config::{AutoDismiss, Settings, ThemeChoice};
 use hf2ollama_core::fit::Machine;
 use state::{
@@ -35,6 +37,8 @@ const BTN_W: f32 = 72.0;
 const CLEAR_W: f32 = 150.0;
 const SELECT_W: f32 = 170.0;
 const CARDS_GAP: f32 = 22.0;
+/// Space kept free at the right edge for the scroll bar.
+const SCROLL_GUTTER: f32 = 14.0;
 /// How many cached folders are listed before "and N more".
 const CACHED_LISTED: usize = 8;
 /// What the card text may take next to the control column, at least.
@@ -53,6 +57,8 @@ pub struct SettingsProbe {
     pub cards: Vec<(String, Rect)>,
     pub controls: Vec<(String, Rect)>,
     pub help: Vec<HelpProbe>,
+    /// Widget id of the Clear cached files button.
+    pub clear_id: Option<egui::Id>,
 }
 
 #[cfg(test)]
@@ -141,18 +147,30 @@ impl SettingsView {
         };
         header(ui, state, &cx);
         ui.add_space(10.0);
-        let width = ui.available_width().min(CARD_MAX_W);
-        ollama_card(ui, &mut cx, state, settings, width, &mut change);
-        downloads_card(ui, &mut cx, state, settings, width, &mut change);
-        cached_card(ui, &mut cx, state, width);
-        hugging_face_card(ui, &mut cx, state, settings, width, &mut change);
-        hardware_card(ui, &mut cx, state, settings, width, &mut change);
+        let scroll = egui::ScrollArea::vertical()
+            .id_salt("settings-scroll")
+            .auto_shrink([false, false]);
+        #[cfg(test)]
+        let scroll = match self.scroll_to {
+            Some(offset) => scroll.vertical_scroll_offset(offset),
+            None => scroll,
+        };
+        let shown = scroll.show(ui, |ui| {
+            // Leave room for the scroll bar so it never covers a control.
+            let width = (ui.available_width() - SCROLL_GUTTER).clamp(300.0, CARD_MAX_W);
+            ollama_card(ui, &mut cx, state, settings, width, &mut change);
+            downloads_card(ui, &mut cx, state, settings, width, &mut change);
+            cached_card(ui, &mut cx, state, width);
+            hugging_face_card(ui, &mut cx, state, settings, width, &mut change);
+            hardware_card(ui, &mut cx, state, settings, width, &mut change);
+        });
         #[cfg(test)]
         {
-            let panel = ui.max_rect();
-            self.probe.viewport = Some(panel);
-            self.probe.content_height = ui.cursor().min.y - panel.top();
+            self.probe.viewport = Some(shown.inner_rect);
+            self.probe.content_height = shown.content_size.y;
+            self.probe.max_offset = (shown.content_size.y - shown.inner_rect.height()).max(0.0);
         }
+        let _ = shown;
         change
     }
 }
@@ -202,16 +220,42 @@ fn header(ui: &mut egui::Ui, state: &SettingsState, cx: &Cx) {
 
 // ---- scaffold: cards and rows ----
 
+/// A bordered card with an uppercase heading band; `body` adds the rows.
 fn card(
     ui: &mut egui::Ui,
     cx: &mut Cx,
     title: &str,
-    _width: f32,
+    width: f32,
     body: impl FnOnce(&mut egui::Ui, &mut Cx),
 ) {
-    let r = ui
-        .group(|ui| {
-            ui.label(RichText::new(title.to_uppercase()).font(semibold(12.0)));
+    let r = egui::Frame::new()
+        .fill(cx.t.surface)
+        .stroke(Stroke::new(1.0, cx.t.line))
+        .corner_radius(CARD_RADIUS)
+        .show(ui, |ui| {
+            ui.set_width(width - 2.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let (band, _) = ui.allocate_exact_size(vec2(width - 2.0, HEAD_H), Sense::hover());
+            let top_round = CARD_RADIUS as u8 - 1;
+            ui.painter().rect_filled(
+                band,
+                CornerRadius {
+                    nw: top_round,
+                    ne: top_round,
+                    sw: 0,
+                    se: 0,
+                },
+                cx.t.surface2,
+            );
+            ui.painter()
+                .hline(band.x_range(), band.bottom(), Stroke::new(1.0, cx.t.line));
+            ui.painter().text(
+                egui::pos2(band.left() + ROW_PAD_X, band.center().y),
+                Align2::LEFT_CENTER,
+                title.to_uppercase(),
+                semibold(12.0),
+                cx.t.fg2,
+            );
             body(ui, cx);
         })
         .response
@@ -223,42 +267,82 @@ fn card(
 }
 
 /// One settings row: label and help on the left, the control on the right.
-#[allow(clippy::too_many_arguments)]
+/// `ctrl_h` is the control's single-line height, used to centre it against
+/// the text; a control that grows (an error line) pushes the row taller.
 fn row(
     ui: &mut egui::Ui,
     cx: &mut Cx,
     label: &str,
     help: &str,
-    _ctrl_h: f32,
-    _last: bool,
+    ctrl_h: f32,
+    last: bool,
     control: impl FnOnce(&mut egui::Ui, &mut Cx, f32),
 ) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new(label).font(semibold(14.0)));
-            let r = ui.add(
-                egui::Label::new(RichText::new(help).size(12.0).color(cx.t.fg3))
-                    .wrap_mode(egui::TextWrapMode::Extend),
-            );
-            #[cfg(test)]
-            {
-                let galley = ui.painter().layout(
-                    help.to_string(),
-                    egui::FontId::proportional(12.0),
-                    cx.t.fg3,
-                    f32::INFINITY,
-                );
-                cx.probe.help.push(HelpProbe {
-                    title: label.to_string(),
-                    rect: r.rect,
-                    column_right: r.rect.left() + 300.0,
-                    galley,
-                });
-            }
-            let _ = r;
-        });
-        control(ui, cx, CTRL_W);
+    let width = ui.available_width();
+    let ctrl_w = CTRL_W.min((width - 2.0 * ROW_PAD_X - COL_GAP - LABEL_MIN_W).max(160.0));
+    let left_w = width - 2.0 * ROW_PAD_X - COL_GAP - ctrl_w;
+    let help_font = egui::FontId::proportional(12.0);
+    // Measured with the same fonts and width the labels are drawn with.
+    let label_h = ui
+        .painter()
+        .layout(label.to_string(), semibold(14.0), cx.t.fg, left_w)
+        .size()
+        .y;
+    let help_galley = (!help.is_empty()).then(|| {
+        ui.painter()
+            .layout(help.to_string(), help_font.clone(), cx.t.fg3, left_w)
     });
+    let left_h = label_h + help_galley.as_ref().map_or(0.0, |g| 2.0 + g.size().y);
+
+    let top = ui.cursor().min;
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new().max_rect(Rect::from_min_size(top, vec2(width, 100_000.0))),
+    );
+    let off = ((left_h - ctrl_h) / 2.0).max(0.0);
+    let ctrl_rect = Rect::from_min_size(
+        egui::pos2(top.x + width - ROW_PAD_X - ctrl_w, top.y + ROW_PAD_Y + off),
+        vec2(ctrl_w, 100_000.0),
+    );
+    let used = row_ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(ctrl_rect)
+                .layout(Layout::top_down(Align::Max)),
+            |ui| control(ui, cx, ctrl_w),
+        )
+        .response
+        .rect;
+    let content_h = left_h.max(off + used.height());
+    let text_rect = Rect::from_min_size(
+        egui::pos2(
+            top.x + ROW_PAD_X,
+            top.y + ROW_PAD_Y + (content_h - left_h) / 2.0,
+        ),
+        vec2(left_w, 100_000.0),
+    );
+    row_ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.add(egui::Label::new(RichText::new(label).font(semibold(14.0)).color(cx.t.fg)).wrap());
+        if let Some(galley) = help_galley {
+            let r = ui
+                .add(egui::Label::new(RichText::new(help).font(help_font).color(cx.t.fg3)).wrap());
+            #[cfg(test)]
+            cx.probe.help.push(HelpProbe {
+                title: label.to_string(),
+                rect: r.rect,
+                column_right: text_rect.right(),
+                galley,
+            });
+            #[cfg(not(test))]
+            let _ = (r, galley);
+        }
+    });
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(width, content_h + 2.0 * ROW_PAD_Y), Sense::hover());
+    if !last {
+        ui.painter()
+            .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, cx.t.line));
+    }
 }
 
 // ---- cards ----
@@ -530,6 +614,10 @@ fn cached_card(ui: &mut egui::Ui, cx: &mut Cx, state: &mut SettingsState, width:
                             .min_size(vec2(CLEAR_W, FIELD_H)),
                     );
                     cx.rec("clear-cached", b.rect);
+                    #[cfg(test)]
+                    {
+                        cx.probe.clear_id = Some(b.id);
+                    }
                     if b.clicked() && !held {
                         state.click_clear_cached(now);
                     }
@@ -838,6 +926,3 @@ fn pick_folder(current: &str) -> Option<String> {
 fn pick_folder(_current: &str) -> Option<String> {
     None
 }
-
-#[allow(unused)]
-fn _unused(_: Align, _: Layout) {}
