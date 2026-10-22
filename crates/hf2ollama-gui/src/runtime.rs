@@ -3,7 +3,7 @@
 
 use eframe::egui;
 use hf2ollama_core::config::Settings;
-use hf2ollama_core::events::{Command, JobEvent};
+use hf2ollama_core::events::{Command, JobEvent, JobId};
 use hf2ollama_core::hf::{HfClient, ModelInfo, ModelSummary, SearchQuery};
 use hf2ollama_core::history::History;
 use hf2ollama_core::ollama::{InstalledModel, ModelDetails, OllamaClient};
@@ -37,6 +37,12 @@ pub enum BackendRequest {
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     Job(JobEvent),
+    /// A started import got its id; carries what the dock shows for the row.
+    JobAccepted {
+        id: JobId,
+        model_name: String,
+        total_bytes: u64,
+    },
     /// Echoes the query so callers can tell concurrent searches apart.
     SearchDone(SearchQuery, Result<Vec<ModelSummary>, String>),
     ModelInfoLoaded(String, Result<ModelInfo, String>),
@@ -488,6 +494,48 @@ mod tests {
             _ => None,
         });
         assert_eq!(queued, failed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_emits_job_accepted_with_model_name_and_total() {
+        use hf2ollama_core::model::RepoFile;
+        let h = harness("http://127.0.0.1:1", "http://127.0.0.1:9");
+        let file = |path: &str, size: u64| RepoFile {
+            path: path.into(),
+            size,
+            sha256: None,
+            blob_id: None,
+        };
+        h.tx.send(BackendRequest::Core(Command::StartImport(ImportRequest {
+            repo_id: "a/b".into(),
+            files: vec![file("m-Q4.gguf", 4_000), file("extra.gguf", 250)],
+            model_name: "qwen:q4".into(),
+            quantize: None,
+            overwrite: false,
+        })))
+        .unwrap();
+        // Either may arrive first; collect both.
+        let (mut accepted, mut queued) = (None, None);
+        wait_for(&h.rx, |e| {
+            match e {
+                UiEvent::JobAccepted {
+                    id,
+                    model_name,
+                    total_bytes,
+                } => accepted = Some((*id, model_name.clone(), *total_bytes)),
+                UiEvent::Job(JobEvent::Stage {
+                    id,
+                    stage: Stage::Queued,
+                }) => queued = Some(*id),
+                _ => {}
+            }
+            (accepted.is_some() && queued.is_some()).then_some(())
+        });
+        let (id, name, total) = accepted.unwrap();
+        let queued = queued.unwrap();
+        assert_eq!(name, "qwen:q4");
+        assert_eq!(total, 4_250);
+        assert_eq!(id, queued, "the accepted id is the id the events carry");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
