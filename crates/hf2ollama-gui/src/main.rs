@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 mod theme;
+mod widgets;
 
 use eframe::egui;
 
