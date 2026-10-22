@@ -27,6 +27,8 @@ pub struct Probe {
     pub table_label: Option<egui::Rect>,
     /// The options table header as painted (in place, or stuck at the top).
     pub table_header: Option<egui::Rect>,
+    /// The left filter rail panel.
+    pub rail: Option<egui::Rect>,
 }
 
 pub mod detail;

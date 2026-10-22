@@ -208,7 +208,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState) {
     let before = app.browse.filters.clone();
     let machine = app.machine.clone();
     let f = &mut app.browse.filters;
-    egui::Panel::left("filters")
+    let panel = egui::Panel::left("filters")
         .exact_size(200.0)
         .resizable(false)
         .frame(
@@ -268,6 +268,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState) {
                     }
                 });
         });
+    #[cfg(test)]
+    {
+        app.browse.probe.rail = Some(panel.response.rect);
+    }
+    #[cfg(not(test))]
+    let _ = panel;
     if app.browse.filters != before {
         app.browse.apply_filters();
     }
