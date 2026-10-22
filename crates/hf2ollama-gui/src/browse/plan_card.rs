@@ -129,7 +129,7 @@ pub fn step_chips(ui: &mut egui::Ui, labels: &[&str]) -> Vec<egui::Rect> {
 /// primary button is pressed.
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
-    let reachable = matches!(app.ollama, Some(Some(_)));
+    let reachable = app.ollama.as_ref().map(|o| o.is_some());
     let reason = app.browse.import_block_reason(reachable);
     let delete_after = app.delete_after_import;
 

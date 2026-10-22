@@ -529,7 +529,8 @@ impl BrowseState {
     }
 
     /// Why the import button is disabled, if it is.
-    pub fn import_block_reason(&self, ollama_reachable: bool) -> Option<String> {
+    /// `ollama` is `None` until the first status poll has answered.
+    pub fn import_block_reason(&self, ollama: Option<bool>) -> Option<String> {
         if self.selected_is_gated() {
             return Some(GATED_MESSAGE.to_string());
         }
@@ -548,10 +549,26 @@ impl BrowseState {
                     .to_string(),
             );
         }
-        if !ollama_reachable {
+        if ollama == Some(false) {
             return Some("Ollama is not reachable. Start Ollama, then try again.".to_string());
         }
         None
+    }
+
+    /// True once after a repository's plan was (re)built: the options table
+    /// should scroll the recommended row into view.
+    pub fn take_scroll_request(&mut self) -> bool {
+        unimplemented!()
+    }
+
+    /// True when the selected repository loaded but is marked gated.
+    pub fn selected_info_gated(&self) -> bool {
+        unimplemented!()
+    }
+
+    /// Asks for the related-GGUF search again (Retry button).
+    pub fn retry_related(&mut self) {
+        unimplemented!()
     }
 
     /// True when the selected repository failed with a gated-access error.
@@ -872,6 +889,127 @@ mod tests {
     }
 
     #[test]
+    fn gguf_options_are_ordered_by_size_descending() {
+        let id = "o/m-GGUF";
+        let files = vec![
+            file("m-Q2_K.gguf", 3 * GB),
+            file("m-Q8_0.gguf", 8 * GB),
+            file("m-Q4_K_M.gguf", 4_680_000_000),
+            file("m-Q6_K.gguf", 6 * GB),
+        ];
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        st.on_model_info(id, Ok(info(id, files, None)));
+        st.select_repo(id);
+        let labels: Vec<String> = st
+            .plan()
+            .expect("plan")
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect();
+        assert_eq!(labels, ["Q8_0", "Q6_K", "Q4_K_M", "Q2_K"]);
+        assert_eq!(selected_label(&st), "Q4_K_M");
+        // Request files follow the sorted order too.
+        let req = st.import_request().expect("request");
+        assert_eq!(req.files[0].path, "m-Q4_K_M.gguf");
+    }
+
+    #[test]
+    fn scroll_request_fires_once_per_plan_not_on_user_clicks() {
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        let (id, i) = gguf_repo();
+        st.select_repo(id);
+        assert!(!st.take_scroll_request(), "nothing to scroll to yet");
+        st.on_model_info(id, Ok(i));
+        assert!(st.take_scroll_request(), "plan arrived");
+        assert!(!st.take_scroll_request(), "only once");
+        st.select_option(0);
+        assert!(!st.take_scroll_request(), "user clicks never scroll");
+        let (id2, i2) = st_repo();
+        st.on_model_info(id2, Ok(i2));
+        st.select_repo(id2);
+        assert!(st.take_scroll_request(), "cached repo selected");
+    }
+
+    #[test]
+    fn gated_repo_info_shows_warning_but_allows_import() {
+        let (id, mut i) = gguf_repo();
+        i.gated = true;
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        st.on_model_info(id, Ok(i));
+        st.select_repo(id);
+        assert!(st.selected_info_gated());
+        assert!(!st.selected_is_gated(), "not the blocking error case");
+        assert_eq!(st.import_block_reason(Some(true)), None);
+        assert!(st.import_request().is_some());
+        let (id2, i2) = st_repo();
+        st.on_model_info(id2, Ok(i2));
+        st.select_repo(id2);
+        assert!(!st.selected_info_gated());
+    }
+
+    #[test]
+    fn http_401_and_403_count_as_gated_errors() {
+        for e in [
+            "gated repository: o/m",
+            "HTTP 401: Unauthorized",
+            "HTTP 403: Forbidden",
+        ] {
+            assert!(is_gated_error(e), "{e}");
+        }
+        for e in [
+            "HTTP 500: oops",
+            "network error: dns",
+            "HTTP 404: not found",
+        ] {
+            assert!(!is_gated_error(e), "{e}");
+        }
+    }
+
+    #[test]
+    fn retry_clears_cached_error_and_requeues_model_info() {
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        let id = "meta-llama/Llama-3.2-1B";
+        st.select_repo(id);
+        assert_eq!(st.next_info_requests(), [id]);
+        st.on_model_info(id, Err("HTTP 403: Forbidden".into()));
+        assert!(st.selected_is_gated());
+        assert!(st.info_for(id).is_some());
+        st.retry_info(id);
+        assert!(st.info_for(id).is_none(), "cached error cleared");
+        assert!(!st.selected_is_gated());
+        assert_eq!(st.next_info_requests(), [id], "re-enqueued");
+        assert!(st.info_pending(id));
+    }
+
+    #[test]
+    fn related_search_failure_shows_retry() {
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        let bad = "EleutherAI/gpt-j-6b";
+        st.on_model_info(
+            bad,
+            Ok(info(bad, vec![file("pytorch_model.bin", GB)], None)),
+        );
+        st.select_repo(bad);
+        let q = st.next_related_request().expect("first");
+        st.on_search_done(&q, Err("network error: down".into()));
+        assert!(matches!(st.related, SearchStatus::Failed(_)));
+        assert!(st.next_related_request().is_none(), "no automatic retry");
+        st.retry_related();
+        let again = st.next_related_request().expect("retried");
+        assert_eq!(again, q);
+        assert_eq!(st.related, SearchStatus::Loading);
+    }
+
+    #[test]
+    fn ollama_status_not_yet_polled_blocks_with_checking_reason() {
+        let st = loaded(machine(32.0, Some(16.0)), gguf_repo());
+        let why = st.import_block_reason(None).expect("blocked");
+        assert!(why.contains("Checking Ollama"), "{why}");
+        assert!(!why.contains("not reachable"), "{why}");
+    }
+
+    #[test]
     fn selecting_model_picks_recommended_option() {
         let g = loaded(machine(32.0, Some(16.0)), gguf_repo());
         assert_eq!(selected_label(&g), "Q4_K_M");
@@ -976,7 +1114,7 @@ mod tests {
             st.plan().map(|p| &p.kind),
             Some(PlanKind::Unsupported(_))
         ));
-        assert!(st.import_block_reason(true).is_some());
+        assert!(st.import_block_reason(Some(true)).is_some());
     }
 
     #[test]
@@ -1029,7 +1167,7 @@ mod tests {
         st.on_model_info(id, Err("gated repository: meta-llama/Llama-3.2-1B".into()));
         st.select_repo(id);
         assert!(st.selected_is_gated());
-        let why = st.import_block_reason(true).expect("blocked");
+        let why = st.import_block_reason(Some(true)).expect("blocked");
         assert!(
             why.contains("access token") && why.contains("Settings"),
             "{why}"
@@ -1040,19 +1178,19 @@ mod tests {
     #[test]
     fn invalid_model_name_disables_import_with_reason() {
         let mut st = loaded(machine(32.0, Some(16.0)), gguf_repo());
-        assert_eq!(st.import_block_reason(true), None);
+        assert_eq!(st.import_block_reason(Some(true)), None);
         st.name = "Bad Name".to_string();
         st.name_edited = true;
-        let why = st.import_block_reason(true).expect("blocked");
+        let why = st.import_block_reason(Some(true)).expect("blocked");
         assert!(why.to_lowercase().contains("name"), "{why}");
     }
 
     #[test]
     fn ollama_unreachable_disables_import_with_reason() {
         let st = loaded(machine(32.0, Some(16.0)), gguf_repo());
-        let why = st.import_block_reason(false).expect("blocked");
+        let why = st.import_block_reason(Some(false)).expect("blocked");
         assert!(why.contains("Ollama"), "{why}");
-        assert_eq!(st.import_block_reason(true), None);
+        assert_eq!(st.import_block_reason(Some(true)), None);
     }
 
     #[test]
