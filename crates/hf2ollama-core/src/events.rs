@@ -40,3 +40,21 @@ pub enum Command {
     Resume(JobId),
     Cancel(JobId),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn job_event_roundtrips_through_channel() {
+        let (tx, rx) = mpsc::channel();
+        let ev = JobEvent::Progress {
+            id: JobId(1),
+            done: 5,
+            total: 10,
+        };
+        tx.send(ev.clone()).unwrap();
+        assert_eq!(rx.recv().unwrap(), ev);
+    }
+}
