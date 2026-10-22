@@ -24,7 +24,6 @@ use tokio::sync::Notify;
 pub struct HfToken(String);
 
 impl HfToken {
-    #[allow(dead_code)] // removed when the Settings view lands (next commits)
     pub fn new(token: impl Into<String>) -> HfToken {
         HfToken(token.into())
     }
@@ -40,7 +39,6 @@ impl std::fmt::Debug for HfToken {
     }
 }
 
-#[allow(dead_code)] // removed when the Settings view lands (next commits)
 #[derive(Debug, Clone)]
 pub enum BackendRequest {
     Core(Command),
@@ -83,7 +81,6 @@ pub struct CachedRow {
     pub partial: bool,
 }
 
-#[allow(dead_code)] // removed when the Settings view lands (next commits)
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     Job(JobEvent),

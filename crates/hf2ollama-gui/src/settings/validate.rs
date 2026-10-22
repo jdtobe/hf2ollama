@@ -1,7 +1,5 @@
 //! Pure validation of settings fields. No egui in here.
 
-#![allow(dead_code)] // used from the settings state in the next commit
-
 use std::path::Path;
 
 const URL_HINT: &str =
