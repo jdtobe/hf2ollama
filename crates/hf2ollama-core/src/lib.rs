@@ -10,5 +10,6 @@ pub mod model;
 pub mod names;
 pub mod ollama;
 pub mod paths;
+pub mod pipeline;
 pub mod secrets;
 pub mod staging;
