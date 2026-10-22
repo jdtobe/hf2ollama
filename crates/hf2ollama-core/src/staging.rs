@@ -33,43 +33,181 @@ pub struct JobDir {
     path: PathBuf,
 }
 
+fn io_err(e: std::io::Error) -> Error {
+    Error::Io(e.to_string())
+}
+
+/// True only for a real (non-symlink) directory named `job-<digits>` that
+/// carries our creation marker. Every deletion goes through this check.
+fn is_our_job_dir(path: &Path) -> bool {
+    let name_ok = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("job-"))
+        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+    if !name_ok {
+        return false;
+    }
+    let is_real_dir = std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_dir())
+        .unwrap_or(false);
+    let marked = std::fs::symlink_metadata(path.join(JOB_MARKER))
+        .map(|m| m.file_type().is_file())
+        .unwrap_or(false);
+    is_real_dir && marked
+}
+
+fn remove_job_dir(path: &Path) -> Result<()> {
+    if !is_our_job_dir(path) {
+        return Err(Error::UnsafePath(path.display().to_string()));
+    }
+    std::fs::remove_dir_all(path).map_err(io_err)
+}
+
+fn has_marker(dir: &Path, name: &str) -> bool {
+    std::fs::symlink_metadata(dir.join(name)).is_ok()
+}
+
+/// Total size of regular files below `path`, never following symlinks.
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_size(&e.path()),
+            Ok(m) if m.is_file() => m.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
 impl Staging {
     pub fn new(root: PathBuf) -> Staging {
-        todo!()
+        Staging { root }
     }
 
     pub fn create_job(&self, id: JobId, needed_bytes: u64) -> Result<JobDir> {
-        todo!()
+        std::fs::create_dir_all(&self.root).map_err(io_err)?;
+        let available = fs4::available_space(&self.root).map_err(io_err)?;
+        if needed_bytes > available {
+            return Err(Error::InsufficientSpace {
+                needed: needed_bytes,
+                available,
+            });
+        }
+        let path = self.root.join(format!("job-{}", id.0));
+        // create_dir fails if it already exists, so a foreign directory is never adopted.
+        std::fs::create_dir(&path).map_err(io_err)?;
+        std::fs::write(path.join(JOB_MARKER), b"").map_err(io_err)?;
+        Ok(JobDir { path })
+    }
+
+    /// Job directories created by this app: direct children of the root only.
+    fn jobs(&self) -> Result<Vec<PathBuf>> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io_err(e)),
+        };
+        let mut jobs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| is_our_job_dir(p))
+            .collect();
+        jobs.sort();
+        Ok(jobs)
     }
 
     pub fn sweep(&self, now: SystemTime, partial_ttl: Duration) -> Result<SweepReport> {
-        todo!()
+        let mut report = SweepReport::default();
+        for job in self.jobs()? {
+            if has_marker(&job, KEPT_MARKER) {
+                continue;
+            }
+            let expired = if has_marker(&job, PARTIAL_MARKER) {
+                let age = std::fs::symlink_metadata(job.join(PARTIAL_MARKER))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| now.duration_since(t).ok())
+                    .unwrap_or(Duration::ZERO);
+                if age <= partial_ttl {
+                    report.kept_partials += 1;
+                    continue;
+                }
+                true
+            } else {
+                false
+            };
+            let bytes = dir_size(&job);
+            remove_job_dir(&job)?;
+            report.freed_bytes += bytes;
+            if expired {
+                report.removed_expired += 1;
+            } else {
+                report.removed_orphans += 1;
+            }
+        }
+        Ok(report)
     }
 
     pub fn list_cached(&self) -> Result<Vec<CachedEntry>> {
-        todo!()
+        Ok(self
+            .jobs()?
+            .into_iter()
+            .filter_map(|job| {
+                let kept = has_marker(&job, KEPT_MARKER);
+                let partial = has_marker(&job, PARTIAL_MARKER);
+                if !kept && !partial {
+                    return None;
+                }
+                Some(CachedEntry {
+                    label: job.file_name()?.to_string_lossy().into_owned(),
+                    bytes: dir_size(&job),
+                    partial: partial && !kept,
+                })
+            })
+            .collect())
     }
 
+    /// Removes kept (finished with keep) job directories and returns the bytes freed.
     pub fn clear_cached(&self) -> Result<u64> {
-        todo!()
+        let mut freed = 0;
+        for job in self.jobs()? {
+            if has_marker(&job, KEPT_MARKER) {
+                let bytes = dir_size(&job);
+                remove_job_dir(&job)?;
+                freed += bytes;
+            }
+        }
+        Ok(freed)
     }
 }
 
 impl JobDir {
     pub fn path(&self) -> &Path {
-        todo!()
+        &self.path
     }
 
     pub fn finish(self, keep: bool) -> Result<()> {
-        todo!()
+        if keep {
+            std::fs::write(self.path.join(KEPT_MARKER), b"").map_err(io_err)?;
+            match std::fs::remove_file(self.path.join(PARTIAL_MARKER)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_err(e)),
+                _ => Ok(()),
+            }
+        } else {
+            remove_job_dir(&self.path)
+        }
     }
 
     pub fn mark_partial(&self) -> Result<()> {
-        todo!()
+        std::fs::write(self.path.join(PARTIAL_MARKER), b"").map_err(io_err)
     }
 
     pub fn discard(self) -> Result<()> {
-        todo!()
+        remove_job_dir(&self.path)
     }
 }
 
@@ -167,7 +305,7 @@ mod tests {
         assert_eq!(fresh.kept_partials, 1);
         assert_eq!(fresh.removed_expired, 0);
         assert!(p.exists());
-        assert_eq!(s.list_cached().unwrap()[0].partial, true);
+        assert!(s.list_cached().unwrap()[0].partial);
 
         let later = SystemTime::now() + Duration::from_secs(7200);
         let report = s.sweep(later, ttl).unwrap();
