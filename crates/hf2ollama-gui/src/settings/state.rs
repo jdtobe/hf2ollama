@@ -2,8 +2,6 @@
 //! errors, the change flags, token and connection status, the cached files
 //! list and the two-step clear. No egui in here.
 
-#![allow(dead_code)] // stubs until the behavior commit
-
 use super::validate::{
     clamp_max_parallel, parse_gb, validate_hf_endpoint, validate_ollama_url, validate_staging_dir,
 };
@@ -12,7 +10,7 @@ use crate::confirm::Confirm;
 use crate::runtime::{BackendRequest, CachedRow, HfToken, HfTokenStatus};
 use hf2ollama_core::config::{AutoDismiss, Settings, ThemeChoice};
 use hf2ollama_core::fit::Machine;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long "Saved" stays next to the heading.
@@ -43,7 +41,15 @@ impl SettingsChange {
     }
 
     pub fn merge(&mut self, other: SettingsChange) {
-        let _ = other;
+        self.ollama_url |= other.ollama_url;
+        self.staging_dir |= other.staging_dir;
+        self.delete_after_import |= other.delete_after_import;
+        self.keep_partials |= other.keep_partials;
+        self.max_parallel |= other.max_parallel;
+        self.auto_dismiss |= other.auto_dismiss;
+        self.hf_endpoint |= other.hf_endpoint;
+        self.hardware |= other.hardware;
+        self.theme |= other.theme;
     }
 }
 
@@ -62,10 +68,15 @@ pub struct ConnectionMessage {
 }
 
 pub fn connection_message(r: &Result<String, String>) -> ConnectionMessage {
-    let _ = r;
-    ConnectionMessage {
-        ok: false,
-        text: String::new(),
+    match r {
+        Ok(version) => ConnectionMessage {
+            ok: true,
+            text: format!("Connected, Ollama {version}"),
+        },
+        Err(e) => ConnectionMessage {
+            ok: false,
+            text: format!("Could not connect: {e}"),
+        },
     }
 }
 
@@ -93,29 +104,65 @@ pub enum BadgeKind {
 
 /// Text and colour class of the token badge.
 pub fn token_badge(status: &HfTokenStatus) -> (BadgeKind, String) {
-    let _ = status;
-    (BadgeKind::Ok, String::new())
+    match status {
+        HfTokenStatus::None => (BadgeKind::Neutral, "No token saved".to_string()),
+        HfTokenStatus::Saved => (BadgeKind::Neutral, "Saved, not checked yet".to_string()),
+        HfTokenStatus::Valid(name) => (BadgeKind::Ok, format!("Valid, signed in as {name}")),
+        HfTokenStatus::Invalid(why) => (BadgeKind::Bad, format!("Invalid: {why}")),
+        HfTokenStatus::Unreachable(why) => (BadgeKind::Neutral, format!("Could not check: {why}")),
+    }
 }
 
 /// "3 folders, 4.68 GB" for the Cached files list.
 pub fn cached_total(rows: &[CachedRow]) -> String {
-    let _ = rows;
-    String::new()
+    if rows.is_empty() {
+        return "Nothing cached".to_string();
+    }
+    let bytes = rows.iter().fold(0u64, |a, r| a.saturating_add(r.bytes));
+    let n = rows.len();
+    format!(
+        "{n} {}, {}",
+        if n == 1 { "folder" } else { "folders" },
+        format_size(bytes)
+    )
 }
 
 /// The machine used for fit estimates: the override, else what was detected.
 pub fn effective_machine(settings: &Settings, detected: &Machine) -> Machine {
-    let _ = (settings, detected);
-    Machine {
-        ram_gb: 0.0,
-        vram_gb: None,
-    }
+    settings
+        .hardware_override
+        .clone()
+        .unwrap_or_else(|| detected.clone())
 }
 
 /// "16 GB VRAM · 32 GB RAM", or an honest "VRAM not detected".
 pub fn detected_line(detected: Option<&Machine>) -> String {
-    let _ = detected;
-    String::new()
+    let Some(m) = detected else {
+        return "Hardware not detected".to_string();
+    };
+    let vram = match m.vram_gb {
+        Some(v) => format!("{v:.0} GB VRAM"),
+        None => "VRAM not detected".to_string(),
+    };
+    let ram = if m.ram_gb > 0.0 {
+        format!("{:.0} GB RAM", m.ram_gb)
+    } else {
+        "RAM not detected".to_string()
+    };
+    format!("{vram} · {ram}")
+}
+
+/// `64`, `24.5`: no trailing zeros.
+fn gb_text(v: f32) -> String {
+    if v.fract() == 0.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.1}")
+    }
+}
+
+fn not_saved(e: String) -> String {
+    format!("Not saved. {e}")
 }
 
 /// There is deliberately no `Debug`: `token_input` holds what was typed.
@@ -143,6 +190,8 @@ pub struct SettingsState {
     default_staging: PathBuf,
     detected: Option<Machine>,
     pending: Vec<BackendRequest>,
+    /// The change being saved moved the staging folder.
+    staging_moved: bool,
 }
 
 impl SettingsState {
@@ -151,17 +200,22 @@ impl SettingsState {
         default_staging: PathBuf,
         detected: Option<Machine>,
     ) -> SettingsState {
-        let _ = settings;
+        let m = settings.hardware_override.as_ref();
         SettingsState {
-            ollama_text: String::new(),
+            ollama_text: settings.ollama_url.clone(),
             ollama_error: None,
-            staging_text: String::new(),
+            staging_text: settings
+                .staging_dir
+                .as_deref()
+                .unwrap_or(&default_staging)
+                .display()
+                .to_string(),
             staging_error: None,
-            hf_text: String::new(),
+            hf_text: settings.hf_endpoint.clone(),
             hf_error: None,
-            override_on: false,
-            ram_text: String::new(),
-            vram_text: String::new(),
+            override_on: m.is_some(),
+            ram_text: m.map(|m| gb_text(m.ram_gb)).unwrap_or_default(),
+            vram_text: m.and_then(|m| m.vram_gb).map(gb_text).unwrap_or_default(),
             ram_error: None,
             vram_error: None,
             token_input: String::new(),
@@ -175,6 +229,7 @@ impl SettingsState {
             default_staging,
             detected,
             pending: Vec::new(),
+            staging_moved: false,
         }
     }
 
@@ -189,99 +244,328 @@ impl SettingsState {
 
     // ---- text fields: `edit_*` validates while typing, `commit_*` applies ----
 
-    pub fn edit_ollama(&mut self) {}
+    pub fn edit_ollama(&mut self) {
+        self.ollama_error = validate_ollama_url(&self.ollama_text).err();
+        if matches!(self.connection, ConnectionState::Done(_)) {
+            self.connection = ConnectionState::Idle;
+        }
+    }
+
     pub fn commit_ollama(&mut self, s: &mut Settings) -> SettingsChange {
-        let _ = s;
-        SettingsChange::default()
+        let mut change = SettingsChange::default();
+        match validate_ollama_url(&self.ollama_text) {
+            Ok(url) => {
+                self.ollama_error = None;
+                if url != s.ollama_url {
+                    s.ollama_url.clone_from(&url);
+                    change.ollama_url = true;
+                }
+                self.ollama_text = url;
+            }
+            Err(e) => self.ollama_error = Some(not_saved(e)),
+        }
+        change
     }
-    pub fn edit_hf_endpoint(&mut self) {}
+
+    pub fn edit_hf_endpoint(&mut self) {
+        self.hf_error = validate_hf_endpoint(&self.hf_text).err();
+    }
+
     pub fn commit_hf_endpoint(&mut self, s: &mut Settings) -> SettingsChange {
-        let _ = s;
-        SettingsChange::default()
+        let mut change = SettingsChange::default();
+        match validate_hf_endpoint(&self.hf_text) {
+            Ok(url) => {
+                self.hf_error = None;
+                if url != s.hf_endpoint {
+                    s.hf_endpoint.clone_from(&url);
+                    change.hf_endpoint = true;
+                }
+                self.hf_text = url;
+            }
+            Err(e) => self.hf_error = Some(not_saved(e)),
+        }
+        change
     }
-    pub fn edit_staging(&mut self) {}
+
+    /// `None` means the default folder (empty text, or the default path).
+    fn staging_choice(&self) -> Option<PathBuf> {
+        let text = self.staging_text.trim();
+        let path = PathBuf::from(text);
+        (!text.is_empty() && path != self.default_staging).then_some(path)
+    }
+
+    pub fn edit_staging(&mut self) {
+        self.staging_error = match self.staging_choice() {
+            Some(path) => validate_staging_dir(&path).err(),
+            None => None,
+        };
+    }
+
     pub fn commit_staging(&mut self, s: &mut Settings) -> SettingsChange {
-        let _ = s;
-        SettingsChange::default()
+        let mut change = SettingsChange::default();
+        let choice = self.staging_choice();
+        if choice == s.staging_dir {
+            // Unchanged (the default folder may not exist yet: no check).
+            self.staging_error = None;
+        } else {
+            let verdict = match &choice {
+                Some(path) => validate_staging_dir(path),
+                None => Ok(()),
+            };
+            match verdict {
+                Ok(()) => {
+                    self.staging_error = None;
+                    s.staging_dir = choice;
+                    change.staging_dir = true;
+                }
+                Err(e) => self.staging_error = Some(not_saved(e)),
+            }
+        }
+        if self.staging_error.is_none() {
+            self.staging_text = s
+                .staging_dir
+                .as_deref()
+                .unwrap_or(&self.default_staging)
+                .display()
+                .to_string();
+        }
+        change
     }
 
     // ---- toggles and selects ----
 
+    fn flag<T: PartialEq>(field: &mut T, value: T) -> bool {
+        let differs = *field != value;
+        *field = value;
+        differs
+    }
+
     pub fn set_delete_after_import(&mut self, s: &mut Settings, on: bool) -> SettingsChange {
-        let _ = (s, on);
-        SettingsChange::default()
+        SettingsChange {
+            delete_after_import: Self::flag(&mut s.delete_after_import, on),
+            ..Default::default()
+        }
     }
+
     pub fn set_keep_partials(&mut self, s: &mut Settings, on: bool) -> SettingsChange {
-        let _ = (s, on);
-        SettingsChange::default()
+        SettingsChange {
+            keep_partials: Self::flag(&mut s.keep_partials, on),
+            ..Default::default()
+        }
     }
+
     pub fn set_max_parallel(&mut self, s: &mut Settings, n: u8) -> SettingsChange {
-        let _ = (s, n);
-        SettingsChange::default()
+        SettingsChange {
+            max_parallel: Self::flag(&mut s.max_parallel, clamp_max_parallel(n)),
+            ..Default::default()
+        }
     }
+
     pub fn set_auto_dismiss(&mut self, s: &mut Settings, v: AutoDismiss) -> SettingsChange {
-        let _ = (s, v);
-        SettingsChange::default()
+        SettingsChange {
+            auto_dismiss: Self::flag(&mut s.auto_dismiss, v),
+            ..Default::default()
+        }
     }
+
     pub fn set_theme(&mut self, s: &mut Settings, v: ThemeChoice) -> SettingsChange {
-        let _ = (s, v);
-        SettingsChange::default()
+        SettingsChange {
+            theme: Self::flag(&mut s.theme, v),
+            ..Default::default()
+        }
     }
 
     // ---- hardware override ----
 
-    pub fn set_override(&mut self, s: &mut Settings, on: bool) -> SettingsChange {
-        let _ = (s, on);
-        SettingsChange::default()
+    /// The numbers as typed: RAM at least 1 GB, VRAM may be empty (unknown).
+    fn parse_hardware(&self) -> (Result<f32, String>, Result<Option<f32>, String>) {
+        let ram = parse_gb(&self.ram_text).and_then(|v| {
+            if v >= 1.0 {
+                Ok(v)
+            } else {
+                Err("RAM must be at least 1 GB.".to_string())
+            }
+        });
+        let vram = if self.vram_text.trim().is_empty() {
+            Ok(None)
+        } else {
+            parse_gb(&self.vram_text).map(Some)
+        };
+        (ram, vram)
     }
-    pub fn edit_hardware(&mut self) {}
+
+    pub fn set_override(&mut self, s: &mut Settings, on: bool) -> SettingsChange {
+        let mut change = SettingsChange::default();
+        if on == self.override_on {
+            return change;
+        }
+        self.override_on = on;
+        self.ram_error = None;
+        self.vram_error = None;
+        if !on {
+            if s.hardware_override.take().is_some() {
+                change.hardware = true;
+            }
+            return change;
+        }
+        // Start from what was detected, so the numbers are never blank.
+        if let Some(d) = self.detected.clone() {
+            self.ram_text = if d.ram_gb > 0.0 {
+                gb_text(d.ram_gb)
+            } else {
+                String::new()
+            };
+            self.vram_text = d.vram_gb.map(gb_text).unwrap_or_default();
+            change = self.commit_hardware(s);
+        }
+        change
+    }
+
+    pub fn edit_hardware(&mut self) {
+        let (ram, vram) = self.parse_hardware();
+        self.ram_error = ram.err();
+        self.vram_error = vram.err();
+    }
+
     pub fn commit_hardware(&mut self, s: &mut Settings) -> SettingsChange {
-        let _ = s;
-        SettingsChange::default()
+        let mut change = SettingsChange::default();
+        if !self.override_on {
+            return change;
+        }
+        let (ram, vram) = self.parse_hardware();
+        self.ram_error = ram.clone().err();
+        self.vram_error = vram.clone().err();
+        if let (Ok(ram_gb), Ok(vram_gb)) = (ram, vram) {
+            let machine = Machine { ram_gb, vram_gb };
+            if s.hardware_override.as_ref() != Some(&machine) {
+                s.hardware_override = Some(machine);
+                change.hardware = true;
+            }
+        }
+        change
     }
 
     // ---- Hugging Face token ----
 
-    pub fn save_token(&mut self) {}
-    pub fn clear_token(&mut self) {}
+    pub fn save_token(&mut self) {
+        let token = self.token_input.trim().to_string();
+        // Gone from the field at once, whatever happens next.
+        self.token_input.clear();
+        if token.is_empty() {
+            return;
+        }
+        self.pending
+            .push(BackendRequest::SetHfToken(Some(HfToken::new(token))));
+        self.token_busy = true;
+    }
+
+    pub fn clear_token(&mut self) {
+        self.token_input.clear();
+        self.pending.push(BackendRequest::SetHfToken(None));
+        self.token_busy = true;
+    }
+
     pub fn on_token_status(&mut self, status: &HfTokenStatus) {
-        let _ = status;
+        self.token_status = status.clone();
+        self.token_busy = false;
     }
 
     // ---- connection test ----
 
-    pub fn test_connection(&mut self) {}
+    pub fn test_connection(&mut self) {
+        match validate_ollama_url(&self.ollama_text) {
+            Ok(url) => {
+                self.ollama_error = None;
+                self.connection = ConnectionState::Testing;
+                self.pending.push(BackendRequest::TestConnection(url));
+            }
+            Err(e) => {
+                self.ollama_error = Some(e);
+                self.connection = ConnectionState::Idle;
+            }
+        }
+    }
+
     pub fn on_connection_test(&mut self, r: &Result<String, String>) {
-        let _ = r;
+        self.connection = ConnectionState::Done(r.clone());
     }
 
     // ---- cached files ----
 
-    pub fn refresh_cached(&mut self) {}
+    pub fn refresh_cached(&mut self) {
+        if matches!(self.cached, CachedStatus::Error(_)) {
+            self.cached = CachedStatus::Loading;
+        }
+        self.pending.push(BackendRequest::ListCached);
+    }
+
     pub fn on_cached_loaded(&mut self, r: &Result<Vec<CachedRow>, String>) {
-        let _ = r;
+        self.cached = match r {
+            Ok(rows) => CachedStatus::Loaded(rows.clone()),
+            Err(e) => CachedStatus::Error(e.clone()),
+        };
     }
+
     pub fn click_clear_cached(&mut self, now: Instant) {
-        let _ = now;
+        if self.clear.click(CLEAR_KEY, now) {
+            self.pending.push(BackendRequest::ClearCached);
+        }
     }
+
     pub fn on_cached_cleared(&mut self, r: &Result<u64, String>, now: Instant) {
-        let _ = (r, now);
+        let text = match r {
+            Ok(bytes) => format!("Freed {}", format_size(*bytes)),
+            Err(e) => format!("Could not clear cached files: {e}"),
+        };
+        self.note = Some((text, now + NOTE_SHOWN));
+        self.pending.push(BackendRequest::ListCached);
     }
 
     // ---- saving ----
 
     /// A change was applied: the file is being written.
     pub fn note_change(&mut self, change: SettingsChange) {
-        let _ = change;
+        if change.any() {
+            self.save = SaveIndicator::Saving;
+            self.staging_moved |= change.staging_dir;
+        }
     }
+
     pub fn on_saved(&mut self, r: &Result<(), String>, now: Instant) {
-        let _ = (r, now);
+        match r {
+            Ok(()) => {
+                self.save = SaveIndicator::Saved {
+                    until: now + SAVED_SHOWN,
+                };
+                if std::mem::take(&mut self.staging_moved) {
+                    // The cached files live in the staging folder.
+                    self.refresh_cached();
+                }
+            }
+            Err(e) => self.save = SaveIndicator::Failed(e.clone()),
+        }
     }
 
     /// Expires indicators; returns when the next one is due.
     pub fn tick(&mut self, now: Instant) -> Option<Instant> {
-        let _ = now;
-        None
+        if matches!(self.save, SaveIndicator::Saved { until } if now >= until) {
+            self.save = SaveIndicator::Idle;
+        }
+        if self.note.as_ref().is_some_and(|(_, until)| now >= *until) {
+            self.note = None;
+        }
+        self.clear.expire(now);
+        [
+            match self.save {
+                SaveIndicator::Saved { until } => Some(until),
+                _ => None,
+            },
+            self.note.as_ref().map(|(_, until)| *until),
+            self.clear.next_due(now),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 }
 
@@ -876,6 +1160,5 @@ mod tests {
             .staging_error
             .as_deref()
             .is_some_and(|e| e.contains("does not exist")));
-        let _ = Path::new("");
     }
 }
