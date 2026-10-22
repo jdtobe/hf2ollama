@@ -1,14 +1,16 @@
 //! Pure Browse state: selection, option table, model name and import request.
 //! Nothing here draws or touches the network.
 
+use super::filters::{self, Filters};
 use super::options::{self, OptionRow};
 use hf2ollama_core::compat::{self, Compat, GgufOption};
 use hf2ollama_core::fit::Machine;
-use hf2ollama_core::hf::ModelInfo;
+use hf2ollama_core::hf::{FormatFilter, ModelInfo, ModelSummary, SearchQuery};
 use hf2ollama_core::model::{ImportRequest, RepoFile};
 use hf2ollama_core::names::validate_model_name;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// What the options table is built from.
 #[derive(Debug, Clone)]
@@ -25,7 +27,65 @@ pub struct Plan {
     pub rows: Vec<OptionRow>,
 }
 
+/// How long typing must pause before Hugging Face is queried.
+pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(350);
+/// Results requested per search.
+pub const SEARCH_LIMIT: u32 = 40;
+
+/// Fires once, `delay` after the last `touch`. The clock is injected so tests
+/// need no sleeping.
+#[derive(Debug, Clone)]
+pub struct Debounce {
+    delay: Duration,
+    due: Option<Instant>,
+}
+
+impl Debounce {
+    pub fn new(delay: Duration) -> Debounce {
+        Debounce { delay, due: None }
+    }
+
+    /// Restarts the countdown.
+    pub fn touch(&mut self, now: Instant) {
+        let _ = now;
+        unimplemented!()
+    }
+
+    /// True exactly once after the countdown ran out.
+    pub fn poll(&mut self, now: Instant) -> bool {
+        let _ = now;
+        unimplemented!()
+    }
+
+    /// Time left until the countdown fires, if one is running.
+    pub fn remaining(&self, now: Instant) -> Option<Duration> {
+        let _ = now;
+        unimplemented!()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchStatus {
+    Idle,
+    Loading,
+    Failed(String),
+    Done,
+}
+
+/// Plain-language text for a failed Hugging Face request.
+pub fn friendly_error(raw: &str) -> String {
+    let _ = raw;
+    unimplemented!()
+}
+
 pub struct BrowseState {
+    pub filters: Filters,
+    all: Vec<ModelSummary>,
+    visible: Vec<usize>,
+    pub search: SearchStatus,
+    current_query: Option<SearchQuery>,
+    debounce: Debounce,
+    seen_key: Option<(String, Vec<FormatFilter>, hf2ollama_core::hf::SortKey)>,
     machine: Machine,
     supported: Vec<String>,
     infos: HashMap<String, Result<Arc<ModelInfo>, String>>,
@@ -95,6 +155,13 @@ pub fn safetensors_import_files(files: &[RepoFile]) -> Vec<RepoFile> {
 impl BrowseState {
     pub fn new(machine: Machine) -> BrowseState {
         BrowseState {
+            filters: Filters::default(),
+            all: Vec::new(),
+            visible: Vec::new(),
+            search: SearchStatus::Idle,
+            current_query: None,
+            debounce: Debounce::new(SEARCH_DEBOUNCE),
+            seen_key: None,
             machine,
             supported: compat::bundled_supported(),
             infos: HashMap::new(),
@@ -104,6 +171,65 @@ impl BrowseState {
             name: String::new(),
             name_edited: false,
         }
+    }
+
+    /// Call every frame with the search box text. Returns the query to send
+    /// once the first frame has run or typing and filter changes have paused.
+    pub fn tick(&mut self, text: &str, now: Instant) -> Option<SearchQuery> {
+        let _ = (text, now);
+        unimplemented!()
+    }
+
+    /// Sends the current text and filters again (Retry button).
+    pub fn search_now(&mut self, text: &str) -> SearchQuery {
+        let _ = text;
+        unimplemented!()
+    }
+
+    pub fn debounce_remaining(&self, now: Instant) -> Option<Duration> {
+        self.debounce.remaining(now)
+    }
+
+    /// Folds a search answer in. Answers to other queries are ignored.
+    pub fn on_search_done(&mut self, q: &SearchQuery, r: Result<Vec<ModelSummary>, String>) {
+        let _ = (q, r);
+        unimplemented!()
+    }
+
+    /// Replaces the loaded results.
+    pub fn load_results(&mut self, list: Vec<ModelSummary>) {
+        let _ = list;
+        unimplemented!()
+    }
+
+    /// Recomputes which loaded results pass the filters.
+    pub fn apply_filters(&mut self) {
+        unimplemented!()
+    }
+
+    /// Selects the `idx`-th visible result.
+    pub fn select_model(&mut self, idx: usize) {
+        let _ = idx;
+        unimplemented!()
+    }
+
+    pub fn visible(&self) -> impl Iterator<Item = &ModelSummary> {
+        self.visible.iter().filter_map(|&i| self.all.get(i))
+    }
+
+    pub fn visible_len(&self) -> usize {
+        self.visible.len()
+    }
+
+    pub fn loaded_len(&self) -> usize {
+        self.all.len()
+    }
+
+    /// The summary of `id` with parameters and architecture filled from the
+    /// cached repository info (the list endpoint does not report them).
+    pub fn enriched(&self, summary: &ModelSummary) -> ModelSummary {
+        let _ = summary;
+        unimplemented!()
     }
 
     pub fn selected_id(&self) -> Option<&str> {
@@ -358,6 +484,142 @@ mod tests {
     fn selected_label(st: &BrowseState) -> String {
         let i = st.selected_option().expect("option selected");
         st.plan().expect("plan").rows[i].label.clone()
+    }
+
+    fn summary(id: &str, params: Option<&str>) -> ModelSummary {
+        let (owner, name) = id.split_once('/').unwrap_or(("", id));
+        ModelSummary {
+            id: id.to_string(),
+            owner: owner.to_string(),
+            name: name.to_string(),
+            downloads: 1,
+            likes: 1,
+            updated: "2026-10-01T00:00:00.000Z".to_string(),
+            params: params.map(str::to_string),
+            arch: None,
+            is_gguf: true,
+            is_safetensors: false,
+        }
+    }
+
+    #[test]
+    fn search_debounce_emits_one_query_after_typing_stops() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        // The very first frame searches immediately.
+        let first = st.tick("", ms(0)).expect("initial query");
+        assert_eq!(first.text, "");
+        assert_eq!(st.search, SearchStatus::Loading);
+        // Typing: nothing is sent while the text keeps changing.
+        assert!(st.tick("q", ms(100)).is_none());
+        assert!(st.tick("qw", ms(200)).is_none());
+        assert!(st.tick("qwe", ms(300)).is_none());
+        assert!(
+            st.tick("qwe", ms(600)).is_none(),
+            "only 300 ms since last key"
+        );
+        let sent = st.tick("qwe", ms(660)).expect("fires once typing stopped");
+        assert_eq!(sent.text, "qwe");
+        assert_eq!(sent.limit, SEARCH_LIMIT);
+        assert!(st.tick("qwe", ms(2000)).is_none(), "exactly one query");
+    }
+
+    #[test]
+    fn changing_format_or_sort_requeries_through_the_debounce() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        st.tick("x", ms(0));
+        st.filters.safetensors = false;
+        assert!(st.tick("x", ms(10)).is_none());
+        let q = st.tick("x", ms(400)).expect("requery");
+        assert_eq!(q.formats, vec![FormatFilter::Gguf]);
+        st.filters.sort = hf2ollama_core::hf::SortKey::Updated;
+        assert!(st.tick("x", ms(500)).is_none());
+        let q = st.tick("x", ms(900)).expect("requery");
+        assert_eq!(q.sort, hf2ollama_core::hf::SortKey::Updated);
+        // Client-side filters never requery.
+        st.filters.params = filters::ParamRange::Over40;
+        st.filters.only_fit = true;
+        assert!(st.tick("x", ms(1000)).is_none());
+        assert!(st.tick("x", ms(2000)).is_none());
+    }
+
+    #[test]
+    fn search_answers_for_other_queries_are_ignored() {
+        let t0 = Instant::now();
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        let q = st.tick("a", t0).expect("query");
+        let mut stale = q.clone();
+        stale.text = "old".into();
+        st.on_search_done(&stale, Ok(vec![summary("o/stale", None)]));
+        assert_eq!(st.search, SearchStatus::Loading);
+        assert_eq!(st.visible_len(), 0);
+        st.on_search_done(&q, Ok(vec![summary("o/a", None), summary("o/b", None)]));
+        assert_eq!(st.search, SearchStatus::Done);
+        assert_eq!(st.visible_len(), 2);
+        st.select_model(1);
+        assert_eq!(st.selected_id(), Some("o/b"));
+    }
+
+    #[test]
+    fn search_failure_is_kept_for_display() {
+        let t0 = Instant::now();
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        let q = st.tick("a", t0).expect("query");
+        st.on_search_done(&q, Err("network error: boom".into()));
+        assert!(matches!(st.search, SearchStatus::Failed(_)));
+        let again = st.search_now("a");
+        assert_eq!(st.search, SearchStatus::Loading);
+        assert_eq!(again.text, "a");
+    }
+
+    #[test]
+    fn friendly_error_explains_rate_limits_and_network_failures() {
+        let rl = friendly_error("HTTP 429: rate limited, retry after 42s");
+        assert!(rl.contains("rate") && rl.contains("42"), "{rl}");
+        let rl2 = friendly_error("HTTP 429: rate limited, retry later");
+        assert!(rl2.contains("rate") && rl2.contains("later"), "{rl2}");
+        let net = friendly_error("network error: dns error");
+        assert!(net.contains("Could not reach Hugging Face"), "{net}");
+        assert_eq!(friendly_error("HTTP 500: oops"), "HTTP 500: oops");
+    }
+
+    #[test]
+    fn debounce_fires_once_per_touch() {
+        let t0 = Instant::now();
+        let mut d = Debounce::new(Duration::from_millis(350));
+        assert!(!d.poll(t0));
+        d.touch(t0);
+        assert_eq!(d.remaining(t0), Some(Duration::from_millis(350)));
+        assert!(!d.poll(t0 + Duration::from_millis(349)));
+        assert!(d.poll(t0 + Duration::from_millis(350)));
+        assert!(!d.poll(t0 + Duration::from_millis(900)));
+        assert_eq!(d.remaining(t0 + Duration::from_millis(900)), None);
+    }
+
+    #[test]
+    fn cached_params_feed_the_parameter_filter() {
+        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
+        st.load_results(vec![summary("o/small", None), summary("o/big", None)]);
+        st.on_model_info("o/big", {
+            let mut i = info("o/big", vec![], None);
+            i.params = Some("70B".into());
+            Ok(i)
+        });
+        st.on_model_info("o/small", {
+            let mut i = info("o/small", vec![], None);
+            i.params = Some("1.5B".into());
+            Ok(i)
+        });
+        assert_eq!(st.visible_len(), 2);
+        st.filters.params = filters::ParamRange::Under3;
+        st.apply_filters();
+        let ids: Vec<&str> = st.visible().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["o/small"]);
+        let e = st.enriched(&summary("o/big", None));
+        assert_eq!(e.params.as_deref(), Some("70B"));
     }
 
     #[test]

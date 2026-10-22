@@ -115,3 +115,119 @@ pub fn passes(summary: &ModelSummary, f: &Filters, machine: &Machine) -> bool {
     let _ = (summary, f, machine);
     unimplemented!()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(params: Option<&str>, gguf: bool, st: bool, name: &str) -> ModelSummary {
+        ModelSummary {
+            id: format!("o/{name}"),
+            owner: "o".into(),
+            name: name.into(),
+            downloads: 1,
+            likes: 1,
+            updated: String::new(),
+            params: params.map(str::to_string),
+            arch: None,
+            is_gguf: gguf,
+            is_safetensors: st,
+        }
+    }
+
+    fn machine(ram: f32, vram: Option<f32>) -> Machine {
+        Machine {
+            ram_gb: ram,
+            vram_gb: vram,
+        }
+    }
+
+    #[test]
+    fn parse_params_handles_units() {
+        assert_eq!(parse_params_b("7.6B"), Some(7.6));
+        assert_eq!(parse_params_b("135M"), Some(0.135));
+        assert_eq!(parse_params_b("1.2T"), Some(1200.0));
+        assert_eq!(parse_params_b("70b"), Some(70.0));
+        assert_eq!(parse_params_b("lots"), None);
+        assert_eq!(parse_params_b(""), None);
+    }
+
+    #[test]
+    fn param_ranges_have_half_open_bounds() {
+        assert!(ParamRange::Under3.contains(2.99) && !ParamRange::Under3.contains(3.0));
+        assert!(ParamRange::From3To14.contains(3.0) && !ParamRange::From3To14.contains(14.0));
+        assert!(ParamRange::From14To40.contains(14.0) && !ParamRange::From14To40.contains(40.0));
+        assert!(ParamRange::Over40.contains(40.0));
+    }
+
+    #[test]
+    fn filters_only_models_that_fit_hides_too_large() {
+        let f = Filters {
+            only_fit: true,
+            ..Filters::default()
+        };
+        let m = machine(32.0, Some(16.0));
+        // 70B at ~4 bit is 43.5 GB: more than 32 GB RAM and 16 GB VRAM.
+        assert!(!passes(&summary(Some("70B"), true, false, "big"), &f, &m));
+        assert!(passes(&summary(Some("7.6B"), true, false, "ok"), &f, &m));
+        // Unknown parameter counts always pass.
+        assert!(passes(&summary(None, true, false, "unk"), &f, &m));
+        // Without the filter nothing is hidden.
+        let off = Filters::default();
+        assert!(passes(&summary(Some("70B"), true, false, "big"), &off, &m));
+        // An undetected machine never hides anything.
+        let blind = machine(0.0, None);
+        assert!(passes(
+            &summary(Some("70B"), true, false, "big"),
+            &f,
+            &blind
+        ));
+    }
+
+    #[test]
+    fn format_filter_hides_unchecked_formats() {
+        let m = machine(32.0, Some(16.0));
+        let gguf = summary(None, true, false, "g");
+        let st = summary(None, false, true, "s");
+        let other = summary(None, false, false, "o");
+        let f = Filters::default();
+        assert!(passes(&gguf, &f, &m) && passes(&st, &f, &m) && !passes(&other, &f, &m));
+        let f = Filters {
+            gguf: false,
+            ..Filters::default()
+        };
+        assert!(!passes(&gguf, &f, &m) && passes(&st, &f, &m));
+        let f = Filters {
+            other: true,
+            ..Filters::default()
+        };
+        assert!(passes(&other, &f, &m));
+    }
+
+    #[test]
+    fn param_range_and_task_apply_client_side() {
+        let m = machine(32.0, Some(16.0));
+        let f = Filters {
+            params: ParamRange::From3To14,
+            ..Filters::default()
+        };
+        assert!(passes(&summary(Some("7B"), true, false, "a"), &f, &m));
+        assert!(!passes(&summary(Some("70B"), true, false, "a"), &f, &m));
+        assert!(passes(&summary(None, true, false, "a"), &f, &m));
+        let f = Filters {
+            embeddings: false,
+            vision: false,
+            ..Filters::default()
+        };
+        assert!(!passes(
+            &summary(None, true, false, "bge-small-embed"),
+            &f,
+            &m
+        ));
+        assert!(!passes(&summary(None, true, false, "Qwen2-VL-7B"), &f, &m));
+        assert!(passes(&summary(None, true, false, "Qwen2-7B"), &f, &m));
+        assert_eq!(task_of("nomic-embed-text"), TaskKind::Embeddings);
+        assert_eq!(task_of("llava-1.5-7b"), TaskKind::Vision);
+        assert_eq!(task_of("Llama-3.2-1B"), TaskKind::Text);
+    }
+}
