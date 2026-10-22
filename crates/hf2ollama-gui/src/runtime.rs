@@ -17,9 +17,29 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::Notify;
 
-// TODO(task 17 Settings): the Settings view constructs TestConnection and
-// ApplySettings.
-#[allow(dead_code)]
+/// A Hugging Face token on its way to the keychain. `Debug` never shows it,
+/// there is no `Display`, and it is not serializable.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HfToken(String);
+
+#[allow(dead_code)] // RED stub: the Settings backend and view use these next
+impl HfToken {
+    pub fn new(token: impl Into<String>) -> HfToken {
+        HfToken(token.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for HfToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+#[allow(dead_code)] // RED stub: the Settings backend and view use these next
 #[derive(Debug, Clone)]
 pub enum BackendRequest {
     Core(Command),
@@ -31,11 +51,39 @@ pub enum BackendRequest {
     ShowInstalled(String),
     DeleteInstalled(String),
     TestConnection(String),
+    /// Rebuilds the clients for future jobs and saves the TOML file.
     ApplySettings(Settings),
+    /// Stores (`Some`) or removes (`None`) the Hugging Face token in the
+    /// system keychain, then checks it.
+    SetHfToken(Option<HfToken>),
+    /// Asks Hugging Face whose token this is.
+    CheckHfToken,
+    ListCached,
+    ClearCached,
 }
 
-// TODO(task 17 Settings): the Settings view reads the ConnectionTest payload.
-#[allow(dead_code)]
+/// What the Settings view shows about the Hugging Face token. Never the token.
+#[allow(dead_code)] // RED stub: the Settings backend and view use these next
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HfTokenStatus {
+    None,
+    /// In the keychain, not checked (yet).
+    Saved,
+    /// Checked: the account name.
+    Valid(String),
+    Invalid(String),
+    Unreachable(String),
+}
+
+/// One cached download folder, for the Cached files list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedRow {
+    pub label: String,
+    pub bytes: u64,
+    pub partial: bool,
+}
+
+#[allow(dead_code)] // RED stub: the Settings backend and view use these next
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     Job(JobEvent),
@@ -56,6 +104,12 @@ pub enum UiEvent {
     /// Ollama version when the server is reachable.
     OllamaStatus(Option<String>),
     ConnectionTest(Result<String, String>),
+    /// Answer to `ApplySettings`: whether the TOML file was written.
+    SettingsSaved(Result<(), String>),
+    HfTokenStatus(HfTokenStatus),
+    CachedLoaded(Result<Vec<CachedRow>, String>),
+    /// Bytes freed by `ClearCached`.
+    CachedCleared(Result<u64, String>),
 }
 
 /// One installed model plus the Hugging Face repo it was imported from, when
@@ -362,6 +416,11 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         }
         // Handled synchronously in `dispatch`.
         BackendRequest::Core(_) | BackendRequest::ApplySettings(_) => return,
+        // Not wired yet.
+        BackendRequest::SetHfToken(_)
+        | BackendRequest::CheckHfToken
+        | BackendRequest::ListCached
+        | BackendRequest::ClearCached => return,
     };
     shared.out.emit(ev);
 }
@@ -385,6 +444,7 @@ mod tests {
         rx: Receiver<UiEvent>,
         repaints: Arc<AtomicUsize>,
         paths: Paths,
+        store: Arc<MemoryStore>,
         _dir: tempfile::TempDir,
     }
 
@@ -393,6 +453,15 @@ mod tests {
     }
 
     fn harness_seeded(ollama_url: &str, hf_url: &str, seed: &[(&str, &str)]) -> Harness {
+        harness_with(ollama_url, hf_url, seed, Arc::new(MemoryStore::default()))
+    }
+
+    fn harness_with(
+        ollama_url: &str,
+        hf_url: &str,
+        seed: &[(&str, &str)],
+        store: Arc<MemoryStore>,
+    ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             config_file: dir.path().join("hf2ollama.toml"),
@@ -413,17 +482,13 @@ mod tests {
         ctx.set_request_repaint_callback(move |_| {
             counter.fetch_add(1, Ordering::SeqCst);
         });
-        let (tx, rx) = Backend::spawn_with(
-            ctx,
-            settings,
-            paths.clone(),
-            Arc::new(MemoryStore::default()),
-        );
+        let (tx, rx) = Backend::spawn_with(ctx, settings, paths.clone(), store.clone());
         Harness {
             tx,
             rx,
             repaints,
             paths,
+            store,
             _dir: dir,
         }
     }
@@ -719,5 +784,357 @@ mod tests {
             Some(Some("o/mine".to_string())),
             "the :latest-normalized key is tried"
         );
+    }
+
+    // ---- settings, token and cached files ----
+
+    const SECRET: &str = "hf_supersecret_token_123";
+
+    async fn whoami_server(name: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/whoami-v2"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                format!("Bearer {SECRET}").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": name
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn status(h: &Harness) -> HfTokenStatus {
+        wait_for(&h.rx, |e| match e {
+            UiEvent::HfTokenStatus(s) => Some(s.clone()),
+            _ => None,
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_save_goes_to_token_store_not_settings() {
+        let hf = whoami_server("jdtobe").await;
+        let h = harness("http://127.0.0.1:1", &hf.uri());
+        // Startup status first (no token yet).
+        assert_eq!(status(&h), HfTokenStatus::None);
+        h.tx.send(BackendRequest::SetHfToken(Some(HfToken::new(SECRET))))
+            .unwrap();
+        assert_eq!(status(&h), HfTokenStatus::Valid("jdtobe".into()));
+        assert_eq!(h.store.get().unwrap().as_deref(), Some(SECRET));
+        // Saving settings afterwards never writes the token anywhere.
+        let settings = Settings {
+            hf_endpoint: hf.uri(),
+            delete_after_import: false,
+            ..Settings::default()
+        };
+        h.tx.send(BackendRequest::ApplySettings(settings)).unwrap();
+        assert_eq!(
+            wait_for(&h.rx, |e| match e {
+                UiEvent::SettingsSaved(r) => Some(r.clone()),
+                _ => None,
+            }),
+            Ok(())
+        );
+        let bytes = std::fs::read(&h.paths.config_file).unwrap();
+        assert!(!bytes.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()));
+        assert!(!String::from_utf8_lossy(&bytes).contains("token"));
+        for entry in std::fs::read_dir(h.paths.config_file.parent().unwrap()).unwrap() {
+            let p = entry.unwrap().path();
+            if p.is_file() {
+                let b = std::fs::read(&p).unwrap();
+                assert!(
+                    !b.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()),
+                    "{p:?} contains the token"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clearing_token_removes_it_from_the_store() {
+        let store = Arc::new(MemoryStore::default());
+        store.set(SECRET).unwrap();
+        let h = harness_with("http://127.0.0.1:1", "http://127.0.0.1:9", &[], store);
+        assert_eq!(status(&h), HfTokenStatus::Saved, "startup, no network");
+        h.tx.send(BackendRequest::SetHfToken(None)).unwrap();
+        assert_eq!(status(&h), HfTokenStatus::None);
+        assert_eq!(h.store.get().unwrap(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_startup_reports_saved_token_without_a_network_call() {
+        let hf = whoami_server("x").await;
+        let store = Arc::new(MemoryStore::default());
+        store.set(SECRET).unwrap();
+        let h = harness_with("http://127.0.0.1:1", &hf.uri(), &[], store);
+        assert_eq!(status(&h), HfTokenStatus::Saved);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(hf.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_token_check_reports_valid_account_name() {
+        let hf = whoami_server("jdtobe").await;
+        let store = Arc::new(MemoryStore::default());
+        store.set(SECRET).unwrap();
+        let h = harness_with("http://127.0.0.1:1", &hf.uri(), &[], store);
+        assert_eq!(status(&h), HfTokenStatus::Saved);
+        h.tx.send(BackendRequest::CheckHfToken).unwrap();
+        assert_eq!(status(&h), HfTokenStatus::Valid("jdtobe".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_token_check_maps_rejected_and_unreachable() {
+        let hf = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/whoami-v2"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("nope"))
+            .mount(&hf)
+            .await;
+        let store = Arc::new(MemoryStore::default());
+        store.set(SECRET).unwrap();
+        let h = harness_with("http://127.0.0.1:1", &hf.uri(), &[], store);
+        status(&h);
+        h.tx.send(BackendRequest::CheckHfToken).unwrap();
+        let s = status(&h);
+        assert!(
+            matches!(&s, HfTokenStatus::Invalid(m) if m.contains("invalid")),
+            "{s:?}"
+        );
+
+        let store = Arc::new(MemoryStore::default());
+        store.set(SECRET).unwrap();
+        let h = harness_with("http://127.0.0.1:1", "http://127.0.0.1:9", &[], store);
+        status(&h);
+        h.tx.send(BackendRequest::CheckHfToken).unwrap();
+        let s = status(&h);
+        assert!(matches!(&s, HfTokenStatus::Unreachable(_)), "{s:?}");
+        assert!(!format!("{s:?}").contains(SECRET));
+
+        // No token: nothing to check, and no network call.
+        let h = harness("http://127.0.0.1:1", "http://127.0.0.1:9");
+        status(&h);
+        h.tx.send(BackendRequest::CheckHfToken).unwrap();
+        assert_eq!(status(&h), HfTokenStatus::None);
+    }
+
+    struct BrokenStore;
+
+    impl TokenStore for BrokenStore {
+        fn get(&self) -> hf2ollama_core::error::Result<Option<String>> {
+            Err(hf2ollama_core::error::Error::Io("keychain: locked".into()))
+        }
+        fn set(&self, _: &str) -> hf2ollama_core::error::Result<()> {
+            Err(hf2ollama_core::error::Error::Io("keychain: locked".into()))
+        }
+        fn clear(&self) -> hf2ollama_core::error::Result<()> {
+            Err(hf2ollama_core::error::Error::Io("keychain: locked".into()))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn keychain_failure_is_reported_as_invalid_never_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("hf2ollama.toml"),
+            history_file: dir.path().join("history.json"),
+            log_dir: dir.path().join("logs"),
+            default_staging: dir.path().join("staging"),
+            portable: true,
+        };
+        let (tx, rx) = Backend::spawn_with(
+            egui::Context::default(),
+            Settings::default(),
+            paths,
+            Arc::new(BrokenStore),
+        );
+        let first = wait_for(&rx, |e| match e {
+            UiEvent::HfTokenStatus(s) => Some(s.clone()),
+            _ => None,
+        });
+        assert!(
+            matches!(&first, HfTokenStatus::Invalid(m)
+            if m.starts_with("could not access the system keychain")),
+            "{first:?}"
+        );
+        tx.send(BackendRequest::SetHfToken(Some(HfToken::new(SECRET))))
+            .unwrap();
+        let s = wait_for(&rx, |e| match e {
+            UiEvent::HfTokenStatus(s) => Some(s.clone()),
+            _ => None,
+        });
+        assert!(
+            matches!(&s, HfTokenStatus::Invalid(m)
+            if m.starts_with("could not access the system keychain")),
+            "{s:?}"
+        );
+        assert!(!format!("{s:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn backend_debug_output_redacts_token() {
+        let req = BackendRequest::SetHfToken(Some(HfToken::new(SECRET)));
+        for text in [
+            format!("{req:?}"),
+            format!("{req:#?}"),
+            format!("{:?}", HfToken::new(SECRET)),
+            format!("{:?}", Some(HfToken::new(SECRET))),
+            format!("{:?}", vec![req.clone()]),
+        ] {
+            assert!(!text.contains(SECRET), "{text}");
+            assert!(!text.contains("supersecret"), "{text}");
+        }
+        assert!(format!("{req:?}").contains("redacted"));
+        assert_eq!(
+            format!("{:?}", BackendRequest::SetHfToken(None)),
+            "SetHfToken(None)"
+        );
+        // Statuses and events never hold the token either.
+        let ev = UiEvent::HfTokenStatus(HfTokenStatus::Invalid("bad".into()));
+        assert!(!format!("{ev:?}").contains(SECRET));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_apply_settings_saves_toml_and_rebuilds_clients() {
+        let old = version_server("0.1.0").await;
+        let new = version_server("7.7.7").await;
+        let h = harness(&old.uri(), "http://127.0.0.1:9");
+        let v = wait_for(&h.rx, |e| match e {
+            UiEvent::OllamaStatus(v) => Some(v.clone()),
+            _ => None,
+        });
+        assert_eq!(v, Some("0.1.0".to_string()));
+        let settings = Settings {
+            ollama_url: new.uri(),
+            max_parallel: 3,
+            delete_after_import: false,
+            ..Settings::default()
+        };
+        h.tx.send(BackendRequest::ApplySettings(settings.clone()))
+            .unwrap();
+        let saved = wait_for(&h.rx, |e| match e {
+            UiEvent::SettingsSaved(r) => Some(r.clone()),
+            _ => None,
+        });
+        assert_eq!(saved, Ok(()));
+        assert_eq!(Settings::load(&h.paths.config_file).unwrap(), settings);
+        // The status poll now talks to the new server.
+        let v = wait_for(&h.rx, |e| match e {
+            UiEvent::OllamaStatus(Some(v)) if v == "7.7.7" => Some(v.clone()),
+            _ => None,
+        });
+        assert_eq!(v, "7.7.7");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_apply_settings_reports_a_save_failure() {
+        let h = harness("http://127.0.0.1:1", "http://127.0.0.1:9");
+        // The config file's parent is a regular file, so the save must fail.
+        let blocker = h.paths.config_file.with_file_name("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let bad = Paths {
+            config_file: blocker.join("hf2ollama.toml"),
+            ..h.paths.clone()
+        };
+        let (tx, rx) = Backend::spawn_with(
+            egui::Context::default(),
+            Settings::default(),
+            bad,
+            Arc::new(MemoryStore::default()),
+        );
+        tx.send(BackendRequest::ApplySettings(Settings::default()))
+            .unwrap();
+        let saved = wait_for(&rx, |e| match e {
+            UiEvent::SettingsSaved(r) => Some(r.clone()),
+            _ => None,
+        });
+        assert!(saved.is_err(), "{saved:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_test_connection_ok_and_error() {
+        let ok = version_server("0.40.8").await;
+        let h = harness("http://127.0.0.1:1", "http://127.0.0.1:9");
+        h.tx.send(BackendRequest::TestConnection(ok.uri())).unwrap();
+        let r = wait_for(&h.rx, |e| match e {
+            UiEvent::ConnectionTest(r) => Some(r.clone()),
+            _ => None,
+        });
+        assert_eq!(r, Ok("0.40.8".to_string()));
+        h.tx.send(BackendRequest::TestConnection("http://127.0.0.1:1".into()))
+            .unwrap();
+        let r = wait_for(&h.rx, |e| match e {
+            UiEvent::ConnectionTest(r) => Some(r.clone()),
+            _ => None,
+        });
+        assert!(r.is_err(), "{r:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_clear_cached_reports_freed_bytes() {
+        use hf2ollama_core::events::JobId;
+        let h = harness("http://127.0.0.1:1", "http://127.0.0.1:9");
+        let staging = Staging::new(h.paths.default_staging.clone());
+        let kept = staging.create_job(JobId(1), 0).unwrap();
+        std::fs::write(kept.path().join("a.gguf"), vec![0u8; 1500]).unwrap();
+        kept.finish(true).unwrap();
+        let partial = staging.create_job(JobId(2), 0).unwrap();
+        std::fs::write(partial.path().join("b.part"), vec![0u8; 300]).unwrap();
+        partial.mark_partial().unwrap();
+        // Something that is not ours stays untouched.
+        let foreign = h.paths.default_staging.join("my-photos");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("x.jpg"), "x").unwrap();
+
+        h.tx.send(BackendRequest::ListCached).unwrap();
+        let rows = wait_for(&h.rx, |e| match e {
+            UiEvent::CachedLoaded(r) => Some(r.clone()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().any(|r| !r.partial && r.bytes >= 1500));
+        assert!(rows.iter().any(|r| r.partial));
+
+        h.tx.send(BackendRequest::ClearCached).unwrap();
+        let freed = wait_for(&h.rx, |e| match e {
+            UiEvent::CachedCleared(r) => Some(r.clone()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(freed >= 1500, "{freed}");
+        assert!(!h.paths.default_staging.join("job-1").exists());
+        assert!(
+            h.paths.default_staging.join("job-2").exists(),
+            "partials stay"
+        );
+        assert!(foreign.join("x.jpg").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_cached_list_follows_the_applied_staging_folder() {
+        use hf2ollama_core::events::JobId;
+        let h = harness("http://127.0.0.1:1", "http://127.0.0.1:9");
+        let other = tempfile::tempdir().unwrap();
+        let job = Staging::new(other.path().to_path_buf())
+            .create_job(JobId(5), 0)
+            .unwrap();
+        std::fs::write(job.path().join("c.gguf"), vec![0u8; 700]).unwrap();
+        job.finish(true).unwrap();
+        h.tx.send(BackendRequest::ApplySettings(Settings {
+            staging_dir: Some(other.path().to_path_buf()),
+            ..Settings::default()
+        }))
+        .unwrap();
+        h.tx.send(BackendRequest::ListCached).unwrap();
+        let rows = wait_for(&h.rx, |e| match e {
+            UiEvent::CachedLoaded(r) => Some(r.clone()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label, "job-5");
     }
 }
