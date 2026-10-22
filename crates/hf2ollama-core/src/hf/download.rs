@@ -7,7 +7,6 @@ use crate::model::RepoFile;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A finished download: its final path and the SHA-256 computed while streaming.
@@ -97,7 +96,7 @@ impl HfClient {
         file: &RepoFile,
         job_dir: &Path,
         ctl: &JobControl,
-        on_progress: &mut dyn FnMut(u64, u64),
+        on_progress: &mut (dyn FnMut(u64, u64) + Send),
     ) -> Result<Downloaded> {
         let final_path = safe_join(job_dir, &file.path)?;
         let part = part_path(&final_path);
@@ -751,5 +750,18 @@ mod tests {
         .await
         .expect("download hung");
         assert_eq!(res.unwrap_err(), Error::Cancelled);
+    }
+
+    fn assert_send<T: Send>(_: &T) {}
+
+    #[test]
+    fn download_future_is_send() {
+        let client = HfClient::new("http://localhost", None);
+        let file = lfs_file("m.gguf", b"x");
+        let ctl = JobControl::new();
+        let dir = Path::new(".");
+        let mut progress = |_: u64, _: u64| {};
+        let fut = client.download(REPO, &file, dir, &ctl, &mut progress);
+        assert_send(&fut);
     }
 }
