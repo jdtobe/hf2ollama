@@ -37,7 +37,15 @@ impl InstalledRow {
 
     /// The Hugging Face page of the source repo; only imported rows have one.
     pub fn source_url(&self) -> Option<String> {
-        unimplemented!("source_url")
+        let repo = self.source_repo.as_deref()?;
+        // History is a file on disk: only a plain `owner/name` becomes a link.
+        let plain = |p: &str| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        let (owner, name) = repo.split_once('/')?;
+        (plain(owner) && plain(name)).then(|| format!("https://huggingface.co/{repo}"))
     }
 }
 
@@ -124,33 +132,59 @@ impl InstalledState {
 
     /// First click on Delete: the row shows "Confirm delete" for `ARM_WINDOW`.
     /// Arming another row disarms the first.
-    pub fn arm_delete(&mut self, _name: &str, _now: Instant) {
-        unimplemented!("arm_delete")
+    pub fn arm_delete(&mut self, name: &str, now: Instant) {
+        self.armed = Some((name.to_string(), now));
     }
 
     /// True while `name` shows "Confirm delete".
-    pub fn is_armed(&self, _name: &str, _now: Instant) -> bool {
-        unimplemented!("is_armed")
+    pub fn is_armed(&self, name: &str, now: Instant) -> bool {
+        self.armed
+            .as_ref()
+            .is_some_and(|(n, at)| n == name && now < *at + ARM_WINDOW)
     }
 
     /// Second click on the same row inside the window: the delete to send.
-    pub fn confirm_delete(&mut self, _name: &str, _now: Instant) -> Option<DeleteAction> {
-        unimplemented!("confirm_delete")
+    pub fn confirm_delete(&mut self, name: &str, now: Instant) -> Option<DeleteAction> {
+        if !self.is_armed(name, now) {
+            return None;
+        }
+        self.armed = None;
+        Some(DeleteAction {
+            name: name.to_string(),
+        })
     }
 
     /// One click on a Delete button: arms, or confirms when already armed.
-    pub fn click_delete(&mut self, _name: &str, _now: Instant) -> Option<DeleteAction> {
-        unimplemented!("click_delete")
+    pub fn click_delete(&mut self, name: &str, now: Instant) -> Option<DeleteAction> {
+        let action = self.confirm_delete(name, now);
+        if action.is_none() {
+            self.arm_delete(name, now);
+        }
+        action
     }
 
     /// Expires the armed state; returns when the next expiry is due.
-    pub fn tick(&mut self, _now: Instant) -> Option<Instant> {
-        unimplemented!("tick")
+    pub fn tick(&mut self, now: Instant) -> Option<Instant> {
+        if self
+            .armed
+            .as_ref()
+            .is_some_and(|(_, at)| now >= *at + ARM_WINDOW)
+        {
+            self.armed = None;
+        }
+        self.armed.as_ref().map(|(_, at)| *at + ARM_WINDOW)
     }
 
     /// Bytes on disk by source, over every installed model.
     pub fn usage(&self) -> UsageSplit {
-        unimplemented!("usage")
+        self.rows.iter().fold(UsageSplit::default(), |mut u, r| {
+            if r.source_repo.is_some() {
+                u.imported = u.imported.saturating_add(r.model.size);
+            } else {
+                u.library = u.library.saturating_add(r.model.size);
+            }
+            u
+        })
     }
 
     /// Rows after the text filter, the source filter and the sort.
@@ -456,7 +490,7 @@ mod tests {
         assert!(!s.is_armed("alpha:1b", t0 + Duration::from_secs(4)));
         assert_eq!(s.tick(t0), Some(t0 + Duration::from_secs(4)));
         assert!(s.is_armed("alpha:1b", t0 + Duration::from_millis(3_999)));
-        assert_eq!(s.tick(t0 + Duration::from_millis(3_999)).is_some(), true);
+        assert!(s.tick(t0 + Duration::from_millis(3_999)).is_some());
         assert_eq!(s.tick(t0 + Duration::from_secs(4)), None);
         assert!(!s.is_armed("alpha:1b", t0));
         assert!(s
