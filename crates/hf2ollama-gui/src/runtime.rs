@@ -302,7 +302,7 @@ async fn serve(shared: &Shared, req: BackendRequest) {
             UiEvent::ModelInfoLoaded(id, r)
         }
         BackendRequest::ModelCard(id) => {
-            let r = Err("not implemented".to_string());
+            let r = text(hf.model_card(&id).await);
             UiEvent::ModelCardLoaded(id, r)
         }
         BackendRequest::ListInstalled => UiEvent::InstalledLoaded(text(ollama.list().await)),
