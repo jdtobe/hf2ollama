@@ -1273,4 +1273,19 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn card_shows_chips_and_sizes_when_the_window_has_room() {
+        for dark in [false, true] {
+            let mut app = laid_out(Kind::SafetensorsUnreachable, dark, (1180.0, 820.0));
+            let card = app.state_mut().browse.probe.card.expect("card");
+            // Name field and button alone are about 80 px; chips, the size
+            // line and the disabled reason add another ~70 px.
+            assert!(
+                card.height() > 125.0,
+                "dark={dark}: card only {} px tall",
+                card.height()
+            );
+        }
+    }
 }
