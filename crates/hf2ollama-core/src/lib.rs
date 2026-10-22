@@ -7,6 +7,7 @@ pub mod fit;
 pub mod hf;
 pub mod history;
 pub mod model;
+pub mod names;
 pub mod ollama;
 pub mod paths;
 pub mod secrets;
