@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod browse;
 mod runtime;
 mod theme;
 mod widgets;
