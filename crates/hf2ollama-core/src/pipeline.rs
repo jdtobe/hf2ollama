@@ -203,6 +203,10 @@ pub async fn run_import(
     ctl: JobControl,
     tx: Sender<JobEvent>,
 ) -> Result<()> {
+    #[cfg(test)]
+    if req.model_name == "__inject_panic__" {
+        panic!("injected test panic");
+    }
     let log = Logger::new(id, tx.clone(), &ctx.log_dir);
     let run = Run {
         ctx,
@@ -2003,5 +2007,44 @@ mod tests {
             matches!(err, Error::InsufficientSpace { needed, .. } if needed == u64::MAX),
             "{err:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_panicking_job_logs_it_and_emits_exactly_one_terminal_event() {
+        let env = Env::new().await;
+        let mgr = manager(&env);
+        let data = payload(10, 0);
+        let id = mgr
+            .handle(Command::StartImport(request(
+                "__inject_panic__",
+                vec![lfs_file("tiny.gguf", &data)],
+            )))
+            .unwrap();
+        let events = collect_until(&env, |e| e.iter().any(is_terminal)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut events = events;
+        events.extend(env.rx.try_iter());
+        assert_eq!(
+            events.iter().filter(|e| is_terminal(e)).count(),
+            1,
+            "{events:?}"
+        );
+        assert!(
+            matches!(events.last(), Some(JobEvent::Failed { id: i, .. }) if *i == id),
+            "{events:?}"
+        );
+        let lines = log_lines(&events);
+        assert!(
+            lines.iter().any(|l| l.contains("panicked")),
+            "no panic line in {lines:?}"
+        );
+        let file = std::fs::read_to_string(
+            env.tmp
+                .path()
+                .join("logs")
+                .join(format!("job-{}.log", id.0)),
+        )
+        .unwrap_or_default();
+        assert!(file.contains("panicked"), "log file: {file:?}");
     }
 }
