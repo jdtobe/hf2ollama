@@ -406,18 +406,7 @@ fn table(ui: &mut egui::Ui, app: &mut AppState, cx: &Ctx, out: &mut Vec<BackendR
                     }
                     // A held Enter or Space repeats `clicked()`; only a fresh
                     // activation may arm or confirm.
-                    let held = ui.input(|i| {
-                        i.events.iter().any(|e| {
-                            matches!(
-                                e,
-                                egui::Event::Key {
-                                    key: egui::Key::Enter | egui::Key::Space,
-                                    repeat: true,
-                                    ..
-                                }
-                            )
-                        })
-                    });
+                    let held = crate::confirm::activation_key_held(ui);
                     if p.delete.clicked() && !held {
                         if let Some(a) = app.installed.click_delete(row.name(), cx.now) {
                             out.push(BackendRequest::DeleteInstalled(a.name));

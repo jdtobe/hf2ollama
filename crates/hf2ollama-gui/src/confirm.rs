@@ -1,8 +1,6 @@
 //! Two-step "arm, then confirm" for destructive buttons. Pure state plus one
 //! egui input helper; shared by the Installed delete and Clear cached files.
 
-#![allow(dead_code)] // stubs until the Installed view uses it
-
 use std::time::{Duration, Instant};
 
 /// How long the "Confirm" state stays.
@@ -19,48 +17,74 @@ pub struct Confirm {
 
 impl Confirm {
     pub fn arm(&mut self, key: &str, now: Instant) {
-        let _ = (key, now);
+        self.armed = Some((key.to_string(), now));
     }
 
     /// True while `key` shows its confirm state.
     pub fn is_armed(&self, key: &str, now: Instant) -> bool {
-        let _ = (key, now);
-        false
+        self.armed
+            .as_ref()
+            .is_some_and(|(k, at)| k == key && now < *at + ARM_WINDOW)
     }
 
     /// True when a click on `key` would confirm: armed, past the minimum
     /// delay and inside the window.
     pub fn ready(&self, key: &str, now: Instant) -> bool {
-        let _ = (key, now);
-        false
+        self.is_armed(key, now)
+            && self
+                .armed
+                .as_ref()
+                .is_some_and(|(_, at)| now >= *at + ARM_MIN_DELAY)
     }
 
     /// Consumes the armed state when a click on `key` may confirm.
     pub fn confirm(&mut self, key: &str, now: Instant) -> bool {
-        let _ = (key, now);
-        false
+        if !self.ready(key, now) {
+            return false;
+        }
+        self.armed = None;
+        true
     }
 
     /// One click: arms, or confirms when already armed. True only on confirm.
     pub fn click(&mut self, key: &str, now: Instant) -> bool {
-        let _ = (key, now);
+        // A click on a key that is not armed (or whose arming ran out) arms
+        // it. A click on the armed key inside `ARM_MIN_DELAY` is ignored: it
+        // neither confirms, re-arms nor disarms. After the delay it confirms.
+        if self.is_armed(key, now) {
+            return self.confirm(key, now);
+        }
+        self.arm(key, now);
         false
     }
 
     /// Drops the armed key when `live` no longer knows it.
     pub fn disarm_unless(&mut self, live: impl Fn(&str) -> bool) {
-        let _ = live;
+        if self.armed.as_ref().is_some_and(|(k, _)| !live(k)) {
+            self.armed = None;
+        }
     }
 
     /// Clears an armed state whose window ran out.
     pub fn expire(&mut self, now: Instant) {
-        let _ = now;
+        if self
+            .armed
+            .as_ref()
+            .is_some_and(|(_, at)| now >= *at + ARM_WINDOW)
+        {
+            self.armed = None;
+        }
     }
 
     /// When the next repaint is due: the button turning ready, then expiry.
     pub fn next_due(&self, now: Instant) -> Option<Instant> {
-        let _ = now;
-        None
+        self.armed.as_ref().map(|(_, at)| {
+            if now < *at + ARM_MIN_DELAY {
+                *at + ARM_MIN_DELAY
+            } else {
+                *at + ARM_WINDOW
+            }
+        })
     }
 }
 
@@ -68,8 +92,19 @@ impl Confirm {
 /// repeats `clicked()` on a focused button; only a fresh press may arm or
 /// confirm.
 pub fn activation_key_held(ui: &eframe::egui::Ui) -> bool {
-    let _ = ui;
-    false
+    use eframe::egui::{Event, Key};
+    ui.input(|i| {
+        i.events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Key {
+                    key: Key::Enter | Key::Space,
+                    repeat: true,
+                    ..
+                }
+            )
+        })
+    })
 }
 
 #[cfg(test)]
@@ -181,21 +216,34 @@ mod tests {
     #[test]
     fn repeat_of_enter_or_space_counts_as_held_but_a_fresh_press_does_not() {
         use eframe::egui;
+        let ev = |key: egui::Key, repeat: bool| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        };
         let held = |key: egui::Key, repeat: bool| {
             let ctx = egui::Context::default();
-            let input = egui::RawInput {
-                events: vec![egui::Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed: true,
-                    repeat,
-                    modifiers: egui::Modifiers::NONE,
-                }],
+            let frame = |events: Vec<egui::Event>, t: f64| egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                time: Some(t),
+                events,
                 ..Default::default()
             };
+            // A repeat only follows a press of the same key.
+            if repeat {
+                ctx.run_ui(frame(vec![ev(key, false)], 1.0), |_| {})
+                    .drop_without_applying_deltas();
+            }
             let mut out = false;
-            ctx.run_ui(input, |ui| out = activation_key_held(ui))
-                .drop_without_applying_deltas();
+            ctx.run_ui(frame(vec![ev(key, repeat)], 1.5), |ui| {
+                out = activation_key_held(ui)
+            })
+            .drop_without_applying_deltas();
             out
         };
         assert!(held(egui::Key::Enter, true));

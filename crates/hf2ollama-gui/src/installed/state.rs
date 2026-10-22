@@ -1,16 +1,13 @@
 //! Pure state of the Installed view: rows, filter, sort, two-click delete,
 //! details cache and toast. No egui in here.
 
+use crate::confirm::Confirm;
 use crate::runtime::InstalledEntry;
 use hf2ollama_core::ollama::{InstalledModel, ModelDetails};
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant, SystemTime};
 
-/// How long the "Confirm delete" state and the toast stay.
-pub const ARM_WINDOW: Duration = Duration::from_secs(4);
-/// A click on the armed row is ignored until this long after arming, so a
-/// double-click on Delete can never delete.
-pub const ARM_MIN_DELAY: Duration = Duration::from_millis(600);
+/// How long the toast stays.
 pub const TOAST_TIME: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +88,7 @@ pub struct InstalledState {
     pub filter_text: String,
     pub source: SourceFilter,
     pub sort: SortKey,
-    armed: Option<(String, Instant)>,
+    armed: Confirm,
     expanded: BTreeSet<String>,
     details: HashMap<String, DetailsState>,
     toast: Option<Toast>,
@@ -105,7 +102,7 @@ impl InstalledState {
             filter_text: String::new(),
             source: SourceFilter::All,
             sort: SortKey::Size,
-            armed: None,
+            armed: Confirm::default(),
             expanded: BTreeSet::new(),
             details: HashMap::new(),
             toast: None,
@@ -129,9 +126,7 @@ impl InstalledState {
                 let live = |n: &str| rows.iter().any(|r| r.name() == n);
                 self.expanded.retain(|n| live(n));
                 self.details.retain(|n, _| live(n));
-                if self.armed.as_ref().is_some_and(|(n, _)| !live(n)) {
-                    self.armed = None;
-                }
+                self.armed.disarm_unless(live);
             }
             Err(e) => self.status = ListStatus::Error(e.clone()),
         }
@@ -157,71 +152,45 @@ impl InstalledState {
 
     /// First click on Delete: the row shows "Confirm delete" for `ARM_WINDOW`.
     /// Arming another row disarms the first.
+    #[cfg(test)]
     pub fn arm_delete(&mut self, name: &str, now: Instant) {
-        self.armed = Some((name.to_string(), now));
+        self.armed.arm(name, now);
     }
 
     /// True while `name` shows "Confirm delete".
     pub fn is_armed(&self, name: &str, now: Instant) -> bool {
-        self.armed
-            .as_ref()
-            .is_some_and(|(n, at)| n == name && now < *at + ARM_WINDOW)
+        self.armed.is_armed(name, now)
     }
 
     /// True when a click on `name` would confirm: armed, past the minimum
     /// delay and inside the window.
     pub fn confirm_ready(&self, name: &str, now: Instant) -> bool {
-        self.is_armed(name, now)
-            && self
-                .armed
-                .as_ref()
-                .is_some_and(|(_, at)| now >= *at + ARM_MIN_DELAY)
+        self.armed.ready(name, now)
     }
 
     /// Second click on the same row inside the window: the delete to send.
+    #[cfg(test)]
     pub fn confirm_delete(&mut self, name: &str, now: Instant) -> Option<DeleteAction> {
-        if !self.confirm_ready(name, now) {
-            return None;
-        }
-        self.armed = None;
-        Some(DeleteAction {
+        self.armed.confirm(name, now).then(|| DeleteAction {
             name: name.to_string(),
         })
     }
 
     /// One click on a Delete button: arms, or confirms when already armed.
     pub fn click_delete(&mut self, name: &str, now: Instant) -> Option<DeleteAction> {
-        // Rules: a click on a row that is not armed (or whose arming ran
-        // out) arms it. A click on the armed row inside `ARM_MIN_DELAY` is
-        // ignored: it neither confirms, re-arms nor disarms, so a double
-        // click can never delete. After the delay it confirms.
-        if self.is_armed(name, now) {
-            return self.confirm_delete(name, now);
-        }
-        self.arm_delete(name, now);
-        None
+        self.armed.click(name, now).then(|| DeleteAction {
+            name: name.to_string(),
+        })
     }
 
     /// Expires the armed state; returns when the next expiry is due.
     pub fn tick(&mut self, now: Instant) -> Option<Instant> {
-        if self
-            .armed
-            .as_ref()
-            .is_some_and(|(_, at)| now >= *at + ARM_WINDOW)
-        {
-            self.armed = None;
-        }
+        self.armed.expire(now);
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
         }
         // First wake-up when the button turns ready, then at expiry.
-        let armed = self.armed.as_ref().map(|(_, at)| {
-            if now < *at + ARM_MIN_DELAY {
-                *at + ARM_MIN_DELAY
-            } else {
-                *at + ARM_WINDOW
-            }
-        });
+        let armed = self.armed.next_due(now);
         let toast = self.toast.as_ref().map(|t| t.until);
         match (armed, toast) {
             (Some(a), Some(t)) => Some(a.min(t)),
@@ -552,6 +521,7 @@ pub fn relative_time(modified: &str, now: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::confirm::{ARM_MIN_DELAY, ARM_WINDOW};
     use std::time::{Duration, UNIX_EPOCH};
 
     fn at(secs: i64) -> SystemTime {
