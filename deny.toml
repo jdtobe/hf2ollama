@@ -7,6 +7,21 @@ all-features = true
 [advisories]
 # Defaults: RustSec advisories for vulnerabilities and unmaintained crates are
 # checked against the advisory database fetched by cargo-deny.
+#
+# Every ignore below is an "unmaintained" notice (no known vulnerability) on a
+# transitive dependency we cannot replace ourselves. Re-check on each
+# dependency update and drop an entry as soon as its parent stops using it.
+ignore = [
+    # ttf-parser: font parsing inside egui/epaint (via eframe). Unmaintained,
+    # no vulnerability reported; fonts we load are the bundled ones.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained, via egui/epaint font parsing; no vulnerability, awaiting upstream" },
+    # zbus family: D-Bus on Linux only (accesskit_unix for accessibility and
+    # the Secret Service keyring backend). Unmaintained as standalone crates,
+    # superseded by zbus 6; pulled in by eframe and keyring, awaiting upstream.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, Linux D-Bus via eframe/keyring, awaiting upstream" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, Linux D-Bus via eframe/keyring, awaiting upstream" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, Linux D-Bus via eframe/keyring, awaiting upstream" },
+]
 
 [licenses]
 # SPDX identifiers allowed in the dependency tree. For "A OR B" expressions,
@@ -31,13 +46,6 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
-
-[licenses.private]
-# Workspace crates marked `publish = false` are not checked for a license.
-# TODO(owner): the workspace crates currently declare no `license` field in
-# Cargo.toml; add `license = "MIT OR Apache-2.0"` (or `publish = false`) to
-# each crate so `cargo deny check licenses` passes for them.
-ignore = true
 
 [bans]
 multiple-versions = "warn"
