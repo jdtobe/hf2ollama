@@ -63,28 +63,31 @@ fn validate_url(raw: &str) -> Result<String, String> {
 }
 
 /// The read-only part of the staging check (no writes): an absolute path
-/// without `..`, naming a directory or a missing child of one.
+/// without `..`, naming a directory or a missing child of one. Cheap enough
+/// to run on every keystroke.
 pub fn check_staging_dir(path: &Path) -> Result<(), String> {
-    let _ = path;
-    Ok(())
-}
-
-/// An existing writable directory, or a missing path whose parent exists and
-/// is a writable directory. A file path is never accepted.
-pub fn validate_staging_dir(path: &Path) -> Result<(), String> {
-    if path.as_os_str().is_empty() {
-        return Err("Enter a folder path.".to_string());
+    use std::path::Component;
+    let text = path.to_string_lossy();
+    if text.trim().is_empty() {
+        return Err("Enter a full path to a folder.".to_string());
+    }
+    if text.starts_with('~') {
+        return Err("A leading ~ is not expanded: enter a full path.".to_string());
+    }
+    if !path.is_absolute() {
+        return Err("Enter a full path, starting at the root of a drive or /.".to_string());
+    }
+    if path.components().any(|c| c == Component::ParentDir) {
+        return Err("The path cannot contain .. : enter a full path.".to_string());
     }
     match std::fs::metadata(path) {
-        Ok(m) if m.is_dir() => writable(path),
+        Ok(m) if m.is_dir() => Ok(()),
         Ok(_) => Err("That path is not a folder (it is a file).".to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let parent = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
+            // Absolute and not a root, so a parent exists in the path.
+            let parent = path.parent().unwrap_or(path);
             match std::fs::metadata(parent) {
-                Ok(m) if m.is_dir() => writable(parent),
+                Ok(m) if m.is_dir() => Ok(()),
                 Ok(_) => Err("The parent of that path is not a folder.".to_string()),
                 Err(_) => Err("The parent folder does not exist.".to_string()),
             }
@@ -93,11 +96,34 @@ pub fn validate_staging_dir(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Creates and removes a tiny file to find out whether `dir` accepts writes.
+/// `check_staging_dir`, plus a write probe: the folder (or, for a missing
+/// one, its parent) must accept a new file. Run it on commit only.
+pub fn validate_staging_dir(path: &Path) -> Result<(), String> {
+    check_staging_dir(path)?;
+    if path.is_dir() {
+        writable(path)
+    } else {
+        writable(path.parent().unwrap_or(path))
+    }
+}
+
+/// Creates and removes a uniquely named file to find out whether `dir`
+/// accepts writes; nothing is left behind either way.
 fn writable(dir: &Path) -> Result<(), String> {
-    let probe = dir.join(format!(".hf2ollama-write-test-{}", std::process::id()));
-    match std::fs::write(&probe, b"") {
-        Ok(()) => {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    let probe = dir.join(format!(
+        ".hf2ollama-write-test-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(file) => {
+            drop(file);
             let _ = std::fs::remove_file(&probe);
             Ok(())
         }

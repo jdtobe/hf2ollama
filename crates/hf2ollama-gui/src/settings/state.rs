@@ -3,7 +3,8 @@
 //! list and the two-step clear. No egui in here.
 
 use super::validate::{
-    clamp_max_parallel, parse_gb, validate_hf_endpoint, validate_ollama_url, validate_staging_dir,
+    check_staging_dir, clamp_max_parallel, parse_gb, validate_hf_endpoint, validate_ollama_url,
+    validate_staging_dir,
 };
 use crate::browse::results::format_size;
 use crate::confirm::Confirm;
@@ -296,7 +297,7 @@ impl SettingsState {
 
     pub fn edit_staging(&mut self) {
         self.staging_error = match self.staging_choice() {
-            Some(path) => validate_staging_dir(&path).err(),
+            Some(path) => check_staging_dir(&path).err(),
             None => None,
         };
     }
