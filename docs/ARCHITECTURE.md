@@ -2,7 +2,7 @@
 
 This is a contributor overview. The approved design is in `docs/superpowers/specs/2026-10-22-hf2ollama-design.md` (sections 3 and 4 are summarized here), and verified API behavior is in `docs/superpowers/notes/api-verification.md`. If this page and the spec disagree, the spec and the code win; please fix this page.
 
-Status: the core crate is implemented and tested. The GUI crate is under construction, so the GUI parts below describe the design.
+Status: the core crate and the GUI crate are implemented and tested.
 
 ## Crate layout
 
@@ -115,11 +115,31 @@ sequenceDiagram
 
 The GUI owns a tokio runtime. The UI thread sends `Command`s and drains `JobEvent`s; it never blocks on I/O. The receiving side calls `ctx.request_repaint()` so progress draws immediately. Event and command types live in core (`events`) so both sides share them.
 
+## The GUI layer
+
+`hf2ollama-gui` is a binary with these parts:
+
+- **Startup** (`startup.rs`, `main.rs`). `startup()` resolves paths (portable or OS directories), loads settings and ignores an unusable saved staging folder (not absolute, contains `..`, or starts with `~`), without opening a window or writing files. `spawn_sweep` runs `Staging::sweep` once on its own thread before any job exists and appends the report to `startup.log` in the log directory.
+- **Backend bridge** (`runtime.rs`). The backend thread owns the tokio runtime, the Hugging Face and Ollama clients, the history and the job managers. The UI sends `BackendRequest` values (core commands, search, model info, model card, installed list and delete, settings apply, token set and check, cached files) over an mpsc channel and drains `UiEvent` values (job events, search and info results, installed lists, status polls, settings saved, token status, cached files). Every event wakes the UI with `ctx.request_repaint()`. The GUI makes no HTTP calls itself.
+- **App state** (`app.rs`). `AppState` is plain data that folds `UiEvent`s in `on_event` and may answer with a follow-up request (for example a fresh installed list after a job finishes). Views read it and push requests; tests drive it without a window.
+- **Browse** (`browse/`). Filters, result list, lazy details, option tables, the import plan card, and the model card tab (`markdown.rs` and `about.rs`).
+- **Downloads dock** (`dock/`). `JobsState` in `dock/jobs.rs` is a pure reducer: it turns `JobEvent`s into rows (status, progress, step, log capped at 2000 lines, auto-dismiss deadline). `dock/mod.rs` only draws rows and reports button clicks as actions.
+- **Installed and Settings** (`installed/`, `settings/`, `confirm.rs`). Pure state plus drawing; destructive buttons share the two-step confirm in `confirm.rs` (4 s window, 600 ms minimum delay, held keys never confirm). Settings validators live in `settings/validate.rs`.
+- **Layout tests.** Each view has tests that run real egui frames at 900 by 640 and 1180 by 820 and check rectangles (nothing clipped, buttons fully visible).
+
+### Model card safety
+
+The README is fetched by core (capped at 256 KiB, front matter stripped) and parsed into a small block tree in `browse/markdown.rs`. Raw HTML never survives, images are never loaded, and only absolute `http` and `https` links are kept (opened in the browser, never fetched). Budgets bound the work per frame: nesting depth 8, 400 blocks, 1000 spans per block, tables of at most 20 columns and 200 rows, 500 list items and 2000 drawn items per document. Anything past a budget is cut and the card says it is truncated.
+
+### Quantization values
+
+For safetensors the picker offers none, `int8` and `int4`, and the request carries the choice in `quantize` (omitted for none). On Ollama 0.40.8 the server accepts `int4`, `int8`, `nvfp4`, `mxfp4` and `mxfp8` and rejects the older `q8_0` style names. `int8` and no quantization were imported end to end (see the acceptance record); `int4` is accepted by the server according to its error message but was not imported here. The vocabulary is version dependent, so these values are an assumption for other Ollama versions. GGUF files are uploaded as they are and never re-quantized.
+
 ## Cleanup guarantees
 
 - Every job gets its own directory under the staging root. The directory handle is consumed by `finish(keep)` or `discard()`, and the pipeline routes every outcome through them.
 - Cancel always deletes the partial files.
-- A failed job keeps resumable partials for 7 days if that setting is on; otherwise it deletes them. On startup `Staging::sweep` removes orphaned job directories and expired partials.
+- A failed job keeps resumable partials for 7 days if that setting is on; otherwise it deletes them. On startup the GUI runs `Staging::sweep` once, off the UI thread, which removes only marker-guarded orphaned job directories and expired partials; foreign files in the staging folder are never touched.
 - With "delete downloaded files after import" on, no job leaves files after success, cancel or failure (other than resumable partials when enabled). With it off, kept files are listed as cached files and can be cleared.
 - A create that has already completed wins over a late cancel, and an in-flight create is not abandoned.
 

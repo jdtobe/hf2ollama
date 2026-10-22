@@ -3,7 +3,7 @@
 ## Setup
 
 - Stable Rust with `rustfmt` and `clippy` (`rustup component add rustfmt clippy`).
-- Linux only: `sudo apt-get install -y libxkbcommon-dev libwayland-dev libgtk-3-dev` (the packages CI installs).
+- Linux only: `sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev` (the packages CI installs).
 - An Ollama server is only needed for manual end-to-end checks. Tests do not need one or a network.
 
 ```sh
@@ -27,7 +27,7 @@ docs/
   design/egui-spike-reference.rs   egui spike used as a style reference
   superpowers/specs/          the design spec (source of truth)
   superpowers/plans/          the implementation plan
-  superpowers/notes/          api-verification.md
+  superpowers/notes/          api-verification.md, acceptance.md
 .github/                      CI, cargo-deny workflow, templates, dependabot
 deny.toml                     cargo-deny policy
 ```
@@ -36,9 +36,11 @@ deny.toml                     cargo-deny policy
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
+
+CI also runs clippy and the tests with `--features hf2ollama-gui/dev-hooks`.
 
 All three must pass before each commit. Run a single crate or test while iterating:
 
@@ -47,9 +49,21 @@ cargo test -p hf2ollama-core
 cargo test -p hf2ollama-core fit
 ```
 
-Optional, if you have it installed: `cargo install cargo-deny`, then `cargo deny check`. CI runs it in `.github/workflows/deny.yml`.
+Optional, if you have it installed: `cargo install cargo-deny --locked`, then `cargo deny check`. CI runs it in `.github/workflows/deny.yml`. `deny.toml` records four advisory ignores (all "unmaintained" notices on transitive dependencies, each with a reason).
 
 Core tests use `wiremock` mock HTTP servers and `tempfile` directories, so they run offline.
+
+### End-to-end tests against a real Ollama
+
+`crates/hf2ollama-core/tests/e2e_real_ollama.rs` holds `#[ignore]`d tests that import tiny public models (`ggml-org/tiny-llamas`, `hf-internal-testing/tiny-random-LlamaForCausalLM`) through the real pipeline. They need network access to huggingface.co (no token) and an Ollama URL in `HF2OLLAMA_E2E_OLLAMA_URL`. Use a throwaway server, not your everyday one; the tests refuse port 11434 unless `HF2OLLAMA_E2E_ALLOW_DEFAULT=1`:
+
+```sh
+OLLAMA_HOST=127.0.0.1:11555 OLLAMA_MODELS="$(mktemp -d)" ollama serve &
+HF2OLLAMA_E2E_OLLAMA_URL=http://127.0.0.1:11555 \
+  cargo test -p hf2ollama-core --test e2e_real_ollama -- --ignored --test-threads=1
+```
+
+They create and delete models named `hf2o-e2e-*` only.
 
 ## Running the app
 

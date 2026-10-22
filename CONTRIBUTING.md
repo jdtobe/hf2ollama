@@ -4,7 +4,7 @@ Thanks for your interest. The project is pre-release and the GUI is still being 
 
 ## Getting set up
 
-You need stable Rust (with `rustfmt` and `clippy`). On Linux, install `libxkbcommon-dev`, `libwayland-dev` and `libgtk-3-dev` to build the GUI crate. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the repo tour and how to run things, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the crates fit together.
+You need stable Rust (with `rustfmt` and `clippy`). On Linux, install `libxkbcommon-dev`, `libwayland-dev`, `libx11-dev` and `libgl1-mesa-dev` to build the GUI crate. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the repo tour and how to run things, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the crates fit together.
 
 ## The checks that must pass
 

@@ -27,6 +27,14 @@ Files are downloaded into a per-job folder in the staging folder (the OS cache d
 
 Cancelling a job always deletes its partial files. A failed job keeps resumable partials for 7 days if "Keep partial downloads for 7 days" is on, otherwise it deletes them. A startup sweep removes orphaned job folders and expired partials.
 
+## Is it safe to read a model card inside the app?
+
+The model card (the repository README) is shown as a restricted subset of Markdown. Raw HTML is dropped, images are never downloaded, and only plain `http` and `https` links are kept; clicking one opens your browser. The text is size-capped (256 KiB) and the amount drawn is bounded, so a huge or hostile README is cut off ("truncated") instead of slowing the app down. The Hugging Face token is not sent to other hosts if the README URL redirects.
+
+## Why does Delete ask twice, and why is the second click sometimes ignored?
+
+Delete in Installed (and Clear in Settings) works in two steps: the first click arms the button, the second one confirms. The second click is ignored for the first 0.6 seconds after arming, so a quick double-click can never delete a model, and a held-down Enter or Space never confirms. The armed state expires after 4 seconds. Delete removes the model through the Ollama API.
+
 ## What is portable mode?
 
 Put an empty file named `portable` next to the executable. Settings, import history and logs are then stored beside the executable, and the default staging folder is there too. Remove the file to go back to the OS config, cache and log directories. This lets you run the app from a USB drive without touching the host profile. The Hugging Face token is still kept in the system keychain, not beside the executable.

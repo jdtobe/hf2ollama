@@ -2,24 +2,36 @@
 
 This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-hf2ollama-design.md`): its scope, acceptance criteria, known risks and non-goals. It is a statement of intent, not a schedule. There are no release dates and no releases yet.
 
+## Done
+
+- Core library: Hugging Face and Ollama clients, compatibility classification, fit estimation, hardware detection, settings and portable paths, staging and cleanup, history, import pipeline, job manager, model card fetch, token check.
+- Desktop app: window shell, Browse (search, filters, details, model card, import plan), downloads dock, Installed, Settings, light and dark themes, startup sweep of orphaned job folders.
+- Project files, CI (fmt, clippy, tests on three OSes, `dev-hooks` job, release-build job) and cargo-deny.
+- A real end-to-end run against a throwaway Ollama 0.40.8 on macOS; see [the acceptance record](superpowers/notes/acceptance.md).
+
+See [CHANGELOG.md](../CHANGELOG.md).
+
 ## Now
 
-- Build the GUI crate: window shell, Browse, Installed, Settings, downloads dock and theme, matching `docs/design/ui-mockup.html`.
-- Wire the GUI to the core through the command and event channels.
-- Meet the v1 acceptance criteria in section 12 of the spec: search and metadata, GGUF import, supported safetensors import with a chosen quantization, unsupported repos detected before download, cleanup guarantees, non-default and remote Ollama, pause/resume/cancel/logs, delete from Installed, light and dark themes, one binary per platform with portable mode.
-
-Already done in the core library: Hugging Face and Ollama clients, compatibility classification, fit estimation, hardware detection, settings and portable paths, staging and cleanup, history, import pipeline, job manager. See [CHANGELOG.md](../CHANGELOG.md).
+- Finish the visual verification that needs an unlocked display and capture the README screenshots (listed in the acceptance record).
+- Run the CI matrix for the first time on Linux and Windows and fix whatever it finds; verify the Linux package list.
+- Release packaging: one self-contained binary per platform, plus combined third-party license notices.
 
 ## Next
 
-Items from the spec's "known risks" that need verification or work before or around v0.1:
+Known limitations to address after the first release candidate:
 
-- Verify on Linux and Windows: Ollama safetensors `quantize` values (verified on macOS and Ollama 0.40.8 only) and general rendering (the UI spike was checked on macOS only).
-- Verify the supported-architecture list with real test imports; only `LlamaForCausalLM` has been imported so far. The list is data and can be updated as Ollama's support changes.
-- Verify `quantize` on a GGUF create and the error behavior for an unsupported architecture (both unverified).
-- Narrow-window behavior: real wrapping of step chips and long names.
+- Cross-restart resume of partial downloads (partials are kept, but a restart does not pick the job back up).
+- The log viewer is cramped at the 900 by 640 minimum window (about two or three lines); a floating log viewer would fix it. Full logs are in `<log_dir>/job-<id>.log`.
+- Ollama does not report free space or the model store path, so the Installed usage bar shows two segments (models imported with this app, and all others) and the status bar omits the store path.
+- Each settings change creates a new job manager and keeps the old ones, so a long session leaks a few idle managers and the parallel limit is per manager. Prune idle managers.
+- Pin the CI actions to full commit SHAs.
+- The folder dialog (`rfd`) blocks the UI thread while open and returns nothing if no XDG portal is running on Linux.
+- Screenshots in the README.
+- Verify on Linux and Windows: Ollama safetensors `quantize` values (verified on macOS and Ollama 0.40.8 only; `int8` and no quantization were imported end to end, `int4` was not) and general rendering.
+- Verify the supported-architecture list with more real test imports; only `LlamaForCausalLM` has been imported. The list is data and can be updated as Ollama's support changes.
+- Verify `quantize` on a GGUF create and the error behavior for an unsupported architecture.
 - Warn in the UI when Ollama reports a version below the minimum verified version (0.40.8).
-- Release packaging: one self-contained binary per platform, plus combined third-party license notices.
 
 ## Later
 

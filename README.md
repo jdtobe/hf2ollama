@@ -4,23 +4,35 @@ Browse Hugging Face and import GGUF and supported safetensors models into Ollama
 
 ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
-> **Status: pre-release, under active development.** The core library (Hugging Face and Ollama clients, import pipeline, job manager, fit estimation) is implemented and tested. The desktop GUI is still being built, so there is no usable application and no release yet. Everything under "Planned v0.1 features" is a plan, not a shipped feature. Expect breaking changes.
+> **Status: pre-release.** The core library and the desktop app are implemented: Browse (search, filters, details, model card, import plan), the downloads dock, Installed and Settings, in light and dark themes. They are covered by automated tests (core and GUI unit and layout tests, plus opt-in end-to-end tests against a real Ollama). There is no release yet and nothing has been packaged. What has and has not been verified:
+>
+> - Verified: the import pipeline end to end against a throwaway local Ollama 0.40.8 on macOS (GGUF, safetensors with `int8` and with no quantization, delete, cancel, pause and resume, name collision), using the public Hugging Face API. Details in [docs/superpowers/notes/acceptance.md](docs/superpowers/notes/acceptance.md).
+> - Not verified: Linux and Windows were not built or run here (CI is configured for them but has not run); a remote Ollama was not tried; screenshots and the final side-by-side visual check against the mockup are still outstanding because the build machine's display was locked.
+>
+> Expect breaking changes.
+
+<!-- TODO: add screenshots (light and dark: Browse, downloads dock, Installed, Settings) once captured on an unlocked display. -->
 
 ## Why
 
 Getting a model from Hugging Face into Ollama usually means downloading files by hand, working out which quantization fits your machine, and writing a Modelfile. hf2ollama is meant to turn that into search, pick, import. It talks to Ollama only through its HTTP API, so it works with any Ollama you can reach, including one whose models directory is not `~/.ollama/models` and one running on another machine.
 
-## Planned v0.1 features
+## Features (v0.1)
+
+All of these are implemented; see the status banner for what was verified.
 
 - Browse and search Hugging Face, with filters and per-model metadata (size, quantization, architecture, context length, license).
 - Compatibility detection with explanations: GGUF repos, safetensors repos with a supported architecture, and unsupported repos, which are detected before any download and explained.
 - A quantization picker with fit estimates for your machine (RAM, and VRAM where it can be detected reliably), with a manual hardware override.
 - Import through the Ollama API: download with resume, verify checksums, upload blobs, create the model.
 - Pause, resume and cancel for each job, with a timestamped log per job.
-- An Installed view backed by the Ollama API, with delete (two-click confirmation).
+- A model card (About this model) for each repository, rendered as a safe subset of Markdown: no raw HTML, no images, only plain web links.
+- An Installed view backed by the Ollama API, with delete (two-click confirmation with a short pause before the second click counts).
 - Settings: Ollama address, staging folder, cleanup behavior, parallel downloads, Hugging Face token (kept in the system keychain) and endpoint, theme.
 - Light and dark themes.
 - Portable mode.
+
+The window has a minimum size of 900 by 640; the layout is designed and tested down to that size.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for what is done, what is next and what is deliberately out of scope.
 
@@ -44,16 +56,20 @@ hf2ollama downloads the chosen files into a temporary staging folder, checks the
 
 ## Build and run from source
 
+Build needs Rust 1.95 or newer (the highest minimum declared by a dependency; `cargo +1.95 check` passes).
+
 ```sh
-cargo build --release
+cargo build --release -p hf2ollama-gui
 cargo run -p hf2ollama-gui --release
 ```
 
-The GUI crate is under construction, so running it may not give you a working application yet. On Linux you need the development packages used in CI: `libxkbcommon-dev`, `libwayland-dev` and `libgtk-3-dev`. To run the tests (no network needed):
+On Linux you need the development packages used in CI: `libxkbcommon-dev`, `libwayland-dev`, `libx11-dev` and `libgl1-mesa-dev`. The file dialog uses the XDG desktop portal over D-Bus, so no GTK packages are needed, but a portal must be running for the folder picker to work. This list has not been tried on a real Linux machine yet. To run the tests (no network needed):
 
 ```sh
-cargo test
+cargo test --workspace
 ```
+
+The `dev-hooks` cargo feature adds screenshot and trial hooks (such as an in-memory token store). It is off by default and absent from release builds; see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Opt-in end-to-end tests against a real Ollama are described there too.
 
 More in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
