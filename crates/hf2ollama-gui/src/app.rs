@@ -53,6 +53,8 @@ pub struct AppState {
     pub pill_rect: Option<egui::Rect>,
     /// Where the search field was last painted; `None` when hidden for lack of room.
     pub search_rect: Option<egui::Rect>,
+    /// Extent of the status bar contents as last painted (for layout tests).
+    pub status_rect: Option<egui::Rect>,
 }
 
 impl AppState {
@@ -78,6 +80,7 @@ impl AppState {
             auto_dismiss: AutoDismiss::Never,
             pill_rect: None,
             search_rect: None,
+            status_rect: None,
         }
     }
 
@@ -339,7 +342,7 @@ impl App {
         egui::Panel::bottom("status")
             .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 6)))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                let row = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label(RichText::new("Staging folder").size(12.0).color(t.fg3));
                     ui.label(
@@ -355,6 +358,7 @@ impl App {
                         );
                     }
                 });
+                self.state.status_rect = Some(row.response.rect);
             });
 
         let actions = dock::show(ui, &self.state.jobs, &mut self.state.dock);
@@ -652,5 +656,47 @@ mod tests {
             rx,
         );
         assert_eq!(app.state.auto_dismiss, AutoDismiss::FiveMinutes);
+    }
+
+    #[test]
+    fn status_bar_path_is_truncated_inside_the_window() {
+        let long = format!("/Users/someone/{}", "very-long-folder-name/".repeat(5));
+        assert!(long.chars().count() >= 100);
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            ctx.set_theme(if dark {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            });
+            let (tx, _) = std::sync::mpsc::channel();
+            let (_, rx) = std::sync::mpsc::channel();
+            let mut app = App::new(
+                &Settings::default(),
+                PathBuf::from(&long),
+                Machine {
+                    ram_gb: 16.0,
+                    vram_gb: None,
+                },
+                tx,
+                rx,
+            );
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 640.0));
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                ctx.run_ui(input, |ui| app.show(ui))
+                    .drop_without_applying_deltas();
+            }
+            let r = app.state.status_rect.expect("status bar painted");
+            assert!(
+                r.right() <= 900.0 - 16.0 + 0.5 && r.left() >= 16.0 - 0.5,
+                "dark={dark}: status bar content {r:?} leaves the window"
+            );
+            assert!(r.width() > 300.0, "dark={dark}: path vanished: {r:?}");
+        }
     }
 }
