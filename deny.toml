@@ -1,0 +1,55 @@
+# cargo-deny policy. Run with `cargo deny check`.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Defaults: RustSec advisories for vulnerabilities and unmaintained crates are
+# checked against the advisory database fetched by cargo-deny.
+
+[licenses]
+# SPDX identifiers allowed in the dependency tree. For "A OR B" expressions,
+# one allowed option is enough.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# Workspace crates marked `publish = false` are not checked for a license.
+# TODO(owner): the workspace crates currently declare no `license` field in
+# Cargo.toml; add `license = "MIT OR Apache-2.0"` (or `publish = false`) to
+# each crate so `cargo deny check licenses` passes for them.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = [
+    # TLS is rustls only. OpenSSL must never enter the dependency tree.
+    { crate = "openssl" },
+    { crate = "openssl-sys" },
+    { crate = "native-tls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
