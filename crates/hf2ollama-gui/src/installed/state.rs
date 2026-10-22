@@ -294,6 +294,39 @@ impl InstalledState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    Model,
+    Params,
+    Quant,
+    Size,
+    Source,
+    Modified,
+    Actions,
+}
+
+/// Fixed width of a column; Model takes whatever is left.
+pub const fn column_width(c: Column) -> f32 {
+    match c {
+        Column::Model => 220.0,
+        Column::Params => 64.0,
+        Column::Quant => 84.0,
+        Column::Size => 84.0,
+        Column::Source => 190.0,
+        Column::Modified => 110.0,
+        Column::Actions => 190.0,
+    }
+}
+
+/// Space between columns.
+pub const COLUMN_GAP: f32 = 12.0;
+
+/// Columns that fit in `width`: Modified, Quant, Params and Source are
+/// dropped in that order before Model, Size or the actions lose room.
+pub fn visible_columns(_width: f32) -> Vec<Column> {
+    unimplemented!("visible_columns")
+}
+
 /// Seconds since the Unix epoch for an RFC 3339 timestamp such as
 /// `2026-10-20T09:30:00.123456789-08:00` or `...Z`.
 pub fn parse_rfc3339(s: &str) -> Option<i64> {
@@ -741,5 +774,29 @@ mod tests {
         );
         s.on_installed_loaded(&Ok(vec![]));
         assert_eq!(s.status, ListStatus::Loaded);
+    }
+
+    // ---- columns ----
+
+    #[test]
+    fn visible_columns_degrade_with_width() {
+        use Column::*;
+        let all = vec![Model, Params, Quant, Size, Source, Modified, Actions];
+        assert_eq!(visible_columns(1132.0), all, "1180 window");
+        assert_eq!(visible_columns(1014.0), all, "exact fit");
+        let no_mod = vec![Model, Params, Quant, Size, Source, Actions];
+        assert_eq!(visible_columns(1013.9), no_mod);
+        assert_eq!(visible_columns(892.0), no_mod);
+        let no_quant = vec![Model, Params, Size, Source, Actions];
+        assert_eq!(visible_columns(891.9), no_quant);
+        assert_eq!(visible_columns(852.0), no_quant, "900 window");
+        assert_eq!(visible_columns(796.0), no_quant);
+        let no_params = vec![Model, Size, Source, Actions];
+        assert_eq!(visible_columns(795.9), no_params);
+        assert_eq!(visible_columns(720.0), no_params);
+        let core = vec![Model, Size, Actions];
+        assert_eq!(visible_columns(719.9), core);
+        assert_eq!(visible_columns(100.0), core, "never drops the essentials");
+        assert_eq!(visible_columns(f32::NAN), core);
     }
 }
