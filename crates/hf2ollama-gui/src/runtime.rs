@@ -350,7 +350,7 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
             match (&cmd, managers.split_last()) {
                 (Command::StartImport(req), Some((current, _))) => {
                     let model_name = req.model_name.clone();
-                    let total_bytes = req.files.iter().map(|f| f.size).sum();
+                    let total_bytes = req.files.iter().fold(0u64, |t, f| t.saturating_add(f.size));
                     if let Some(id) = current.handle(cmd) {
                         shared.out.emit(UiEvent::JobAccepted {
                             id,

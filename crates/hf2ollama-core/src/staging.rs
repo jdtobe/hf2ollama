@@ -80,7 +80,7 @@ fn dir_size(path: &Path) -> u64 {
             Ok(m) if m.is_file() => m.len(),
             _ => 0,
         })
-        .sum()
+        .fold(0u64, u64::saturating_add)
 }
 
 impl Staging {
@@ -142,7 +142,7 @@ impl Staging {
             };
             let bytes = dir_size(&job);
             remove_job_dir(&job)?;
-            report.freed_bytes += bytes;
+            report.freed_bytes = report.freed_bytes.saturating_add(bytes);
             if expired {
                 report.removed_expired += 1;
             } else {
@@ -175,12 +175,12 @@ impl Staging {
     /// returns the bytes freed. A directory with neither marker may belong to a running
     /// job and is never touched.
     pub fn clear_cached(&self) -> Result<u64> {
-        let mut freed = 0;
+        let mut freed = 0u64;
         for job in self.jobs()? {
             if has_marker(&job, KEPT_MARKER) || has_marker(&job, PARTIAL_MARKER) {
                 let bytes = dir_size(&job);
                 remove_job_dir(&job)?;
-                freed += bytes;
+                freed = freed.saturating_add(bytes);
             }
         }
         Ok(freed)

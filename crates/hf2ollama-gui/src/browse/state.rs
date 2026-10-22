@@ -463,7 +463,7 @@ impl BrowseState {
             }
             Compat::Safetensors { .. } => {
                 let files = safetensors_import_files(&info.files);
-                let source: u64 = files.iter().map(|f| f.size).sum();
+                let source = files.iter().fold(0u64, |t, f| t.saturating_add(f.size));
                 Plan {
                     rows: options::safetensors_rows(source),
                     kind: PlanKind::Safetensors(files),

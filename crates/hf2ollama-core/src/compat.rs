@@ -99,7 +99,7 @@ fn gguf_options(files: &[RepoFile]) -> Vec<GgufOption> {
         .map(|(_, mut members)| {
             members.sort_by_key(|(i, _)| *i);
             let files: Vec<RepoFile> = members.into_iter().map(|(_, f)| f).collect();
-            let total_bytes = files.iter().map(|f| f.size).sum();
+            let total_bytes = files.iter().fold(0u64, |t, f| t.saturating_add(f.size));
             let first = base_name(&files[0].path);
             let name = match parse_shard(&first) {
                 Some((prefix, _, _)) => prefix,

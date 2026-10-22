@@ -248,7 +248,7 @@ impl Run<'_> {
             }
         }
 
-        let total: u64 = req.files.iter().map(|f| f.size).sum();
+        let total = req.files.iter().fold(0u64, |t, f| t.saturating_add(f.size));
         let dir = ctx.staging.create_job(self.id, total)?;
         let dir_path = dir.path().to_path_buf();
         job.dir = Some(dir);
@@ -305,7 +305,7 @@ impl Run<'_> {
                 }
                 ctl.checkpoint().await?;
             };
-            base += file.size;
+            base = base.saturating_add(file.size);
             let _ = self.tx.send(JobEvent::Progress {
                 id,
                 done: base,
