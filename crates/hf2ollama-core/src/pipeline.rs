@@ -94,9 +94,12 @@ fn is_gguf(req: &ImportRequest) -> bool {
             .all(|f| f.path.to_ascii_lowercase().ends_with(".gguf"))
 }
 
-/// Drops the in-flight future as soon as the job is cancelled.
+/// Drops the in-flight future as soon as the job is cancelled. The work is
+/// polled first, so a result that is already available beats a simultaneous
+/// cancel.
 async fn raced<T>(ctl: &JobControl, fut: impl Future<Output = Result<T>>) -> Result<T> {
     tokio::select! {
+        biased;
         r = fut => r,
         () = ctl.cancelled() => Err(Error::Cancelled),
     }
@@ -289,12 +292,31 @@ impl Run<'_> {
             },
         };
         let log = self.log;
-        raced(
-            ctl,
-            ctx.ollama
-                .create(&create, &mut |s| log.log(&format!("ollama: {s}"))),
-        )
-        .await?;
+        // Cancel semantics: honored up to the moment the request is sent. Once
+        // Ollama is creating the model we do not abandon the call, because
+        // dropping the connection does not prove Ollama aborts, and the model
+        // could appear while the job claims it was cancelled. The create stall
+        // timeout still bounds the wait.
+        if ctl.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let mut noted = false;
+        ctx.ollama
+            .create(&create, &mut |s| {
+                if !noted && ctl.is_cancelled() {
+                    noted = true;
+                    log.log(
+                        "cancel requested during create; finishing create so Ollama and the job state agree",
+                    );
+                }
+                log.log(&format!("ollama: {s}"));
+            })
+            .await?;
+        if !noted && ctl.is_cancelled() {
+            log.log(
+                "cancel requested during create; finishing create so Ollama and the job state agree",
+            );
+        }
 
         self.stage(Stage::CleaningUp, "cleaning up");
         self.record_history(req);
