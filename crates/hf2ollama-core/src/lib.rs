@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod fit;
+pub mod hf;
 pub mod history;
 pub mod model;
 pub mod paths;

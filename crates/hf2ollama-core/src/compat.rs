@@ -162,7 +162,7 @@ mod tests {
         RepoFile {
             path: path.to_string(),
             size,
-            sha256: None,
+            ..Default::default()
         }
     }
 
