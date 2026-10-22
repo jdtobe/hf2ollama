@@ -468,6 +468,16 @@ impl Shared {
     }
 }
 
+/// The message of a panic payload, when it carries one.
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(s) => *s,
+        Err(p) => p
+            .downcast_ref::<&str>()
+            .map_or_else(|| "no message".to_string(), |s| (*s).to_string()),
+    }
+}
+
 /// Runs `job` on the runtime, then starts the next queued job.
 fn launch(shared: &Arc<Shared>, job: Queued) {
     let shared = Arc::clone(shared);
@@ -475,18 +485,34 @@ fn launch(shared: &Arc<Shared>, job: Queued) {
     runtime.spawn(async move {
         let Queued { id, req, ctl } = job;
         let (ctx, tx) = (Arc::clone(&shared.ctx), shared.tx.clone());
+        let task_ctl = ctl.clone();
         // A separate task, so a panic is observed here instead of vanishing.
         let joined = shared
             .handle
-            .spawn(async move { run_import(&ctx, id, req, ctl, tx).await })
+            .spawn(async move { run_import(&ctx, id, req, task_ctl, tx).await })
             .await;
         if let Err(e) = joined {
-            if e.is_panic() {
-                let _ = shared.tx.send(JobEvent::Failed {
-                    id,
-                    error: "internal error: the import task panicked".to_string(),
-                });
-            }
+            // The task ended without sending its own terminal event.
+            let panicked = e.is_panic();
+            let (note, error) = if panicked {
+                let detail = panic_text(e.into_panic());
+                (
+                    format!("the import task panicked: {detail}"),
+                    "internal error: the import task panicked".to_string(),
+                )
+            } else {
+                (
+                    "the import task was stopped before it finished".to_string(),
+                    "the import task was stopped before it finished".to_string(),
+                )
+            };
+            shared.logger(id).log(&note);
+            let terminal = if !panicked && ctl.is_cancelled() {
+                JobEvent::Cancelled { id }
+            } else {
+                JobEvent::Failed { id, error }
+            };
+            let _ = shared.tx.send(terminal);
         }
         let next = {
             let mut state = shared.state();
