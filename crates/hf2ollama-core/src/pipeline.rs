@@ -3,16 +3,21 @@
 
 use crate::config::Settings;
 use crate::control::JobControl;
-use crate::error::Result;
-use crate::events::{JobEvent, JobId};
+use crate::error::{Error, Result};
+use crate::events::{JobEvent, JobId, Stage};
 use crate::hf::HfClient;
 use crate::history::History;
 use crate::model::ImportRequest;
-use crate::ollama::OllamaClient;
+use crate::names::validate_model_name;
+use crate::ollama::{CreateRequest, OllamaClient};
+use crate::staging::JobDir;
 use crate::staging::Staging;
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Everything a job needs besides its own request.
 #[derive(Clone)]
@@ -25,7 +30,82 @@ pub struct PipelineCtx {
     pub log_dir: PathBuf,
 }
 
-#[allow(unused_variables)]
+/// `HH:MM:SS` in UTC.
+fn utc_clock(now: SystemTime) -> String {
+    let secs = now
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        % 86_400;
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60
+    )
+}
+
+/// Sends timestamped log lines to the GUI and appends them to
+/// `<log_dir>/job-<id>.log`. Neither a dropped receiver nor a failing file
+/// write ever fails the job.
+pub(crate) struct Logger {
+    id: JobId,
+    tx: Sender<JobEvent>,
+    file: Option<PathBuf>,
+}
+
+impl Logger {
+    pub(crate) fn new(id: JobId, tx: Sender<JobEvent>, log_dir: &Path) -> Logger {
+        let file = std::fs::create_dir_all(log_dir)
+            .ok()
+            .map(|()| log_dir.join(format!("job-{}.log", id.0)));
+        Logger { id, tx, file }
+    }
+
+    pub(crate) fn log(&self, msg: &str) {
+        let line = format!("{} {msg}", utc_clock(SystemTime::now()));
+        if let Some(path) = &self.file {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut f| writeln!(f, "{line}"));
+        }
+        let _ = self.tx.send(JobEvent::Log { id: self.id, line });
+    }
+}
+
+/// `tiny` and `tiny:latest` name the same model.
+fn normalized(name: &str) -> String {
+    if name.contains(':') {
+        name.to_string()
+    } else {
+        format!("{name}:latest")
+    }
+}
+
+fn is_gguf(req: &ImportRequest) -> bool {
+    !req.files.is_empty()
+        && req
+            .files
+            .iter()
+            .all(|f| f.path.to_ascii_lowercase().ends_with(".gguf"))
+}
+
+struct Run<'a> {
+    ctx: &'a PipelineCtx,
+    id: JobId,
+    tx: &'a Sender<JobEvent>,
+    log: &'a Logger,
+}
+
+impl Run<'_> {
+    fn stage(&self, stage: Stage, text: &str) {
+        let _ = self.tx.send(JobEvent::Stage { id: self.id, stage });
+        self.log.log(&format!("stage: {text}"));
+    }
+}
+
 pub async fn run_import(
     ctx: &PipelineCtx,
     id: JobId,
@@ -33,7 +113,160 @@ pub async fn run_import(
     ctl: JobControl,
     tx: Sender<JobEvent>,
 ) -> Result<()> {
-    todo!()
+    let log = Logger::new(id, tx.clone(), &ctx.log_dir);
+    let run = Run {
+        ctx,
+        id,
+        tx: &tx,
+        log: &log,
+    };
+    let mut job: Option<JobDir> = None;
+    let outcome = run.steps(&req, &ctl, &mut job).await;
+    let terminal = match &outcome {
+        Ok(()) => JobEvent::Finished { id },
+        Err(Error::Cancelled) => {
+            log.log("cancelled");
+            JobEvent::Cancelled { id }
+        }
+        Err(e) => {
+            log.log(&format!("failed: {e}"));
+            JobEvent::Failed {
+                id,
+                error: e.to_string(),
+            }
+        }
+    };
+    let _ = tx.send(terminal);
+    outcome
+}
+
+impl Run<'_> {
+    async fn steps(
+        &self,
+        req: &ImportRequest,
+        ctl: &JobControl,
+        job: &mut Option<JobDir>,
+    ) -> Result<()> {
+        let ctx = self.ctx;
+        validate_model_name(&req.model_name)?;
+        ctl.checkpoint().await?;
+        let version = ctx.ollama.version().await?;
+        self.log.log(&format!("Ollama {version} is reachable"));
+        if !req.overwrite {
+            let want = normalized(&req.model_name);
+            let installed = ctx.ollama.list().await?;
+            if installed.iter().any(|m| normalized(&m.name) == want) {
+                return Err(Error::NameCollision(req.model_name.clone()));
+            }
+        }
+
+        let total: u64 = req.files.iter().map(|f| f.size).sum();
+        let dir = ctx.staging.create_job(self.id, total)?;
+        let dir_path = dir.path().to_path_buf();
+        *job = Some(dir);
+
+        self.stage(
+            Stage::Downloading,
+            &format!(
+                "downloading {} file(s), {total} bytes, from {}",
+                req.files.len(),
+                req.repo_id
+            ),
+        );
+        let mut downloaded = Vec::new();
+        let mut base = 0u64;
+        for file in &req.files {
+            ctl.checkpoint().await?;
+            let (id, tx) = (self.id, self.tx);
+            let offset = base;
+            let d = ctx
+                .hf
+                .download(&req.repo_id, file, &dir_path, ctl, &mut |done, _| {
+                    let _ = tx.send(JobEvent::Progress {
+                        id,
+                        done: offset + done,
+                        total,
+                    });
+                })
+                .await?;
+            base += file.size;
+            let _ = self.tx.send(JobEvent::Progress {
+                id,
+                done: base,
+                total,
+            });
+            self.log
+                .log(&format!("downloaded {} ({} bytes)", file.path, file.size));
+            downloaded.push((file.path.clone(), d));
+        }
+
+        self.stage(
+            Stage::Verifying,
+            &format!(
+                "verifying: {} file(s) matched their expected hashes",
+                downloaded.len()
+            ),
+        );
+
+        self.stage(Stage::Uploading, "uploading blobs to Ollama");
+        let mut files = BTreeMap::new();
+        for (rel, d) in &downloaded {
+            ctl.checkpoint().await?;
+            let digest = format!("sha256:{}", d.sha256);
+            if ctx.ollama.has_blob(&digest).await? {
+                self.log
+                    .log(&format!("{rel}: blob already on Ollama, skipping upload"));
+            } else {
+                ctx.ollama
+                    .upload_blob(&digest, &d.path, &mut |_, _| {})
+                    .await?;
+                self.log.log(&format!("{rel}: uploaded blob {digest}"));
+            }
+            files.insert(rel.clone(), digest);
+        }
+
+        self.stage(
+            Stage::Creating,
+            &format!("creating model {}", req.model_name),
+        );
+        ctl.checkpoint().await?;
+        let create = CreateRequest {
+            model: req.model_name.clone(),
+            files,
+            quantize: if is_gguf(req) {
+                None
+            } else {
+                req.quantize.clone()
+            },
+        };
+        let log = self.log;
+        ctx.ollama
+            .create(&create, &mut |s| log.log(&format!("ollama: {s}")))
+            .await?;
+
+        self.stage(Stage::CleaningUp, "cleaning up");
+        self.record_history(req);
+        if let Some(dir) = job.take() {
+            if let Err(e) = dir.finish(!ctx.settings.delete_after_import) {
+                self.log.log(&format!("cleanup warning: {e}"));
+            }
+        }
+        self.stage(Stage::Done, "done");
+        Ok(())
+    }
+
+    fn record_history(&self, req: &ImportRequest) {
+        let saved = match self.ctx.history.lock() {
+            Ok(mut h) => {
+                h.record(&normalized(&req.model_name), &req.repo_id);
+                h.save()
+            }
+            Err(_) => Err(Error::Io("history lock poisoned".to_string())),
+        };
+        if let Err(e) = saved {
+            self.log.log(&format!("could not save import history: {e}"));
+        }
+    }
 }
 
 #[cfg(test)]
