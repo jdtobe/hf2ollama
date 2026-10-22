@@ -598,7 +598,7 @@ fn notices(
     let mut natural: f32 = texts.iter().map(|t| callout_height(ui, t, width)).sum();
     natural += GAP * texts.len().saturating_sub(1) as f32;
     if retry {
-        natural += GAP + 24.0;
+        natural += GAP + 32.0;
     }
     let cap = (ui.available_height() - GAP - MIN_SCROLL_H).max(0.0);
     let max_h = (natural + 2.0).min(cap);
