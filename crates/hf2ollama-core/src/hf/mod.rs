@@ -75,11 +75,23 @@ pub struct ModelInfo {
     pub gated: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HfClient {
     endpoint: String,
     token: Option<String>,
+    /// Built with a connect timeout only. If the builder fails, this falls
+    /// back to a default client without it; downloads must set their own
+    /// timeouts per request.
     http: reqwest::Client,
+}
+
+impl std::fmt::Debug for HfClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HfClient")
+            .field("endpoint", &self.endpoint)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Deserialize)]
