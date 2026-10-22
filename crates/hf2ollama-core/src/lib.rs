@@ -1,5 +1,6 @@
 pub mod compat;
 pub mod config;
+pub mod control;
 pub mod error;
 pub mod events;
 pub mod fit;
