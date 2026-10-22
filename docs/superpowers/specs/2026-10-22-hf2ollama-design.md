@@ -142,6 +142,7 @@ The reference is `docs/design/ui-mockup.html`. Everything below is required beha
 - Detail pane:
   - Header with name, author, downloads, last updated, and an "Open on huggingface.co" link.
   - Metadata strip: parameters, architecture, context length, license, base model, prompt template.
+  - A "Files" / "About" switch under the metadata strip. Files (default) is the options table; About shows the model card: pipeline tag, languages and a few tags as chips, then the repo's README rendered as a safe subset of markdown (headings, paragraphs, lists, tables, code blocks, links). The README is fetched on first opening of About, with the front matter removed and a 256 KiB cap. Images and raw HTML are never loaded or executed (images show their alt text, HTML shows as plain text), and only http and https links open, in the browser, on click. The description starts collapsed with Show more and a "Read the full model card on huggingface.co" link. Empty, loading and error states are shown, with Retry on errors.
   - For safetensors repos, a banner explaining full-precision download and Ollama-side quantization.
   - Table of files or quantizations: name, size, estimated memory need, quality bar and note, and an "On your machine" fit pill. The recommended row is labeled.
   - Import plan card: editable Ollama model name, pipeline steps, temporary space, final size, staging free space, and the **Download & import** button.
