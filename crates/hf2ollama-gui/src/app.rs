@@ -92,9 +92,13 @@ pub fn host_of(url: &str) -> String {
 }
 
 /// Exact size of the status pill for a label of `text_width` (dot, gap, text, padding).
-pub fn pill_size(_text_width: f32) -> egui::Vec2 {
-    todo!()
+pub fn pill_size(text_width: f32) -> egui::Vec2 {
+    vec2(2.0 * PILL_PAD_X + PILL_DOT + PILL_GAP + text_width, 24.0)
 }
+
+const PILL_PAD_X: f32 = 10.0;
+const PILL_DOT: f32 = 8.0;
+const PILL_GAP: f32 = 6.0;
 
 pub struct App {
     state: AppState,
@@ -201,21 +205,32 @@ impl App {
                             Some(None) => (bad(dark), "Ollama not reachable".to_string()),
                             None => (t.fg3, "Checking Ollama…".to_string()),
                         };
-                        egui::Frame::new()
-                            .fill(t.surface2)
-                            .stroke(Stroke::new(1.0, t.line))
-                            .corner_radius(99.0)
-                            .inner_margin(Margin::symmetric(10, 3))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    // The row is right-to-left, so the label
-                                    // comes first and the dot lands on its left.
-                                    ui.label(RichText::new(label).size(12.0).color(t.fg2));
-                                    let (r, _) =
-                                        ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                                    ui.painter().circle_filled(r.center(), 4.0, dot);
-                                });
-                            });
+                        // Hand-painted at an exact size so no layout can stretch it.
+                        let galley = ui.painter().layout_no_wrap(
+                            label,
+                            egui::FontId::proportional(12.0),
+                            t.fg2,
+                        );
+                        let (rect, _) =
+                            ui.allocate_exact_size(pill_size(galley.size().x), Sense::hover());
+                        self.state.pill_rect = Some(rect);
+                        let p = ui.painter();
+                        p.rect_filled(rect, 12.0, t.surface2);
+                        p.rect_stroke(
+                            rect,
+                            12.0,
+                            Stroke::new(1.0, t.line),
+                            egui::StrokeKind::Inside,
+                        );
+                        let cy = rect.center().y;
+                        let dot_x = rect.min.x + PILL_PAD_X + PILL_DOT / 2.0;
+                        p.circle_filled(egui::pos2(dot_x, cy), PILL_DOT / 2.0, dot);
+                        let text_x = rect.min.x + PILL_PAD_X + PILL_DOT + PILL_GAP;
+                        p.galley(
+                            egui::pos2(text_x, cy - galley.size().y / 2.0),
+                            galley,
+                            t.fg2,
+                        );
                     });
                 });
             });
