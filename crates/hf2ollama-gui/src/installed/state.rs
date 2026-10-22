@@ -356,6 +356,28 @@ pub fn visible_columns(width: f32) -> Vec<Column> {
     cols
 }
 
+/// Horizontal extent `(column, left, right)` of each column in a row
+/// `width` wide: fixed widths, gaps between, and Model taking the rest.
+pub fn column_spans(_cols: &[Column], _width: f32) -> Vec<(Column, f32, f32)> {
+    unimplemented!("column_spans")
+}
+
+/// What to paste in a terminal to chat with a model. Names with anything
+/// unusual in them are single-quoted so they stay one word.
+pub fn run_command(_name: &str) -> String {
+    unimplemented!("run_command")
+}
+
+/// `sha256:` plus the first 12 hex characters, or the whole short string.
+pub fn short_digest(_digest: &str) -> String {
+    unimplemented!("short_digest")
+}
+
+/// `32768` as `32,768`.
+pub fn thousands(_n: u64) -> String {
+    unimplemented!("thousands")
+}
+
 /// Seconds since the Unix epoch for an RFC 3339 timestamp such as
 /// `2026-10-20T09:30:00.123456789-08:00` or `...Z`.
 pub fn parse_rfc3339(s: &str) -> Option<i64> {
@@ -827,5 +849,58 @@ mod tests {
         assert_eq!(visible_columns(719.9), core);
         assert_eq!(visible_columns(100.0), core, "never drops the essentials");
         assert_eq!(visible_columns(f32::NAN), core);
+    }
+
+    // ---- small formatters ----
+
+    #[test]
+    fn column_spans_fill_the_row_and_give_model_the_rest() {
+        let cols = visible_columns(1132.0);
+        let spans = column_spans(&cols, 1132.0);
+        assert_eq!(spans.len(), 7);
+        let (c, l, r) = spans[0];
+        assert_eq!((c, l), (Column::Model, 0.0));
+        assert!((r - 338.0).abs() < 0.01, "model right {r}");
+        for pair in spans.windows(2) {
+            assert!(
+                (pair[1].1 - pair[0].2 - COLUMN_GAP).abs() < 0.01,
+                "gap between {:?} and {:?}",
+                pair[0].0,
+                pair[1].0
+            );
+        }
+        let last = spans[spans.len() - 1];
+        assert_eq!(last.0, Column::Actions);
+        assert!((last.2 - 1132.0).abs() < 0.01);
+        assert!((last.2 - last.1 - column_width(Column::Actions)).abs() < 0.01);
+        // The 900 window leaves Model more than its minimum.
+        let narrow = column_spans(&visible_columns(852.0), 852.0);
+        assert!(narrow[0].2 - narrow[0].1 >= column_width(Column::Model));
+        // Never negative, even when asked for too little room.
+        assert!(column_spans(&visible_columns(50.0), 50.0)[0].2 >= 0.0);
+    }
+
+    #[test]
+    fn run_command_quotes_only_unusual_names() {
+        assert_eq!(run_command("llama3.2:3b"), "ollama run llama3.2:3b");
+        assert_eq!(
+            run_command("hf.co/org/Name-GGUF:Q4_K_M"),
+            "ollama run hf.co/org/Name-GGUF:Q4_K_M"
+        );
+        assert_eq!(run_command("a b"), "ollama run 'a b'");
+        assert_eq!(run_command("x;rm -rf ~"), "ollama run 'x;rm -rf ~'");
+        assert_eq!(run_command("it's"), "ollama run 'it'\\''s'");
+    }
+
+    #[test]
+    fn digest_and_number_formatting() {
+        let full = format!("sha256:{}", "ab".repeat(32));
+        assert_eq!(short_digest(&full), "sha256:abababababab");
+        assert_eq!(short_digest("abc123"), "abc123");
+        assert_eq!(short_digest(""), "unknown");
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(32_768), "32,768");
+        assert_eq!(thousands(1_048_576), "1,048,576");
     }
 }
