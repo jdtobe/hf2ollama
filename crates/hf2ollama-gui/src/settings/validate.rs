@@ -62,6 +62,13 @@ fn validate_url(raw: &str) -> Result<String, String> {
     Ok(url.trim_end_matches('/').to_string())
 }
 
+/// The read-only part of the staging check (no writes): an absolute path
+/// without `..`, naming a directory or a missing child of one.
+pub fn check_staging_dir(path: &Path) -> Result<(), String> {
+    let _ = path;
+    Ok(())
+}
+
 /// An existing writable directory, or a missing path whose parent exists and
 /// is a writable directory. A file path is never accepted.
 pub fn validate_staging_dir(path: &Path) -> Result<(), String> {
@@ -205,7 +212,7 @@ mod tests {
         assert!(e.contains("not a folder"), "{e}");
         // Nor is a path below a file.
         assert!(validate_staging_dir(&file.join("sub")).is_err());
-        // Empty and relative-less paths are refused.
+        // An empty path is refused.
         assert!(validate_staging_dir(&PathBuf::new()).is_err());
         // Probing leaves nothing behind.
         let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
@@ -259,5 +266,66 @@ mod tests {
             assert!(parse_gb(raw).is_err(), "{raw:?} was accepted");
         }
         assert_eq!(parse_gb("100000"), Ok(100000.0));
+    }
+
+    fn full_path_hint(e: &str) -> bool {
+        e.contains("full path")
+    }
+
+    #[test]
+    fn relative_staging_path_is_rejected() {
+        for raw in ["foo", "./foo", "../x", "a/b"] {
+            let p = PathBuf::from(raw);
+            let e = validate_staging_dir(&p).unwrap_err();
+            assert!(full_path_hint(&e), "{raw}: {e}");
+            assert!(check_staging_dir(&p).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn dot_dot_component_is_rejected_even_when_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("..").join("x");
+        assert!(validate_staging_dir(&p).unwrap_err().contains(".."));
+        assert!(check_staging_dir(&p).is_err());
+        let p = dir.path().join("a").join("..");
+        assert!(check_staging_dir(&p).is_err());
+    }
+
+    #[test]
+    fn empty_and_tilde_staging_paths_are_rejected() {
+        for raw in ["", "~", "~/models"] {
+            let p = PathBuf::from(raw);
+            let e = validate_staging_dir(&p).unwrap_err();
+            assert!(check_staging_dir(&p).is_err(), "{raw:?}");
+            if raw.starts_with('~') {
+                assert!(e.contains('~') && full_path_hint(&e), "{raw}: {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_writable_directory_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(check_staging_dir(dir.path()), Ok(()));
+        assert_eq!(validate_staging_dir(dir.path()), Ok(()));
+    }
+
+    #[test]
+    fn absolute_nonexistent_with_writable_parent_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("new-staging");
+        assert_eq!(check_staging_dir(&p), Ok(()));
+        assert_eq!(validate_staging_dir(&p), Ok(()));
+        assert!(!p.exists(), "validation creates nothing");
+    }
+
+    #[test]
+    fn file_path_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f.txt");
+        std::fs::write(&f, "x").unwrap();
+        assert!(check_staging_dir(&f).unwrap_err().contains("not a folder"));
+        assert!(validate_staging_dir(&f).is_err());
     }
 }

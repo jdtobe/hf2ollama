@@ -1171,4 +1171,59 @@ mod tests {
             .as_deref()
             .is_some_and(|e| e.contains("does not exist")));
     }
+
+    #[test]
+    fn typing_in_the_staging_field_never_writes_to_the_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_s, mut st) = fresh();
+        let target = dir.path().join("Documents").join("models").join("staging");
+        let full = target.display().to_string();
+        let before = std::fs::metadata(dir.path()).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        for (i, _) in full.char_indices().chain([(full.len(), ' ')]) {
+            st.staging_text = full[..i].to_string();
+            st.edit_staging();
+            let now = std::fs::metadata(dir.path()).unwrap().modified().unwrap();
+            assert_eq!(now, before, "typing {:?} touched the folder", &full[..i]);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+        // Existing but read-only folders are fine while typing; the write
+        // probe belongs to the commit.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro = dir.path().join("ro");
+            std::fs::create_dir(&ro).unwrap();
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+            st.staging_text = ro.display().to_string();
+            st.edit_staging();
+            assert!(st.staging_error.is_none(), "{:?}", st.staging_error);
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn commit_staging_runs_the_write_probe_once_and_leaves_no_junk() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, mut st) = fresh();
+        st.staging_text = dir.path().display().to_string();
+        assert!(st.commit_staging(&mut s).staging_dir);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro = dir.path().join("ro");
+            std::fs::create_dir(&ro).unwrap();
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+            if std::fs::write(ro.join("p"), "x").is_err() {
+                st.staging_text = ro.display().to_string();
+                assert!(!st.commit_staging(&mut s).any());
+                assert!(st
+                    .staging_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("not writable")));
+            }
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
 }
