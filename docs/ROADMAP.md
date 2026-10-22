@@ -6,6 +6,7 @@ This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-h
 
 - Core library: Hugging Face and Ollama clients, compatibility classification, fit estimation, hardware detection, settings and portable paths, staging and cleanup, history, import pipeline, job manager, model card fetch, token check.
 - Desktop app: window shell, Browse (search, filters, details, model card, import plan), downloads dock, Installed, Settings, light and dark themes, startup sweep of orphaned job folders.
+- Retry of the download step (3 times, backoff) after network errors, 5xx and 429; a confirmation when closing the window with running downloads; a name-collision re-check before `create` and protection against starting the same name twice; settings enum values written in kebab-case (old values still load); Clear cached files also removes failed downloads.
 - Project files, CI (fmt, clippy, tests on three OSes, `dev-hooks` job, release-build job) and cargo-deny.
 - A real end-to-end run against a throwaway Ollama 0.40.8 on macOS; see [the acceptance record](superpowers/notes/acceptance.md).
 
@@ -21,7 +22,8 @@ See [CHANGELOG.md](../CHANGELOG.md).
 
 Known limitations to address after the first release candidate:
 
-- Cross-restart resume of partial downloads (partials are kept, but a restart does not pick the job back up).
+- Resume of failed downloads: a Retry or Resume action for a failed job that reuses the kept partial files, including after a restart (today the files are kept for 7 days but a new import starts over).
+- An overwrite prompt for a name that already exists (today the import is refused and overwrite is not offered from the GUI).
 - The log viewer is cramped at the 900 by 640 minimum window (about two or three lines); a floating log viewer would fix it. Full logs are in `<log_dir>/job-<id>.log`.
 - Ollama does not report free space or the model store path, so the Installed usage bar shows two segments (models imported with this app, and all others) and the status bar omits the store path.
 - Each settings change creates a new job manager and keeps the old ones, so a long session leaks a few idle managers and the parallel limit is per manager. Prune idle managers.
@@ -35,7 +37,6 @@ Known limitations to address after the first release candidate:
 
 ## Later
 
-- Cross-restart resume of downloads (not implemented in v1).
 - VRAM detection beyond NVIDIA and Apple Silicon (for example AMD and Intel), subject to reliable detection.
 - Accessibility improvements; egui has weaker accessibility than native toolkits.
 - A command-line front end on top of `hf2ollama-core` (the library split leaves room for it; not planned in detail).

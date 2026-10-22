@@ -205,7 +205,8 @@ Errors are shown in plain language with the next step, and every failure has a l
 - Network failure: the download step retries up to 3 times with backoff on the same job folder; if it still fails, the job fails with its files retained (per setting). Known limitation in v1: there is no Resume action for a failed job.
 - Hash mismatch: delete the file, fail the job, say the download was corrupt.
 - Ollama rejects `create` (for example, unsupported architecture): show Ollama's message, clean up per settings.
-- Name collision with an existing model: ask before overwriting.
+- Name collision with an existing model: the import is refused with a message to choose another name or delete the model first. The name is checked when the job starts and again right before `create`, and the Download button is disabled while another job uses the same name. Known limitation in v1: there is no overwrite prompt; overwriting is not offered from the GUI.
+- Closing the window with running downloads asks first; "Quit and cancel" cancels every job and closes after they settle or after 3 seconds.
 
 ## 10. Testing
 

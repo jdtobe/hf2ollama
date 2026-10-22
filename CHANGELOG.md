@@ -41,8 +41,20 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - `cargo-deny` now passes (licenses, bans, advisories, sources) with four documented "unmaintained" advisory ignores.
 - Screenshot and trial environment variables: `HF2O_THEME`, `HF2O_SIZE`, `HF2O_VIEW`, `HF2O_QUERY`, `HF2O_SELECT`; the in-memory token store (`HF2O_MEMORY_TOKEN_STORE`, `HF2O_MEMORY_TOKEN`) exists only with the `dev-hooks` cargo feature.
 
+- Downloads: the download step retries up to 3 times (1 s, 2 s, 4 s; a retry-after hint is honoured up to 30 s) after a network error, a stall, a 5xx or a 429, continuing from the partial file; never after a checksum mismatch, a gated repo, other 4xx errors or a cancel. The wait honours cancel and pause, and each retry is logged.
+- Closing the window with running downloads shows a confirmation ("Keep running" or "Quit and cancel"); quitting cancels every job and waits at most 3 seconds.
+- The model name is checked again right before `create`, the Download button is disabled while another job uses the same name (and right after a click, so a double click starts one job), and a name collision fails with a readable message. Overwriting is still not offered.
+- A download that sends more bytes than its declared size is stopped immediately.
+- A job task that panics or is stopped now writes a log line and still ends with one terminal event.
+- An unreadable settings file is renamed to `hf2ollama.toml.bak` before defaults are used (logged in `startup.log` and shown in the status bar).
+- The typed Hugging Face token and its undo history are wiped when leaving Settings and after Save or Clear.
+- Sweeping and clearing the staging folder continue past a folder that cannot be removed and report it.
+
 ### Changed
 
+- Settings enum values are written in kebab-case (`never`, `one-minute`, `five-minutes`, `one-hour`; `system`, `light`, `dark`). The earlier PascalCase spellings still load.
+- Clear cached files in Settings now also removes the files of failed downloads, and the button is enabled whenever anything is listed. The Settings text and the docs no longer promise resuming: failed downloads are kept for 7 days and then removed, and resuming a failed job or after a restart is not supported yet.
+- File sizes from the remote are summed with saturating arithmetic.
 - Spec and plan aligned with the verified Ollama safetensors `quantize` values and Hugging Face hash rules.
 - CI runs on pushes to `main` and on pull requests only (no duplicate runs), and no longer installs `libgtk-3-dev`, which nothing uses.
 - Delete in Installed needs a 600 ms pause between arming and confirming, and held keys never confirm.

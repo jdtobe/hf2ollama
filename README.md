@@ -24,8 +24,9 @@ All of these are implemented; see the status banner for what was verified.
 - Browse and search Hugging Face, with filters and per-model metadata (size, quantization, architecture, context length, license).
 - Compatibility detection with explanations: GGUF repos, safetensors repos with a supported architecture, and unsupported repos, which are detected before any download and explained.
 - A quantization picker with fit estimates for your machine (RAM, and VRAM where it can be detected reliably), with a manual hardware override.
-- Import through the Ollama API: download with resume, verify checksums, upload blobs, create the model.
-- Pause, resume and cancel for each job, with a timestamped log per job.
+- Import through the Ollama API: download with HTTP Range resume (retrying up to 3 times after a network error, 5xx or 429), verify checksums, upload blobs, create the model. Resuming a failed job or resuming after a restart is not supported yet.
+- Pause, resume and cancel for each job, with a timestamped log per job. Closing the window with running downloads asks first.
+- A model name that already exists in Ollama is refused (checked at the start and again just before the model is created); overwriting is not offered.
 - A model card (About this model) for each repository, rendered as a safe subset of Markdown: no raw HTML, no images, only plain web links.
 - An Installed view backed by the Ollama API, with delete (two-click confirmation with a short pause before the second click counts).
 - Settings: Ollama address, staging folder, cleanup behavior, parallel downloads, Hugging Face token (kept in the system keychain) and endpoint, theme.

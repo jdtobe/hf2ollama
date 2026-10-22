@@ -61,7 +61,7 @@ Hard rules that follow from this layout:
 | `compat` | Classifies a repo as GGUF (with options, shards grouped), safetensors with a supported architecture, or unsupported with a reason. The architecture list is bundled data (`supported_architectures.json`). |
 | `fit` | Pure function from model size and a machine profile to a verdict: fits, tight, partial offload, too large. |
 | `hardware` | Detects RAM (`sysinfo`) and VRAM where reliable (NVIDIA through NVML, Apple unified memory). Accepts a manual override. |
-| `config`, `paths` | Settings (TOML) and storage locations. If a file named `portable` is next to the executable, everything lives beside it. |
+| `config`, `paths` | Settings (TOML; enum values are kebab-case such as `five-minutes`, and the older PascalCase spellings still load) and storage locations. If a file named `portable` is next to the executable, everything lives beside it. |
 | `secrets` | Hugging Face token in the system keychain, with an in-memory store for tests. |
 | `history` | JSON record of which Hugging Face repo produced which Ollama model name. |
 | `names` | Validation of Ollama model names. |
@@ -91,10 +91,10 @@ flowchart TD
 ```
 
 1. **Plan.** Resolve the selected file or files, compute download and final size, check free space in the staging folder, check Ollama is reachable. Refuse with a clear message if space is insufficient.
-2. **Download** into `<staging>/<job-id>/`, resuming with HTTP Range. A `206` response whose `Content-Range` does not match the resume offset restarts the download. The token is used for gated repos.
+2. **Download** into `<staging>/<job-id>/`, resuming with HTTP Range. A `206` response whose `Content-Range` does not match the resume offset restarts the download. The token is used for gated repos. A file that fails with a network error (including a stall), a 5xx or a 429 is retried up to 3 times on the same job folder with waits of 1, 2 and 4 seconds (a retry-after hint is honoured, capped at 30 seconds); the wait races against cancel and respects pause, and each retry is logged. Checksum mismatches, gated repos, other 4xx errors, unsafe paths and cancels are never retried. A body longer than the declared size is cut off at once.
 3. **Verify.** Hugging Face publishes SHA-256 only for LFS files. Those are checked against it. Small non-LFS files (config, tokenizer JSON) are checked against the git blob SHA-1. The app also computes SHA-256 for every file locally, since Ollama's blob upload needs it. A mismatch fails the job and deletes the bad file.
 4. **Upload** each file as a blob: `HEAD /api/blobs/sha256:<hex>` and skip if present, otherwise `POST`.
-5. **Create** with `POST /api/create`, mapping file names to blob digests. For safetensors the request includes weights, config and tokenizer files and the user's `quantize` choice (or none).
+5. **Create** with `POST /api/create` (after checking again that the model name is still free, unless overwrite was requested), mapping file names to blob digests. For safetensors the request includes weights, config and tokenizer files and the user's `quantize` choice (or none).
 6. **Clean up** according to settings, then record the import in history.
 
 Each job has a timestamped log (queued, request results, stage completions, pause, resume, cancel, errors). It is also written to a log file for bug reports.
@@ -125,6 +125,8 @@ The GUI owns a tokio runtime. The UI thread sends `Command`s and drains `JobEven
 - **Browse** (`browse/`). Filters, result list, lazy details, option tables, the import plan card, and the model card tab (`markdown.rs` and `about.rs`).
 - **Downloads dock** (`dock/`). `JobsState` in `dock/jobs.rs` is a pure reducer: it turns `JobEvent`s into rows (status, progress, step, log capped at 2000 lines, auto-dismiss deadline). `dock/mod.rs` only draws rows and reports button clicks as actions.
 - **Installed and Settings** (`installed/`, `settings/`, `confirm.rs`). Pure state plus drawing; destructive buttons share the two-step confirm in `confirm.rs` (4 s window, 600 ms minimum delay, held keys never confirm). Settings validators live in `settings/validate.rs`.
+- **Closing the window** (`quit.rs`). `QuitState` (`Idle`, `Confirming`, `Cancelling`, `Closing`) is a pure state machine. A close request with unsettled jobs is cancelled and a confirmation is shown ("Keep running", the default, or "Quit and cancel"); the latter sends `Cancel` for every unsettled job and closes once they settle or after 3 seconds. Held Enter or Space never confirms.
+- **Import names** (`app.rs`, `dock/jobs.rs`). The Download button is disabled while an unsettled job, or a click not yet answered by `JobAccepted`, uses the same normalized name.
 - **Layout tests.** Each view has tests that run real egui frames at 900 by 640 and 1180 by 820 and check rectangles (nothing clipped, buttons fully visible).
 
 ### Model card safety
@@ -149,4 +151,4 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 - No deleting of blobs. Ollama has no blob-delete API, so a failed import after upload can leave an unused blob that Ollama prunes later.
 - No format conversion. There is no Python or llama.cpp step, so architectures Ollama does not support are reported as unsupported.
 - No running or chatting with models, no Modelfile editing beyond the model name, no uploading to Hugging Face, and no management of Ollama library pulls.
-- No cross-restart resume of in-progress downloads in v1 (files of a failed job are kept for 7 days, but nothing reuses them and a restart does not pick the job back up).
+- No resume of failed jobs and no cross-restart resume of in-progress downloads in v1 (files of a failed job are kept for 7 days, but nothing reuses them and a restart does not pick the job back up).

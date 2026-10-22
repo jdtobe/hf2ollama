@@ -27,6 +27,18 @@ Files are downloaded into a per-job folder in the staging folder (the OS cache d
 
 Cancelling a job always deletes its partial files. A failed job keeps its downloaded files for 7 days if "Keep partial downloads for 7 days" is on, otherwise it deletes them. Kept files are removed automatically after 7 days, and "Clear cached files" in Settings removes them sooner. A new import starts from the beginning; it does not reuse them yet. A startup sweep removes orphaned job folders and expired partials.
 
+## What if my connection drops during a download?
+
+The download step retries a failed file up to 3 times (waits of 1, 2 and 4 seconds, longer if the server asks, at most 30 seconds). A retry continues from the partial file with an HTTP Range request, so progress is not lost. It retries network errors, stalls, server errors (5xx) and "too many requests" (429); it never retries a checksum mismatch, a gated repository, a client error such as 404, or a cancel. Each retry is written to the job log. This also covers a connection that went stale during a long Pause. If all retries fail, the job fails; start it again to download from the beginning.
+
+## What happens if I close the window while downloads are running?
+
+The app asks first: "Keep running" (the default) or "Quit and cancel". Quit and cancel cancels every queued and running job, which removes their files, waits up to 3 seconds for them to stop, and then closes. A model already being created in Ollama is not abandoned mid-request, so if that takes longer than 3 seconds the window closes anyway and the server finishes it.
+
+## What if a model with the same name already exists in Ollama?
+
+The import is refused: the job fails with "a model named X already exists in Ollama: choose another name or delete it first in Installed". The name is checked when the job starts and again right before the model is created, in case it appeared while the files downloaded. The Download button is disabled while another download uses the same name, so a double click starts only one job. The GUI does not offer to overwrite.
+
 ## Is it safe to read a model card inside the app?
 
 The model card (the repository README) is shown as a restricted subset of Markdown. Raw HTML is dropped, images are never downloaded, and only plain `http` and `https` links are kept; clicking one opens your browser. The text is size-capped (256 KiB) and the amount drawn is bounded, so a huge or hostile README is cut off ("truncated") instead of slowing the app down. The Hugging Face token is not sent to other hosts if the README URL redirects.
@@ -46,7 +58,7 @@ Yes, that is the point of using the API. Set the Ollama address in Settings (def
 ## Known limitations
 
 - **Orphan blobs.** Ollama has no blob-delete API. If an import fails after upload, an unused blob can remain in Ollama's store (we observed 4 MB in testing). Ollama prunes unreferenced blobs on restart. hf2ollama documents this rather than working around it.
-- **No cross-restart download resume in v1.** Pause and resume work within a running session. Files of a failed job are kept for 7 days (if enabled) but are not reused: a failed or interrupted job must be started again from the beginning, and a job is not restored after the app restarts.
+- **No resume of failed jobs, and none across restarts, in v1.** Pause and resume work within a running session. Files of a failed job are kept for 7 days (if enabled) but are not reused: a failed or interrupted job must be started again from the beginning, and a job is not restored after the app restarts.
 - **VRAM detection** covers NVIDIA GPUs and Apple Silicon unified memory only. Otherwise VRAM is shown as unknown and you can enter it manually. Fit results are estimates, not guarantees.
 - **Hash coverage.** Hugging Face publishes SHA-256 only for LFS files. Small config and tokenizer files are checked against a git SHA-1 only.
 - **Platforms.** The Ollama and Hugging Face behavior was verified on macOS only, and the UI prototype was checked on macOS only.
