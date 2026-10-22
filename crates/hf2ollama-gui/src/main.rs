@@ -56,6 +56,21 @@ fn view_override() -> Option<app::View> {
     }
 }
 
+/// `HF2O_MEMORY_TOKEN_STORE=1` keeps the Hugging Face token in memory
+/// instead of the system keychain, starting with `HF2O_MEMORY_TOKEN` when
+/// set. Only meant for screenshots and trials that must not touch the real
+/// keychain; inert unless set.
+fn memory_token_store() -> Option<std::sync::Arc<dyn hf2ollama_core::secrets::TokenStore>> {
+    use hf2ollama_core::secrets::{MemoryStore, TokenStore};
+    std::env::var("HF2O_MEMORY_TOKEN_STORE").ok()?;
+    let store = MemoryStore::default();
+    if let Ok(token) = std::env::var("HF2O_MEMORY_TOKEN") {
+        // Best effort: the in-memory store cannot fail.
+        let _ = store.set(&token);
+    }
+    Some(std::sync::Arc::new(store))
+}
+
 fn main() -> eframe::Result<()> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -91,7 +106,15 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
             theme::apply_choice(&cc.egui_ctx, theme_override().unwrap_or(settings.theme));
-            let (tx, rx) = runtime::Backend::spawn(cc.egui_ctx.clone(), settings.clone(), paths);
+            let (tx, rx) = match memory_token_store() {
+                Some(store) => runtime::Backend::spawn_with(
+                    cc.egui_ctx.clone(),
+                    settings.clone(),
+                    paths,
+                    store,
+                ),
+                None => runtime::Backend::spawn(cc.egui_ctx.clone(), settings.clone(), paths),
+            };
             let mut app = app::App::new(&settings, staging_dir, machine, tx, rx);
             app.set_environment(default_staging, detected);
             let (query, select) = preset();
