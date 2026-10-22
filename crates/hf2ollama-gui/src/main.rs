@@ -1,5 +1,6 @@
 mod app;
 mod browse;
+mod confirm;
 mod dock;
 mod installed;
 mod runtime;
