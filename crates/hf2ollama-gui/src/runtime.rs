@@ -50,12 +50,20 @@ pub enum UiEvent {
     ModelInfoLoaded(String, Result<ModelInfo, String>),
     /// `Ok(None)` when the repository has no model card.
     ModelCardLoaded(String, Result<Option<ModelCard>, String>),
-    InstalledLoaded(Result<Vec<InstalledModel>, String>),
+    InstalledLoaded(Result<Vec<InstalledEntry>, String>),
     InstalledDetails(String, Result<ModelDetails, String>),
     DeleteDone(String, Result<(), String>),
     /// Ollama version when the server is reachable.
     OllamaStatus(Option<String>),
     ConnectionTest(Result<String, String>),
+}
+
+/// One installed model plus the Hugging Face repo it was imported from, when
+/// this app recorded one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledEntry {
+    pub model: InstalledModel,
+    pub source_repo: Option<String>,
 }
 
 /// How often the Ollama server is polled for its version.
@@ -305,7 +313,18 @@ async fn serve(shared: &Shared, req: BackendRequest) {
             let r = text(hf.model_card(&id).await);
             UiEvent::ModelCardLoaded(id, r)
         }
-        BackendRequest::ListInstalled => UiEvent::InstalledLoaded(text(ollama.list().await)),
+        BackendRequest::ListInstalled => {
+            let r = text(ollama.list().await).map(|models| {
+                models
+                    .into_iter()
+                    .map(|model| InstalledEntry {
+                        model,
+                        source_repo: None,
+                    })
+                    .collect()
+            });
+            UiEvent::InstalledLoaded(r)
+        }
         BackendRequest::ShowInstalled(name) => {
             let r = text(ollama.show(&name).await);
             UiEvent::InstalledDetails(name, r)
@@ -629,5 +648,59 @@ mod tests {
         assert_eq!(got["a/none"], Ok(None));
         let err = got["a/priv"].clone().unwrap_err();
         assert!(crate::browse::state::is_gated_error(&err), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backend_installed_entries_carry_source_from_history() {
+        let ollama = version_server("0.9.2").await;
+        let model = |name: &str| {
+            serde_json::json!({
+                "name": name, "size": 1000, "digest": "d",
+                "modified_at": "2026-10-20T09:30:00Z",
+                "details": { "family": "qwen2", "parameter_size": "7B",
+                             "quantization_level": "Q4_K_M" }
+            })
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    model("qwen2.5-coder:7b-instruct-q4-k-m"),
+                    model("llama3.2:3b"),
+                    model("mymodel:latest"),
+                ]
+            })))
+            .mount(&ollama)
+            .await;
+        let h = harness_seeded(
+            &ollama.uri(),
+            "http://127.0.0.1:9",
+            &[
+                ("qwen2.5-coder:7b-instruct-q4-k-m", "bartowski/Qwen-GGUF"),
+                ("mymodel", "o/mine"),
+            ],
+        );
+        h.tx.send(BackendRequest::ListInstalled).unwrap();
+        let entries = wait_for(&h.rx, |e| match e {
+            UiEvent::InstalledLoaded(r) => Some(r.clone()),
+            _ => None,
+        })
+        .unwrap();
+        let source = |n: &str| {
+            entries
+                .iter()
+                .find(|e| e.model.name == n)
+                .map(|e| e.source_repo.clone())
+        };
+        assert_eq!(
+            source("qwen2.5-coder:7b-instruct-q4-k-m"),
+            Some(Some("bartowski/Qwen-GGUF".to_string()))
+        );
+        assert_eq!(source("llama3.2:3b"), Some(None));
+        assert_eq!(
+            source("mymodel:latest"),
+            Some(Some("o/mine".to_string())),
+            "the :latest-normalized key is tried"
+        );
     }
 }
