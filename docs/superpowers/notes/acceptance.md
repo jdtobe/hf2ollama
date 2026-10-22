@@ -96,3 +96,7 @@ Limits of this run: pause and resume was tested through `JobControl` (job starte
 ## After the final review fixes
 
 The retry, name re-check, quit confirmation and Clear cached changes were covered by unit and headless tests (wiremock, raw sockets, `MemoryStore`, temp directories). The ignored end-to-end tests against a throwaway Ollama were not re-run after these changes, and the quit dialog was not looked at on a real display.
+
+## Re-run after the final fix wave
+
+After the last fixes (retry on network errors, name re-check before create, clear-cached for failed downloads, quit confirmation, kebab-case settings values) the eight opt-in end-to-end tests were run again by the build controller against a fresh throwaway Ollama 0.40.8 on `127.0.0.1:11555` with an empty temporary `OLLAMA_MODELS` directory (macOS): 8 passed, 0 failed, 12.55 s. The server's model list was empty afterwards, the throwaway server was stopped and its directory deleted. Nothing was sent to port 11434. As before, this does not cover Linux, Windows, a remote Ollama, `int4`, GGUF `quantize`, or any GUI-driven check.
