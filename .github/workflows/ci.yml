@@ -1,10 +1,10 @@
 name: CI
 
-# Push runs only on the default branch; every other branch is covered by its
+# Push runs only on the default branch (main or master); every other branch is covered by its
 # pull request. This avoids running everything twice for a PR branch.
 on:
   push:
-    branches: [main]
+    branches: [main, master]  # the default branch name is not decided yet; either works
     tags: ["v*"]
   pull_request:
   workflow_dispatch:

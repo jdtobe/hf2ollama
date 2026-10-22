@@ -52,7 +52,7 @@ Keep commits small and focused. Do not rewrite shared history.
 
 ## Pull requests
 
-- Branch from `main` and keep the PR to one topic.
+- Branch from the default branch and keep the PR to one topic.
 - Fill in the pull request template checklist.
 - Include the tests, and update docs and `CHANGELOG.md` (under `[Unreleased]`) when behavior changes.
 - For UI changes, say which view and theme you checked against `docs/design/ui-mockup.html`.
