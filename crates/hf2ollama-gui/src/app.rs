@@ -804,8 +804,26 @@ mod tests {
             Some(BackendRequest::ListInstalled)
         ));
         assert!(s.installed.rows().is_empty());
-        let failed = UiEvent::DeleteDone("b:2".into(), Err("no".into()));
-        assert!(s.on_event(&failed).is_none());
+    }
+
+    #[test]
+    fn delete_error_requests_list_refresh() {
+        let mut s = AppState::new();
+        s.on_event(&UiEvent::InstalledLoaded(Ok(vec![entry("a:1", 10, None)])));
+        let failed = UiEvent::DeleteDone("a:1".into(), Err("model not found".into()));
+        assert!(matches!(
+            s.on_event(&failed),
+            Some(BackendRequest::ListInstalled)
+        ));
+        assert_eq!(
+            s.installed.rows().len(),
+            1,
+            "the row stays until the list says otherwise"
+        );
+        assert!(s
+            .installed
+            .toast(Instant::now())
+            .is_some_and(|t| t.text.contains("model not found")));
     }
 
     #[test]

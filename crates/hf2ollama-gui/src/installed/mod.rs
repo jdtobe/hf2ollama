@@ -59,6 +59,7 @@ pub struct RowProbe {
     pub cells: Vec<(Column, Rect)>,
     pub details_btn: Rect,
     pub delete_btn: Rect,
+    pub delete_id: egui::Id,
 }
 
 /// View state that is not part of the pure model: the test probe.
@@ -411,6 +412,7 @@ fn table(ui: &mut egui::Ui, app: &mut AppState, cx: &Ctx, out: &mut Vec<BackendR
                         cells: p.cells,
                         details_btn: p.details.rect,
                         delete_btn: p.delete.rect,
+                        delete_id: p.delete.id,
                     });
                 }
                 if app.installed.is_expanded(row.name()) {

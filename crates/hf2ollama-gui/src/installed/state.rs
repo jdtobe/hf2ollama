@@ -8,6 +8,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// How long the "Confirm delete" state and the toast stay.
 pub const ARM_WINDOW: Duration = Duration::from_secs(4);
+/// A click on the armed row is ignored until this long after arming, so a
+/// double-click on Delete can never delete.
+pub const ARM_MIN_DELAY: Duration = Duration::from_millis(600);
 pub const TOAST_TIME: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +166,12 @@ impl InstalledState {
         self.armed
             .as_ref()
             .is_some_and(|(n, at)| n == name && now < *at + ARM_WINDOW)
+    }
+
+    /// True when a click on `name` would confirm: armed, past the minimum
+    /// delay and inside the window.
+    pub fn confirm_ready(&self, name: &str, now: Instant) -> bool {
+        self.is_armed(name, now)
     }
 
     /// Second click on the same row inside the window: the delete to send.
@@ -702,7 +711,7 @@ mod tests {
         s.arm_delete("alpha:1b", t0);
         assert!(s.is_armed("alpha:1b", t0 + Duration::from_millis(3_999)));
         assert!(!s.is_armed("alpha:1b", t0 + Duration::from_secs(4)));
-        assert_eq!(s.tick(t0), Some(t0 + Duration::from_secs(4)));
+        assert_eq!(s.tick(t0), Some(t0 + ARM_MIN_DELAY));
         assert!(s.is_armed("alpha:1b", t0 + Duration::from_millis(3_999)));
         assert!(s.tick(t0 + Duration::from_millis(3_999)).is_some());
         assert_eq!(s.tick(t0 + Duration::from_secs(4)), None);
@@ -721,10 +730,10 @@ mod tests {
         assert!(!s.is_armed("alpha:1b", t0 + Duration::from_secs(1)));
         assert!(s.is_armed("beta:3b", t0 + Duration::from_secs(1)));
         assert!(s
-            .confirm_delete("alpha:1b", t0 + Duration::from_secs(1))
+            .confirm_delete("alpha:1b", t0 + Duration::from_secs(2))
             .is_none());
         assert!(s
-            .confirm_delete("beta:3b", t0 + Duration::from_secs(1))
+            .confirm_delete("beta:3b", t0 + Duration::from_secs(2))
             .is_some());
     }
 
@@ -749,15 +758,16 @@ mod tests {
         let mut s = sample();
         let t0 = Instant::now();
         s.arm_delete("Qwen2.5:7b", t0);
-        assert!(s.confirm_delete("qwen2.5:7b", t0).is_none(), "case differs");
-        assert!(s.confirm_delete("Qwen2.5", t0).is_none(), "prefix differs");
-        assert!(s.confirm_delete("beta:3b", t0).is_none());
-        assert!(s.is_armed("Qwen2.5:7b", t0), "a wrong name does not disarm");
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(s.confirm_delete("qwen2.5:7b", t1).is_none(), "case differs");
+        assert!(s.confirm_delete("Qwen2.5", t1).is_none(), "prefix differs");
+        assert!(s.confirm_delete("beta:3b", t1).is_none());
+        assert!(s.is_armed("Qwen2.5:7b", t1), "a wrong name does not disarm");
         assert_eq!(
-            s.confirm_delete("Qwen2.5:7b", t0).map(|a| a.name),
+            s.confirm_delete("Qwen2.5:7b", t1).map(|a| a.name),
             Some("Qwen2.5:7b".to_string())
         );
-        assert!(s.confirm_delete("Qwen2.5:7b", t0).is_none(), "single use");
+        assert!(s.confirm_delete("Qwen2.5:7b", t1).is_none(), "single use");
     }
 
     #[test]
@@ -960,5 +970,71 @@ mod tests {
         assert_eq!(thousands(999), "999");
         assert_eq!(thousands(32_768), "32,768");
         assert_eq!(thousands(1_048_576), "1,048,576");
+    }
+
+    // ---- minimum delay between arm and confirm ----
+
+    #[test]
+    fn second_click_inside_min_delay_is_ignored_and_does_not_rearm() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        assert!(s.click_delete("alpha:1b", t0).is_none());
+        for ms in [0, 100, 599] {
+            let now = t0 + Duration::from_millis(ms);
+            assert!(s.click_delete("alpha:1b", now).is_none(), "{ms} ms");
+            assert!(s.confirm_delete("alpha:1b", now).is_none(), "{ms} ms");
+            assert!(s.is_armed("alpha:1b", now), "{ms} ms: still armed");
+            assert!(!s.confirm_ready("alpha:1b", now), "{ms} ms");
+        }
+        // Ignored clicks did not restart the delay or the 4 s window.
+        let ready = t0 + ARM_MIN_DELAY;
+        assert!(s.confirm_ready("alpha:1b", ready));
+        assert!(!s.is_armed("alpha:1b", t0 + ARM_WINDOW));
+    }
+
+    #[test]
+    fn second_click_after_min_delay_confirms_with_exact_name() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        s.click_delete("alpha:1b", t0);
+        let act = s.click_delete("alpha:1b", t0 + ARM_MIN_DELAY);
+        assert_eq!(
+            act,
+            Some(DeleteAction {
+                name: "alpha:1b".into()
+            })
+        );
+    }
+
+    #[test]
+    fn click_after_expiry_rearms_and_restarts_the_delay() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        s.click_delete("alpha:1b", t0);
+        let late = t0 + Duration::from_secs(5);
+        assert!(s.click_delete("alpha:1b", late).is_none(), "re-arms");
+        assert!(s.is_armed("alpha:1b", late));
+        assert!(!s.confirm_ready("alpha:1b", late), "delay restarted");
+        assert!(s
+            .click_delete("alpha:1b", late + Duration::from_millis(300))
+            .is_none());
+        assert!(s.click_delete("alpha:1b", late + ARM_MIN_DELAY).is_some());
+    }
+
+    #[test]
+    fn armed_button_is_dimmed_during_the_delay_and_enabled_after() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        assert!(!s.confirm_ready("alpha:1b", t0), "not armed");
+        s.arm_delete("alpha:1b", t0);
+        assert!(!s.confirm_ready("alpha:1b", t0));
+        assert!(!s.confirm_ready("alpha:1b", t0 + Duration::from_millis(599)));
+        assert!(s.confirm_ready("alpha:1b", t0 + ARM_MIN_DELAY));
+        assert!(s.confirm_ready("alpha:1b", t0 + Duration::from_millis(3_999)));
+        assert!(!s.confirm_ready("alpha:1b", t0 + ARM_WINDOW), "expired");
+        assert!(!s.confirm_ready("beta:3b", t0 + ARM_MIN_DELAY), "other row");
+        // The repaint wakes up when the button becomes ready, then at expiry.
+        assert_eq!(s.tick(t0), Some(t0 + ARM_MIN_DELAY));
+        assert_eq!(s.tick(t0 + ARM_MIN_DELAY), Some(t0 + ARM_WINDOW));
     }
 }

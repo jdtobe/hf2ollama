@@ -237,6 +237,34 @@ fn delete_and_details_buttons_are_fully_visible_in_every_row() {
     }
 }
 
+fn same_geometry(tag: &str, before: &[RowProbe], after: &[RowProbe]) {
+    assert_eq!(before.len(), after.len(), "{tag}");
+    for (b, a) in before.iter().zip(after) {
+        assert_eq!(b.name, a.name, "{tag}");
+        assert!(
+            (b.rect.top() - a.rect.top()).abs() < 0.5
+                && (b.rect.height() - a.rect.height()).abs() < 0.5,
+            "{tag}: row {} moved {:?} -> {:?}",
+            b.name,
+            b.rect,
+            a.rect
+        );
+        assert!(
+            (b.delete_btn.width() - a.delete_btn.width()).abs() < 0.5
+                && (b.delete_btn.left() - a.delete_btn.left()).abs() < 0.5
+                && (b.details_btn.left() - a.details_btn.left()).abs() < 0.5,
+            "{tag}: buttons of {} resized {:?}/{:?} -> {:?}/{:?}",
+            b.name,
+            b.details_btn,
+            b.delete_btn,
+            a.details_btn,
+            a.delete_btn
+        );
+    }
+}
+
+const PAST_DELAY: std::time::Duration = std::time::Duration::from_millis(700);
+
 #[test]
 fn confirm_button_state_keeps_the_row_height_stable() {
     for size in SIZES {
@@ -255,36 +283,110 @@ fn confirm_button_state_keeps_the_row_height_stable() {
                 "{tag}: first click arms"
             );
             assert!(sent.try_recv().is_err(), "{tag}: arming sends nothing");
-            let after = rows(&mut app);
-            assert_eq!(before.len(), after.len(), "{tag}");
-            for (b, a) in before.iter().zip(&after) {
-                assert_eq!(b.name, a.name, "{tag}");
-                assert!(
-                    (b.rect.top() - a.rect.top()).abs() < 0.5
-                        && (b.rect.height() - a.rect.height()).abs() < 0.5,
-                    "{tag}: row {} moved {:?} -> {:?}",
-                    b.name,
-                    b.rect,
-                    a.rect
-                );
-                assert!(
-                    (b.delete_btn.width() - a.delete_btn.width()).abs() < 0.5
-                        && (b.details_btn.left() - a.details_btn.left()).abs() < 0.5,
-                    "{tag}: buttons of {} resized {:?}/{:?} -> {:?}/{:?}",
-                    b.name,
-                    b.details_btn,
-                    b.delete_btn,
-                    a.details_btn,
-                    a.delete_btn
-                );
-            }
-            // Second click confirms with exactly that name.
-            let armed = after[2].clone();
-            click(&mut app, &mut h, size, armed.delete_btn.center());
+            // Inside the delay (dimmed) and after it (red, enabled).
+            same_geometry(&tag, &before, &rows(&mut app));
+            std::thread::sleep(PAST_DELAY);
+            run(&mut app, &mut h, size, 3);
+            let ready = rows(&mut app);
+            same_geometry(&tag, &before, &ready);
+            // A deliberate second click confirms with exactly that name.
+            click(&mut app, &mut h, size, ready[2].delete_btn.center());
             let reqs: Vec<_> = sent.try_iter().collect();
             assert!(
                 matches!(reqs.as_slice(), [BackendRequest::DeleteInstalled(n)] if *n == target.name),
                 "{tag}: {reqs:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fast_double_click_via_real_pointer_events_does_not_delete() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let (mut app, sent) = installed_app(entries(6, false));
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 6);
+            let target = rows(&mut app)[1].clone();
+            let at = target.delete_btn.center();
+            click(&mut app, &mut h, size, at);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            click(&mut app, &mut h, size, at);
+            let tag = format!("{size:?} dark={dark}");
+            let reqs: Vec<_> = sent.try_iter().collect();
+            assert!(reqs.is_empty(), "{tag}: a fast double click sent {reqs:?}");
+            assert!(
+                app.state_mut()
+                    .installed
+                    .is_armed(&target.name, Instant::now()),
+                "{tag}: the row stays armed"
+            );
+        }
+    }
+}
+
+#[test]
+fn deliberate_second_click_after_delay_sends_delete() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let (mut app, sent) = installed_app(entries(6, false));
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 6);
+            let target = rows(&mut app)[1].clone();
+            let at = target.delete_btn.center();
+            click(&mut app, &mut h, size, at);
+            std::thread::sleep(PAST_DELAY);
+            click(&mut app, &mut h, size, at);
+            let reqs: Vec<_> = sent.try_iter().collect();
+            assert!(
+                matches!(reqs.as_slice(), [BackendRequest::DeleteInstalled(n)] if *n == target.name),
+                "{size:?} dark={dark}: {reqs:?}"
+            );
+        }
+    }
+}
+
+fn key(pressed: bool, repeat: bool) -> egui::Event {
+    egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: Some(egui::Key::Enter),
+        pressed,
+        repeat,
+        modifiers: Default::default(),
+    }
+}
+
+#[test]
+fn held_enter_key_never_confirms() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let (mut app, sent) = installed_app(entries(6, false));
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 6);
+            let target = rows(&mut app)[1].clone();
+            click(&mut app, &mut h, size, target.delete_btn.center());
+            std::thread::sleep(PAST_DELAY);
+            run(&mut app, &mut h, size, 2);
+            let id = rows(&mut app)[1].delete_id;
+            let (w, hh) = size;
+            // Focus the Delete button, then hold Enter: only repeats arrive.
+            h.frame(vec2(w, hh), vec![], |ui| {
+                app.show(ui);
+                ui.memory_mut(|m| m.request_focus(id));
+            });
+            for _ in 0..3 {
+                h.frame(vec2(w, hh), vec![key(true, true)], |ui| app.show(ui));
+            }
+            let tag = format!("{size:?} dark={dark}");
+            let reqs: Vec<_> = sent.try_iter().collect();
+            assert!(reqs.is_empty(), "{tag}: a held key sent {reqs:?}");
+            // A fresh press after the delay is a deliberate confirmation.
+            h.frame(vec2(w, hh), vec![key(true, false)], |ui| app.show(ui));
+            h.frame(vec2(w, hh), vec![key(false, false)], |ui| app.show(ui));
+            let reqs: Vec<_> = sent.try_iter().collect();
+            assert!(
+                matches!(reqs.as_slice(), [BackendRequest::DeleteInstalled(n)] if *n == target.name),
+                "{tag}: fresh Enter press: {reqs:?}"
             );
         }
     }
