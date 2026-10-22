@@ -200,4 +200,49 @@ mod tests {
         assert!(c.markdown.contains('\u{fffd}'));
         assert!(c.markdown.ends_with(" ok"));
     }
+
+    #[tokio::test]
+    async fn model_card_does_not_send_bearer_to_a_redirected_other_host() {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/cache/readme", second.uri())),
+            )
+            .mount(&first)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# Moved\n"))
+            .mount(&second)
+            .await;
+        // 127.0.0.1 on two ports are two origins; use localhost for the
+        // second to make the host differ as well.
+        let target = second.uri().replace("127.0.0.1", "localhost");
+        first.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", format!("{target}/r")),
+            )
+            .mount(&first)
+            .await;
+        HfClient::new(&first.uri(), Some("hf_secret".to_string()))
+            .model_card(REPO)
+            .await
+            .unwrap();
+        let a = first.received_requests().await.unwrap();
+        let b = second.received_requests().await.unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(
+            a[0].headers
+                .get("authorization")
+                .map(|v| v.to_str().unwrap()),
+            Some("Bearer hf_secret")
+        );
+        assert_eq!(b.len(), 1);
+        assert!(
+            !b[0].headers.contains_key("authorization"),
+            "token leaked to the redirect target"
+        );
+    }
 }
