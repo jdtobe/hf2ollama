@@ -32,7 +32,17 @@ fn browse_app() -> App {
 
 /// `safetensors`: the longest import card (conversion chips, Ollama unreachable).
 fn browse_app_of(safetensors: bool) -> App {
-    let (tx, _) = std::sync::mpsc::channel();
+    browse_app_chan(safetensors).0
+}
+
+/// Like `browse_app_of`, also returning what the UI sends to the backend.
+fn browse_app_chan(
+    safetensors: bool,
+) -> (
+    App,
+    std::sync::mpsc::Receiver<crate::runtime::BackendRequest>,
+) {
+    let (tx, sent) = std::sync::mpsc::channel();
     let (_, rx) = std::sync::mpsc::channel();
     let mut app = App::new(
         &Settings::default(),
@@ -79,7 +89,7 @@ fn browse_app_of(safetensors: bool) -> App {
             }),
         );
         st.browse.select_repo(id);
-        return app;
+        return (app, sent);
     }
     st.browse.on_model_info(
         id,
@@ -98,7 +108,7 @@ fn browse_app_of(safetensors: bool) -> App {
         }),
     );
     st.browse.select_repo(id);
-    app
+    (app, sent)
 }
 
 #[derive(Clone, Copy)]
@@ -347,6 +357,67 @@ fn filter_rail_stays_above_the_dock() {
             assert!(
                 rail.bottom() <= dock.top() + 0.5,
                 "{size:?} dark={dark}: filter rail {rail:?} reaches into the dock {dock:?}"
+            );
+        }
+    }
+}
+
+/// Clicks `at` (press and release in separate frames) and returns the
+/// backend requests the app sent as a result.
+fn click_at(
+    app: &mut App,
+    sent: &std::sync::mpsc::Receiver<crate::runtime::BackendRequest>,
+    harness: &mut Harness,
+    size: (f32, f32),
+    at: Pos2,
+) -> Vec<crate::runtime::BackendRequest> {
+    let (w, h) = size;
+    let ev = |e| vec![e];
+    harness.frame(vec2(w, h), ev(egui::Event::PointerMoved(at)), |ui| {
+        app.show(ui)
+    });
+    for pressed in [true, false] {
+        harness.frame(
+            vec2(w, h),
+            ev(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }),
+            |ui| app.show(ui),
+        );
+    }
+    harness.frame(vec2(w, h), vec![], |ui| app.show(ui));
+    sent.try_iter().collect()
+}
+
+#[test]
+fn dock_buttons_respond_while_a_log_is_open() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let (mut app, sent) = browse_app_chan(false);
+            add_job(&mut app, 1, Kind::Running, 0);
+            add_job(&mut app, 2, Kind::Paused, 3);
+            add_job(&mut app, 3, Kind::Queued, 0);
+            app.state_mut().dock.open_logs.insert(JobId(2));
+            let mut harness = Harness::new(dark);
+            for _ in 0..10 {
+                harness.frame(vec2(size.0, size.1), vec![], |ui| app.show(ui));
+            }
+            // Row buttons are recorded top to bottom: the queued job (Cancel,
+            // Log) comes first, so its Cancel is the first button.
+            let probe = app.state_mut().dock.probe.clone();
+            let cancel_queued = probe.buttons[1].center();
+            let sent = click_at(&mut app, &sent, &mut harness, size, cancel_queued);
+            assert!(
+                sent.iter().any(|r| matches!(
+                    r,
+                    crate::runtime::BackendRequest::Core(hf2ollama_core::events::Command::Cancel(
+                        JobId(3)
+                    ))
+                )),
+                "{size:?} dark={dark}: clicking Cancel on the queued row sent {sent:?}"
             );
         }
     }
