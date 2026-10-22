@@ -66,6 +66,8 @@ pub struct AppState {
     pub pill_rect: Option<egui::Rect>,
     /// Where the search field was last painted; `None` when hidden for lack of room.
     pub search_rect: Option<egui::Rect>,
+    /// Where the clear (✕) button of the search field was last painted; `None` when the field is empty.
+    pub search_clear_rect: Option<egui::Rect>,
     /// Extent of the status bar contents as last painted (for layout tests).
     pub status_rect: Option<egui::Rect>,
     /// One-line startup message (e.g. an ignored saved setting).
@@ -117,6 +119,7 @@ impl AppState {
             auto_dismiss: AutoDismiss::Never,
             pill_rect: None,
             search_rect: None,
+            search_clear_rect: None,
             status_rect: None,
             startup_notice: None,
         }
@@ -762,6 +765,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn search_field_has_a_clear_button_only_when_it_holds_text() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            &Settings::default(),
+            PathBuf::from("/tmp/staging"),
+            Machine {
+                ram_gb: 16.0,
+                vram_gb: None,
+            },
+            tx,
+            rx,
+        );
+        app.state.ollama = Some(None);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1180.0, 820.0));
+        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert!(app.state.search_clear_rect.is_none(), "shown while empty");
+        app.state.query = "llama".into();
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let clear = app.state.search_clear_rect.expect("clear button");
+        let field = app.state.search_rect.expect("field");
+        assert!(field.contains_rect(clear), "{clear:?} outside {field:?}");
+        let at = clear.center();
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert!(app.state.query.is_empty(), "query is {:?}", app.state.query);
+        assert!(app.state.search_clear_rect.is_none());
     }
 
     // ---- dock wiring ----

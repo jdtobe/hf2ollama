@@ -215,22 +215,46 @@ fn chips_do_not_repeat_the_pipeline_tag() {
 // ---- switch and states ----
 
 #[test]
-fn switch_sits_directly_below_the_metadata_strip() {
+fn switch_is_pinned_above_the_scroll_area_and_never_moves() {
     for size in SIZES {
         for dark in [false, true] {
-            for tab in [DetailTab::Files, DetailTab::About] {
-                let mut app = new_app();
-                app.state_mut().browse.set_tab(tab);
-                let mut h = Harness::new(dark);
-                run(&mut app, &mut h, size, 8);
-                let p = &app.state_mut().browse.probe;
-                let (strip, sw) = (p.meta_strip.expect("strip"), p.switch.expect("switch"));
-                assert!(
-                    sw.top() >= strip.bottom() - 0.5 && sw.top() - strip.bottom() < 40.0,
-                    "{size:?} dark={dark} {tab:?}: strip {strip:?} switch {sw:?}"
-                );
-                assert!(sw.width() < strip.width());
-            }
+            let mut app = about_app(Some(card(&long_card())));
+            app.state_mut().browse.set_card_expanded(true);
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 10);
+            let first = app.state_mut().browse.probe.switch.expect("switch");
+            let view = pane_viewport(&mut app);
+            assert!(
+                first.bottom() <= view.top() + 0.5,
+                "{size:?} dark={dark}: switch {first:?} overlaps the scroll area {view:?}"
+            );
+            scroll_by(&mut app, &mut h, size, -500.0);
+            let scrolled = app.state_mut().browse.probe.switch.expect("switch");
+            assert_eq!(first, scrolled, "{size:?} dark={dark}: moved on scroll");
+            app.state_mut().browse.set_tab(DetailTab::Files);
+            run(&mut app, &mut h, size, 6);
+            let files = app.state_mut().browse.probe.switch.expect("switch");
+            assert_eq!(first, files, "{size:?} dark={dark}: moved on tab change");
+        }
+    }
+}
+
+#[test]
+fn clicking_the_pinned_switch_changes_tab_without_moving_it() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let mut app = new_app();
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 8);
+            let sw = app.state_mut().browse.probe.switch.expect("switch");
+            let about = Pos2::new(sw.right() - 20.0, sw.center().y);
+            click(&mut app, &mut h, size, about);
+            assert_eq!(app.state_mut().browse.tab(), DetailTab::About);
+            let after = app.state_mut().browse.probe.switch.expect("switch");
+            assert_eq!(sw, after, "{size:?} dark={dark}");
+            let files = Pos2::new(sw.left() + 20.0, sw.center().y);
+            click(&mut app, &mut h, size, files);
+            assert_eq!(app.state_mut().browse.tab(), DetailTab::Files);
         }
     }
 }
