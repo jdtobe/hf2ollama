@@ -1,7 +1,132 @@
 //! Pure state of the Installed view: rows, filter, sort, two-click delete,
 //! details cache and toast. No egui in here.
 
-use std::time::SystemTime;
+use crate::runtime::InstalledEntry;
+use hf2ollama_core::ollama::{InstalledModel, ModelDetails};
+use std::collections::{BTreeSet, HashMap};
+use std::time::{Duration, Instant, SystemTime};
+
+/// How long the "Confirm delete" state and the toast stay.
+pub const ARM_WINDOW: Duration = Duration::from_secs(4);
+pub const TOAST_TIME: Duration = Duration::from_secs(4);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFilter {
+    All,
+    Imported,
+    Library,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Size,
+    Name,
+    Modified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledRow {
+    pub model: InstalledModel,
+    pub source_repo: Option<String>,
+}
+
+impl InstalledRow {
+    pub fn name(&self) -> &str {
+        &self.model.name
+    }
+
+    /// The Hugging Face page of the source repo; only imported rows have one.
+    pub fn source_url(&self) -> Option<String> {
+        unimplemented!("source_url")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListStatus {
+    Loading,
+    Error(String),
+    Loaded,
+}
+
+/// What a confirmed delete asks the backend for: exactly this name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteAction {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UsageSplit {
+    pub imported: u64,
+    pub library: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DetailsState {
+    Loading,
+    Error(String),
+    Loaded(ModelDetails),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub text: String,
+    pub until: Instant,
+}
+
+#[derive(Debug)]
+pub struct InstalledState {
+    rows: Vec<InstalledRow>,
+    pub status: ListStatus,
+    pub filter_text: String,
+    pub source: SourceFilter,
+    pub sort: SortKey,
+    armed: Option<(String, Instant)>,
+    expanded: BTreeSet<String>,
+    details: HashMap<String, DetailsState>,
+    toast: Option<Toast>,
+}
+
+impl InstalledState {
+    pub fn new() -> InstalledState {
+        InstalledState {
+            rows: Vec::new(),
+            status: ListStatus::Loading,
+            filter_text: String::new(),
+            source: SourceFilter::All,
+            sort: SortKey::Size,
+            armed: None,
+            expanded: BTreeSet::new(),
+            details: HashMap::new(),
+            toast: None,
+        }
+    }
+
+    /// Replaces the list (or records why it could not be read).
+    pub fn on_installed_loaded(&mut self, r: &Result<Vec<InstalledEntry>, String>) {
+        match r {
+            Ok(entries) => {
+                self.rows = entries
+                    .iter()
+                    .map(|e| InstalledRow {
+                        model: e.model.clone(),
+                        source_repo: e.source_repo.clone(),
+                    })
+                    .collect();
+                self.status = ListStatus::Loaded;
+            }
+            Err(e) => self.status = ListStatus::Error(e.clone()),
+        }
+    }
+
+    pub fn rows(&self) -> &[InstalledRow] {
+        &self.rows
+    }
+
+    /// Rows after the text filter, the source filter and the sort.
+    pub fn visible(&self) -> Vec<&InstalledRow> {
+        unimplemented!("visible")
+    }
+}
 
 /// Seconds since the Unix epoch for an RFC 3339 timestamp such as
 /// `2026-10-20T09:30:00.123456789-08:00` or `...Z`.
@@ -153,5 +278,90 @@ mod tests {
         assert_eq!(parse_rfc3339("2026-13-40T00:00:00Z"), None);
         assert_eq!(parse_rfc3339("2026-10-20"), None);
         assert_eq!(parse_rfc3339("2026-10-20T09:30:00"), None);
+    }
+
+    // ---- filter and sort ----
+
+    fn entry(name: &str, size: u64, modified: &str, repo: Option<&str>) -> InstalledEntry {
+        InstalledEntry {
+            model: InstalledModel {
+                name: name.into(),
+                size,
+                params: Some("7B".into()),
+                quant: Some("Q4_K_M".into()),
+                family: Some("llama".into()),
+                modified: modified.into(),
+                digest: format!("sha256:{name}"),
+            },
+            source_repo: repo.map(str::to_string),
+        }
+    }
+
+    fn sample() -> InstalledState {
+        let mut s = InstalledState::new();
+        s.on_installed_loaded(&Ok(vec![
+            entry("Qwen2.5:7b", 4_000, "2026-10-01T00:00:00Z", Some("o/qwen")),
+            entry("alpha:1b", 1_000, "2026-10-20T00:00:00Z", None),
+            entry("llama3:8b", 9_000, "garbage", None),
+            entry("beta:3b", 2_000, "2026-10-10T00:00:00Z", Some("o/beta")),
+        ]));
+        s
+    }
+
+    fn names(s: &InstalledState) -> Vec<String> {
+        s.visible().iter().map(|r| r.name().to_string()).collect()
+    }
+
+    #[test]
+    fn text_filter_matches_name() {
+        let mut s = sample();
+        s.filter_text = "QWEN".into();
+        assert_eq!(names(&s), ["Qwen2.5:7b"]);
+        s.filter_text = "  a".into();
+        assert_eq!(
+            names(&s).len(),
+            3,
+            "filter text is trimmed: alpha, llama3, beta"
+        );
+        s.filter_text = "zzz".into();
+        assert!(names(&s).is_empty());
+        s.filter_text = "".into();
+        assert_eq!(names(&s).len(), 4);
+    }
+
+    #[test]
+    fn source_filter_separates_imported_from_library() {
+        let mut s = sample();
+        s.sort = SortKey::Name;
+        s.source = SourceFilter::Imported;
+        assert_eq!(names(&s), ["beta:3b", "Qwen2.5:7b"]);
+        s.source = SourceFilter::Library;
+        assert_eq!(names(&s), ["alpha:1b", "llama3:8b"]);
+        s.source = SourceFilter::All;
+        assert_eq!(names(&s).len(), 4);
+        s.source = SourceFilter::Imported;
+        s.filter_text = "beta".into();
+        assert_eq!(names(&s), ["beta:3b"]);
+    }
+
+    #[test]
+    fn sort_size_desc_name_asc_modified_recent_first() {
+        let mut s = sample();
+        s.sort = SortKey::Size;
+        assert_eq!(
+            names(&s),
+            ["llama3:8b", "Qwen2.5:7b", "beta:3b", "alpha:1b"]
+        );
+        s.sort = SortKey::Name;
+        assert_eq!(
+            names(&s),
+            ["alpha:1b", "beta:3b", "llama3:8b", "Qwen2.5:7b"]
+        );
+        s.sort = SortKey::Modified;
+        assert_eq!(
+            names(&s),
+            ["alpha:1b", "beta:3b", "Qwen2.5:7b", "llama3:8b"],
+            "unparsable dates sort last"
+        );
     }
 }
