@@ -8,7 +8,7 @@ use crate::theme::{mono, semibold, tokens};
 use crate::widgets::segmented_nav;
 use eframe::egui::{self, vec2, Color32, Margin, RichText, Sense, Stroke};
 use hf2ollama_core::config::{AutoDismiss, Settings};
-use hf2ollama_core::events::Command;
+use hf2ollama_core::events::{Command, JobEvent};
 use hf2ollama_core::fit::Machine;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -105,6 +105,19 @@ impl AppState {
             UiEvent::ModelInfoLoaded(id, r) => {
                 self.browse.on_model_info(id, r.clone());
                 None
+            }
+            UiEvent::JobAccepted {
+                id,
+                model_name,
+                total_bytes,
+            } => {
+                self.jobs.accept(*id, model_name.clone(), *total_bytes);
+                None
+            }
+            UiEvent::Job(job) => {
+                self.jobs.apply(job, Instant::now());
+                // A finished import changes what Ollama has installed.
+                matches!(job, JobEvent::Finished { .. }).then_some(BackendRequest::ListInstalled)
             }
             // Installed and delete events belong to the views that are
             // built next.
@@ -378,7 +391,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hf2ollama_core::events::JobEvent;
 
     #[test]
     fn nav_selection_changes_view_state() {

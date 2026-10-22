@@ -70,7 +70,23 @@ impl JobRow {
 
     /// Status column text, e.g. `Downloading 42%` or `Ready in Ollama`.
     pub fn status_text(&self) -> String {
-        String::new()
+        let pct = (self.fraction() * 100.0).floor() as u32;
+        match self.status {
+            RowStatus::Queued => "Queued".to_string(),
+            RowStatus::Paused => format!("Paused {pct}%"),
+            RowStatus::Finished => "Ready in Ollama".to_string(),
+            RowStatus::Failed => "Failed".to_string(),
+            RowStatus::Cancelled => "Cancelled".to_string(),
+            RowStatus::Running => match self.stage {
+                Stage::Queued => "Queued".to_string(),
+                Stage::Downloading => format!("Downloading {pct}%"),
+                Stage::Verifying => "Verifying".to_string(),
+                Stage::Uploading => "Uploading".to_string(),
+                Stage::Creating => "Creating".to_string(),
+                Stage::CleaningUp => "Cleaning up".to_string(),
+                Stage::Done => "Finishing".to_string(),
+            },
+        }
     }
 
     fn settle(&mut self, status: RowStatus, now: Instant) {
