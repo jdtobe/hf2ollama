@@ -192,6 +192,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
         });
 }
 
+/// Fixed id of the token field, so its edit state can be removed.
+fn token_field_id() -> egui::Id {
+    egui::Id::NULL.with("hf-token-input")
+}
+
+/// Empties the typed token and drops the text edit's undo history, so
+/// neither the string nor Ctrl+Z can bring it back.
+pub fn forget_token_field(ctx: &egui::Context, state: &mut SettingsState) {
+    state.token_input.clear();
+    ctx.data_mut(|d| d.remove::<egui::text_edit::TextEditState>(token_field_id()));
+}
+
 fn header(ui: &mut egui::Ui, state: &SettingsState, cx: &Cx) {
     ui.label(RichText::new("Settings").font(semibold(20.0)));
     ui.horizontal_wrapped(|ui| {
@@ -665,6 +677,7 @@ fn hugging_face_card(
                     let r = ui.add_sized(
                         vec2(w, FIELD_H),
                         egui::TextEdit::singleline(&mut state.token_input)
+                            .id(token_field_id())
                             .password(true)
                             .font(mono(13.0))
                             .hint_text("Paste a token to save it")
@@ -673,6 +686,7 @@ fn hugging_face_card(
                     cx.rec("token", r.rect);
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         state.save_token();
+                        forget_token_field(ui.ctx(), state);
                     }
                     ui.horizontal(|ui| {
                         let can_save = !state.token_input.trim().is_empty() && !state.token_busy;
@@ -684,6 +698,7 @@ fn hugging_face_card(
                         cx.rec("token-save", save.rect);
                         if save.clicked() {
                             state.save_token();
+                            forget_token_field(ui.ctx(), state);
                         }
                         let can_clear = state.token_status != HfTokenStatus::None
                             && !state.token_busy;
@@ -695,6 +710,7 @@ fn hugging_face_card(
                         cx.rec("token-clear", clear.rect);
                         if clear.clicked() {
                             state.clear_token();
+                            forget_token_field(ui.ctx(), state);
                         }
                     });
                     token_badge_ui(ui, cx, state, w);

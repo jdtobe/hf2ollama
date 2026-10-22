@@ -582,6 +582,10 @@ impl App {
                 self.state.status_rect = Some(row.response.rect);
             });
 
+        if self.state.view != View::Settings {
+            settings::forget_token_field(ui.ctx(), &mut self.state.settings_view.state);
+        }
+
         let actions = dock::show(ui, &self.state.jobs, &mut self.state.dock);
         for action in actions {
             self.apply_dock_action(action);
