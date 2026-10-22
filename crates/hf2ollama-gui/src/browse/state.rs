@@ -487,12 +487,10 @@ impl BrowseState {
         }
     }
 
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     pub fn tab(&self) -> DetailTab {
         self.tab
     }
 
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     /// Switches the detail tab. Opening About for the first time asks for
     /// the selected repository's model card.
     pub fn set_tab(&mut self, tab: DetailTab) {
@@ -504,12 +502,10 @@ impl BrowseState {
         }
     }
 
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     pub fn card_expanded(&self) -> bool {
         self.card_expanded
     }
 
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     pub fn set_card_expanded(&mut self, expanded: bool) {
         self.card_expanded = expanded;
     }
@@ -548,20 +544,18 @@ impl BrowseState {
         self.cards.results.insert(id.to_string(), view);
     }
 
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     /// The cached answer for `id`; `None` while it is not loaded.
     pub fn card_for(&self, id: &str) -> Option<&CardResult> {
         self.cards.results.get(id)
     }
 
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
+    #[cfg(test)]
     /// True while the card of `id` was asked for but not answered.
     pub fn card_pending(&self, id: &str) -> bool {
         self.cards.requested.contains(id) && !self.cards.results.contains_key(id)
             || self.cards.queued.iter().any(|q| q == id)
     }
 
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     /// Forgets a failed card lookup so it is asked for again (Retry button).
     pub fn retry_card(&mut self, id: &str) {
         self.cards.results.remove(id);
@@ -705,7 +699,6 @@ impl BrowseState {
 }
 
 /// Which part of the detail pane's scroll area is shown.
-#[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailTab {
     #[default]
@@ -731,7 +724,6 @@ pub struct CardView {
 }
 
 impl CardStore {
-    #[allow(dead_code)] // TODO(task 14b): used by the About tab drawing.
     fn want(&mut self, id: &str) {
         if !self.requested.contains(id) && !self.queued.iter().any(|q| q == id) {
             self.queued.push_back(id.to_string());

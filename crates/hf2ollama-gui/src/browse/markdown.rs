@@ -1,7 +1,6 @@
 //! Markdown model cards as a small, safe block tree. Pure: no egui, no
 //! network. Raw HTML never survives, images are never loaded, and only
 //! absolute http(s) links are kept.
-#![allow(dead_code)] // TODO(task 14b): removed once about.rs draws the blocks.
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
@@ -71,6 +70,7 @@ pub fn is_safe_link(url: &str) -> bool {
 }
 
 /// Parses Markdown into blocks; see `parse_capped` for the cut flag.
+#[cfg(test)]
 pub fn parse(src: &str) -> Vec<Block> {
     parse_capped(src).0
 }

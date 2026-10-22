@@ -148,9 +148,13 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Res
 
 /// Compact secondary button; returns true when clicked.
 pub fn small_button(ui: &mut egui::Ui, text: &str) -> bool {
+    small_button_response(ui, text).clicked()
+}
+
+/// `small_button` for callers that need the painted rectangle.
+pub fn small_button_response(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let t = tokens(ui);
     ui.add(egui::Button::new(RichText::new(text).size(12.0).color(t.fg2)).min_size(vec2(0.0, 24.0)))
-        .clicked()
 }
 
 /// Segmented control. `badges[i]`, when present, is drawn after label `i`.

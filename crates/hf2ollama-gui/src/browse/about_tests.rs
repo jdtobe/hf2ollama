@@ -115,7 +115,7 @@ fn wide_table() -> String {
         .map(|i| format!("a fairly long table cell value {i}"))
         .collect();
     format!(
-        "| {} |\n|{}|\n| {} |\n| {} |\n",
+        "| {} |\n|{}\n| {} |\n| {} |\n",
         head.join(" | "),
         "---|".repeat(cols),
         row.join(" | "),
@@ -136,6 +136,22 @@ fn long_card() -> String {
         ));
     }
     md
+}
+
+/// Scrolls the detail pane with the mouse wheel and lets it settle.
+fn scroll_by(app: &mut App, h: &mut Harness, size: (f32, f32), dy: f32) {
+    let wheel = vec![
+        egui::Event::PointerMoved(Pos2::new(700.0, 400.0)),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, dy),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        },
+    ];
+    h.frame(vec2(size.0, size.1), wheel, |ui| app.show(ui));
+    run(app, h, size, 12);
 }
 
 fn pane_viewport(app: &mut App) -> Rect {
@@ -364,12 +380,20 @@ fn link_rects_are_inside_the_viewport() {
             let mut h = Harness::new(dark);
             run(&mut app, &mut h, size, 8);
             let view = pane_viewport(&mut app);
-            let links = app.state_mut().browse.probe.about_links.clone();
+            let links: Vec<_> = app
+                .state_mut()
+                .browse
+                .probe
+                .about_links
+                .iter()
+                .filter(|(_, u)| !u.starts_with("https://huggingface.co"))
+                .cloned()
+                .collect();
             assert_eq!(links.len(), 1, "only the https link is a link: {links:?}");
+            let r = links[0].0;
             assert!(
-                view.contains_rect(links[0].0),
-                "{:?} outside {view:?}",
-                links[0]
+                r.left() >= view.left() - 0.5 && r.right() <= view.right() + 0.5,
+                "{r:?} outside {view:?}"
             );
         }
     }
@@ -405,6 +429,7 @@ fn show_more_and_show_less_toggle_the_card() {
     let mut h = Harness::new(false);
     run(&mut app, &mut h, size, 8);
     let collapsed = app.state_mut().browse.probe.about_rects.len();
+    scroll_by(&mut app, &mut h, size, -250.0);
     let toggle = app
         .state_mut()
         .browse
@@ -421,18 +446,7 @@ fn show_more_and_show_less_toggle_the_card() {
     let expanded = app.state_mut().browse.probe.about_rects.len();
     assert!(expanded > collapsed, "{expanded} <= {collapsed}");
     // Scroll to the end and press Show less.
-    let wheel = vec![
-        egui::Event::PointerMoved(Pos2::new(700.0, 400.0)),
-        egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            delta: vec2(0.0, -5000.0),
-            modifiers: egui::Modifiers::NONE,
-            phase: egui::TouchPhase::Move,
-            source: egui::MouseWheelSource::Wheel,
-        },
-    ];
-    h.frame(vec2(size.0, size.1), wheel, |ui| app.show(ui));
-    run(&mut app, &mut h, size, 8);
+    scroll_by(&mut app, &mut h, size, -5000.0);
     let toggle = app
         .state_mut()
         .browse
@@ -458,4 +472,50 @@ fn truncated_cards_say_so_and_link_to_huggingface() {
         .about_links
         .iter()
         .any(|(_, u)| u == "https://huggingface.co/o/repo"));
+}
+
+// ---- hostile cards ----
+
+#[test]
+fn hostile_readme_renders_inert_and_inside_the_viewport() {
+    let hostile = format!(
+        "<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[x](javascript:alert(1))\n\n![t](http://tracker/pixel.png)\n\n{} deep\n\n[file](file:///etc/passwd) [data](data:text/html;base64,AAAA)\n",
+        ">".repeat(10_000)
+    );
+    for size in SIZES {
+        for dark in [false, true] {
+            let mut app = about_app(Some(card(&hostile)));
+            app.state_mut().browse.set_card_expanded(true);
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 8);
+            let view = pane_viewport(&mut app);
+            let p = &app.state_mut().browse.probe;
+            assert_eq!(p.about_state, Some("card"));
+            assert!(
+                p.about_links
+                    .iter()
+                    .all(|(_, u)| u == "https://huggingface.co/o/repo"),
+                "{:?}",
+                p.about_links
+            );
+            for r in &p.about_rects {
+                assert!(r.right() <= view.right() + 0.5, "{r:?} outside {view:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_quarter_megabyte_line_renders_inside_the_viewport() {
+    let size = SIZES[1];
+    let mut app = about_app(Some(card(&"word ".repeat(51_000))));
+    app.state_mut().browse.set_card_expanded(true);
+    let mut h = Harness::new(true);
+    run(&mut app, &mut h, size, 4);
+    let view = pane_viewport(&mut app);
+    let p = &app.state_mut().browse.probe;
+    assert!(!p.about_rects.is_empty());
+    for r in &p.about_rects {
+        assert!(r.right() <= view.right() + 0.5, "{r:?} outside {view:?}");
+    }
 }

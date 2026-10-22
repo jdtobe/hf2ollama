@@ -134,7 +134,7 @@ fn now_unix() -> i64 {
 }
 
 /// A bordered message box; `warn` picks the amber palette.
-fn callout(ui: &mut egui::Ui, warn: bool, text: &str) -> Rect {
+pub(super) fn callout(ui: &mut egui::Ui, warn: bool, text: &str) -> Rect {
     let t = tokens(ui);
     let (fill, stroke) = if warn {
         (t.warn_soft, t.warn)
@@ -530,21 +530,28 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 ui.ctx().data_mut(|d| d.insert_temp(budget_id, now));
                 ui.ctx().request_repaint();
             }
-            let scroll = egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    match info {
-                        None => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(RichText::new("Loading the file list…").color(t.fg3));
-                            });
-                        }
-                        Some(Err(_)) => {}
-                        Some(Ok(info)) => ready(ui, app, &info),
+            // A tab switch starts the new tab at the top.
+            let to_top: bool = ui
+                .ctx()
+                .data_mut(|d| d.remove_temp(egui::Id::NULL.with("tab_to_top")))
+                .unwrap_or(false);
+            let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+            if to_top {
+                area = area.vertical_scroll_offset(0.0);
+            }
+            let scroll = area.show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                match info {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new("Loading the file list…").color(t.fg3));
+                        });
                     }
-                });
+                    Some(Err(_)) => {}
+                    Some(Ok(info)) => ready(ui, app, &info),
+                }
+            });
             #[cfg(test)]
             {
                 app.browse.probe.viewport = Some(scroll.inner_rect);
@@ -724,6 +731,8 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
         };
         if next != tab {
             app.browse.set_tab(next);
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::NULL.with("tab_to_top"), true));
             ui.ctx().request_repaint();
         }
     }
