@@ -4,7 +4,7 @@
 use crate::config::Settings;
 use crate::control::JobControl;
 use crate::error::{Error, Result};
-use crate::events::{JobEvent, JobId, Stage};
+use crate::events::{Command, JobEvent, JobId, Stage};
 use crate::hf::HfClient;
 use crate::history::History;
 use crate::model::ImportRequest;
@@ -317,6 +317,26 @@ impl Run<'_> {
         if let Err(e) = saved {
             self.log.log(&format!("could not save import history: {e}"));
         }
+    }
+}
+
+/// Accepts import commands and runs at most `settings.max_parallel` jobs at
+/// once; the rest wait in a FIFO queue.
+pub struct JobManager {}
+
+#[allow(unused_variables)]
+impl JobManager {
+    pub fn new(
+        ctx: PipelineCtx,
+        tx: Sender<JobEvent>,
+        handle: tokio::runtime::Handle,
+    ) -> JobManager {
+        todo!()
+    }
+
+    /// `StartImport` returns the new job's id; the other commands return `None`.
+    pub fn handle(&self, cmd: Command) -> Option<JobId> {
+        todo!()
     }
 }
 
@@ -986,5 +1006,196 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(!p.exists());
+    }
+
+    // ---- JobManager ----
+
+    /// Every job fetches the same tiny GGUF; Ollama already has the blob.
+    async fn bulk_env(jobs: u64, delay_ms: u64) -> (Env, ImportRequest) {
+        let env = Env::new().await;
+        let data = payload(2000, 9);
+        Mock::given(method("GET"))
+            .and(path(format!("/{REPO}/resolve/main/tiny.gguf")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(data.clone())
+                    .set_delay(std::time::Duration::from_millis(delay_ms)),
+            )
+            .expect(jobs)
+            .mount(&env.hf)
+            .await;
+        env.ollama_basics(&[]).await;
+        Mock::given(method("HEAD"))
+            .and(path(format!("/api/blobs/{}", digest_of(&data))))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&env.ol)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/create"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"status\":\"success\"}\n"))
+            .expect(jobs)
+            .mount(&env.ol)
+            .await;
+        (env, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
+    }
+
+    fn manager(env: &Env) -> JobManager {
+        JobManager::new(
+            env.ctx.clone(),
+            env.tx.clone(),
+            tokio::runtime::Handle::current(),
+        )
+    }
+
+    /// Collects events until `done` says stop; fails the test after 15 s.
+    async fn collect_until(env: &Env, mut done: impl FnMut(&[JobEvent]) -> bool) -> Vec<JobEvent> {
+        let mut all = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            all.extend(env.rx.try_iter());
+            if done(&all) {
+                return all;
+            }
+            assert!(std::time::Instant::now() < deadline, "timed out: {all:?}");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    fn has(events: &[JobEvent], want: &JobEvent) -> bool {
+        events.contains(want)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn manager_runs_at_most_max_parallel_jobs() {
+        let (mut env, req) = bulk_env(4, 300).await;
+        env.ctx.settings.max_parallel = 2;
+        let mgr = manager(&env);
+        let ids: Vec<JobId> = (0..4)
+            .map(|_| mgr.handle(Command::StartImport(req.clone())).unwrap())
+            .collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 4);
+        let events =
+            collect_until(&env, |e| e.iter().filter(|x| is_terminal(x)).count() == 4).await;
+        let mut running = 0i32;
+        let mut peak = 0i32;
+        for e in &events {
+            match e {
+                JobEvent::Stage {
+                    stage: Stage::Downloading,
+                    ..
+                } => running += 1,
+                e if is_terminal(e) => running -= 1,
+                _ => {}
+            }
+            peak = peak.max(running);
+        }
+        assert_eq!(peak, 2, "{events:?}");
+        for id in ids {
+            assert!(has(&events, &JobEvent::Finished { id }));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pause_and_resume_emit_events() {
+        let (env, req) = bulk_env(1, 500).await;
+        let mgr = manager(&env);
+        let id = mgr.handle(Command::StartImport(req)).unwrap();
+        collect_until(&env, |e| {
+            has(
+                e,
+                &JobEvent::Stage {
+                    id,
+                    stage: Stage::Downloading,
+                },
+            )
+        })
+        .await;
+        assert_eq!(mgr.handle(Command::Pause(id)), None);
+        assert_eq!(mgr.handle(Command::Resume(id)), None);
+        let events = collect_until(&env, |e| has(e, &JobEvent::Finished { id })).await;
+        let pos = |want: JobEvent| events.iter().position(|e| *e == want);
+        let paused = pos(JobEvent::Paused { id }).expect("Paused event");
+        let resumed = pos(JobEvent::Resumed { id }).expect("Resumed event");
+        assert!(paused < resumed);
+        let logs = log_lines(&events).join("\n");
+        assert!(
+            logs.contains("paused") && logs.contains("resumed"),
+            "{logs}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn job_ids_do_not_collide_with_existing_job_dirs_on_disk() {
+        let (env, req) = bulk_env(2, 0).await;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        // A kept directory from an earlier run, as recent as it can be.
+        env.ctx
+            .staging
+            .create_job(JobId(now_ms), 0)
+            .unwrap()
+            .finish(true)
+            .unwrap();
+        let mgr = manager(&env);
+        let a = mgr.handle(Command::StartImport(req.clone())).unwrap();
+        let b = mgr.handle(Command::StartImport(req)).unwrap();
+        assert!(a.0 > now_ms && b.0 > a.0, "{a:?} {b:?} vs {now_ms}");
+        let events =
+            collect_until(&env, |e| e.iter().filter(|x| is_terminal(x)).count() == 2).await;
+        assert!(has(&events, &JobEvent::Finished { id: a }));
+        assert!(has(&events, &JobEvent::Finished { id: b }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_job_cancel_emits_cancelled_without_running() {
+        let (mut env, req) = slow_env().await;
+        env.ctx.settings.max_parallel = 1;
+        let mgr = manager(&env);
+        let a = mgr.handle(Command::StartImport(req.clone())).unwrap();
+        collect_until(&env, |e| {
+            has(
+                e,
+                &JobEvent::Stage {
+                    id: a,
+                    stage: Stage::Downloading,
+                },
+            )
+        })
+        .await;
+        let b = mgr.handle(Command::StartImport(req)).unwrap();
+        mgr.handle(Command::Cancel(b));
+        let mut events = collect_until(&env, |e| has(e, &JobEvent::Cancelled { id: b })).await;
+        mgr.handle(Command::Cancel(a));
+        events.extend(collect_until(&env, |e| has(e, &JobEvent::Cancelled { id: a })).await);
+        // Give a wrongly started B time to show itself.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        events.extend(env.events());
+        let of_b: Vec<&JobEvent> = events
+            .iter()
+            .filter(|e| match e {
+                JobEvent::Stage { id, .. }
+                | JobEvent::Progress { id, .. }
+                | JobEvent::Paused { id }
+                | JobEvent::Resumed { id }
+                | JobEvent::Finished { id }
+                | JobEvent::Failed { id, .. }
+                | JobEvent::Cancelled { id } => *id == b,
+                JobEvent::Log { .. } => false,
+            })
+            .collect();
+        assert_eq!(
+            of_b,
+            vec![
+                &JobEvent::Stage {
+                    id: b,
+                    stage: Stage::Queued
+                },
+                &JobEvent::Cancelled { id: b }
+            ]
+        );
+        // slow_env expects exactly one GET: only job A reached Hugging Face.
     }
 }
