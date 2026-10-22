@@ -323,8 +323,37 @@ pub const COLUMN_GAP: f32 = 12.0;
 
 /// Columns that fit in `width`: Modified, Quant, Params and Source are
 /// dropped in that order before Model, Size or the actions lose room.
-pub fn visible_columns(_width: f32) -> Vec<Column> {
-    unimplemented!("visible_columns")
+pub fn visible_columns(width: f32) -> Vec<Column> {
+    const ORDER: [Column; 7] = [
+        Column::Model,
+        Column::Params,
+        Column::Quant,
+        Column::Size,
+        Column::Source,
+        Column::Modified,
+        Column::Actions,
+    ];
+    // Dropped first to last.
+    const DROP: [Column; 4] = [
+        Column::Modified,
+        Column::Quant,
+        Column::Params,
+        Column::Source,
+    ];
+    let need = |cols: &[Column]| -> f32 {
+        cols.iter()
+            .map(|c| column_width(*c) + if *c == Column::Model { 0.0 } else { COLUMN_GAP })
+            .sum()
+    };
+    let mut cols = ORDER.to_vec();
+    for d in DROP {
+        // `!(need <= width)` also drops columns for a NaN width.
+        if need(&cols) <= width {
+            break;
+        }
+        cols.retain(|c| *c != d);
+    }
+    cols
 }
 
 /// Seconds since the Unix epoch for an RFC 3339 timestamp such as
