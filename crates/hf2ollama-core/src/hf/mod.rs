@@ -358,7 +358,46 @@ impl HfClient {
 
     /// The account name the token belongs to (`/api/whoami-v2`).
     pub async fn whoami(&self) -> Result<String> {
-        Err(Error::Parse("whoami is not implemented".to_string()))
+        #[derive(Deserialize)]
+        struct Who {
+            name: Option<String>,
+        }
+        let url = self.url(&["api", "whoami-v2"])?;
+        let resp = match self
+            .send_checked(self.get(url).timeout(API_TIMEOUT), None)
+            .await
+        {
+            Ok(r) => r,
+            Err(Error::Http { status: 401, .. }) => {
+                return Err(Error::Http {
+                    status: 401,
+                    body: "the Hugging Face token is invalid or has expired".to_string(),
+                })
+            }
+            Err(e) => return Err(self.redact(e)),
+        };
+        let who: Who = resp
+            .json()
+            .await
+            .map_err(|e| Error::Parse(format!("invalid whoami response: {}", e.without_url())))?;
+        who.name
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| Error::Parse("whoami returned no account name".to_string()))
+    }
+
+    /// Removes the token from an error, in case a server echoed it back.
+    fn redact(&self, e: Error) -> Error {
+        let Some(t) = &self.token else { return e };
+        let clean = |s: String| s.replace(t.as_str(), "<redacted>");
+        match e {
+            Error::Network(s) => Error::Network(clean(s)),
+            Error::Http { status, body } => Error::Http {
+                status,
+                body: clean(body),
+            },
+            Error::Parse(s) => Error::Parse(clean(s)),
+            other => other,
+        }
     }
 
     /// Sends a request and maps non-2xx statuses to errors. With `gated_id`
