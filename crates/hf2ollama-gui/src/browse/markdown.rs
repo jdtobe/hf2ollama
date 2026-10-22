@@ -1,7 +1,9 @@
 //! Markdown model cards as a small, safe block tree. Pure: no egui, no
-#![allow(dead_code)] // TODO(task 14b): removed once about.rs draws the blocks.
 //! network. Raw HTML never survives, images are never loaded, and only
 //! absolute http(s) links are kept.
+#![allow(dead_code)] // TODO(task 14b): removed once about.rs draws the blocks.
+
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 /// Largest input parsed, matching what the core fetch already enforces.
 pub const MAX_INPUT_BYTES: usize = 256 * 1024;
@@ -21,6 +23,7 @@ pub struct Span {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum Block {
     Heading(u8, Vec<Span>),
     Paragraph(Vec<Span>),
@@ -47,9 +50,24 @@ pub const COLLAPSED: PreviewLimits = PreviewLimits {
     chars: 900,
 };
 
+/// Longest URL accepted as a link.
+const MAX_URL_LEN: usize = 2048;
+
 /// Only absolute http and https URLs may be opened.
-pub fn is_safe_link(_url: &str) -> bool {
-    false
+pub fn is_safe_link(url: &str) -> bool {
+    if url.len() > MAX_URL_LEN || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    let lower = url.to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_some_and(|c| c != '/' && c != '?' && c != '#')
 }
 
 /// Parses Markdown into blocks; see `parse_capped` for the cut flag.
@@ -58,13 +76,554 @@ pub fn parse(src: &str) -> Vec<Block> {
 }
 
 /// Like `parse`, also telling whether the block cap cut the document.
-pub fn parse_capped(_src: &str) -> (Vec<Block>, bool) {
-    (Vec::new(), false)
+pub fn parse_capped(src: &str) -> (Vec<Block>, bool) {
+    let mut end = src.len().min(MAX_INPUT_BYTES);
+    while !src.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut b = Builder::default();
+    b.frames.push(Frame::Root(Vec::new()));
+    let parser = Parser::new_ext(&src[..end], Options::ENABLE_TABLES);
+    for ev in parser {
+        b.event(ev);
+        if b.truncated {
+            break;
+        }
+    }
+    b.finish()
+}
+
+enum Frame {
+    Root(Vec<Block>),
+    Quote(Vec<Block>),
+    List {
+        ordered: bool,
+        items: Vec<Vec<Block>>,
+    },
+    Item(Vec<Block>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Inline {
+    Paragraph,
+    Heading(u8),
+    Cell,
+}
+
+#[derive(Default)]
+struct Builder {
+    frames: Vec<Frame>,
+    /// One entry per open quote, list or item: true when it was flattened
+    /// because of the depth cap.
+    flattened: Vec<bool>,
+    /// Open quotes and lists that were kept (not flattened).
+    depth: usize,
+    spans: Vec<Span>,
+    inline: Option<Inline>,
+    strong: u32,
+    emph: u32,
+    link: Option<String>,
+    image_alt: Option<String>,
+    code: Option<String>,
+    html: Option<String>,
+    in_comment: bool,
+    table: Option<Vec<Vec<Vec<Span>>>>,
+    row: Vec<Vec<Span>>,
+    leaves: usize,
+    truncated: bool,
+}
+
+impl Builder {
+    fn push_block(&mut self, block: Block) {
+        if self.leaves >= MAX_BLOCKS {
+            self.truncated = true;
+            return;
+        }
+        self.leaves += 1;
+        if let Some(Frame::Root(v) | Frame::Quote(v) | Frame::Item(v)) = self.frames.last_mut() {
+            v.push(block);
+        }
+    }
+
+    fn add_span(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        self.spans.push(Span {
+            text,
+            strong: self.strong > 0,
+            emph: self.emph > 0,
+            code: false,
+            link: self.link.clone(),
+        });
+    }
+
+    /// Text of a tight list item that no paragraph tag wrapped.
+    fn flush_implicit(&mut self) {
+        if self.inline.is_none() && !self.spans.is_empty() {
+            let spans = std::mem::take(&mut self.spans);
+            self.push_block(Block::Paragraph(spans));
+        }
+    }
+
+    fn open_container(&mut self, frame: Frame) {
+        self.flush_implicit();
+        let parent_flat = self.flattened.last().copied().unwrap_or(false);
+        let is_item = matches!(frame, Frame::Item(_));
+        let flat = if is_item {
+            parent_flat
+        } else {
+            parent_flat || self.depth >= MAX_DEPTH
+        };
+        self.flattened.push(flat);
+        if !flat {
+            if !is_item {
+                self.depth += 1;
+            }
+            self.frames.push(frame);
+        }
+    }
+
+    /// Closes the innermost container, returning its frame when kept.
+    fn close_container(&mut self, is_item: bool) {
+        self.flush_implicit();
+        let flat = self.flattened.pop().unwrap_or(false);
+        if flat {
+            return;
+        }
+        if !is_item {
+            self.depth = self.depth.saturating_sub(1);
+        }
+        self.merge_top();
+    }
+
+    /// Folds the top frame into its parent.
+    fn merge_top(&mut self) {
+        if self.frames.len() < 2 {
+            return;
+        }
+        let Some(top) = self.frames.pop() else {
+            return;
+        };
+        match top {
+            Frame::Item(blocks) => {
+                if let Some(Frame::List { items, .. }) = self.frames.last_mut() {
+                    items.push(blocks);
+                }
+            }
+            Frame::List { ordered, items } => {
+                if !items.is_empty() {
+                    self.attach(Block::List { ordered, items });
+                }
+            }
+            Frame::Quote(blocks) => {
+                if !blocks.is_empty() {
+                    self.attach(Block::Quote(blocks));
+                }
+            }
+            Frame::Root(_) => {}
+        }
+    }
+
+    /// Adds a finished container to its parent without counting it.
+    fn attach(&mut self, block: Block) {
+        if let Some(Frame::Root(v) | Frame::Quote(v) | Frame::Item(v)) = self.frames.last_mut() {
+            v.push(block);
+        }
+    }
+
+    fn end_inline(&mut self) {
+        let spans = std::mem::take(&mut self.spans);
+        match self.inline.take() {
+            Some(Inline::Paragraph) if !spans.is_empty() => {
+                self.push_block(Block::Paragraph(spans));
+            }
+            Some(Inline::Heading(level)) if !spans.is_empty() => {
+                self.push_block(Block::Heading(level, spans));
+            }
+            Some(Inline::Cell) => self.row.push(spans),
+            _ => {}
+        }
+    }
+
+    fn event(&mut self, ev: Event<'_>) {
+        if self.in_comment {
+            // Inside a multi-line inline comment nothing is kept.
+            if let Event::InlineHtml(s) | Event::Html(s) | Event::Text(s) = &ev {
+                if s.contains("-->") {
+                    self.in_comment = false;
+                }
+            }
+            return;
+        }
+        match ev {
+            Event::Start(tag) => self.start(tag),
+            Event::End(end) => self.end(end),
+            Event::Text(s) => {
+                if let Some(code) = &mut self.code {
+                    code.push_str(&s);
+                } else if let Some(html) = &mut self.html {
+                    html.push_str(&s);
+                } else if let Some(alt) = &mut self.image_alt {
+                    alt.push_str(&s);
+                } else {
+                    self.add_span(s.into_string());
+                }
+            }
+            Event::Code(s) => {
+                if let Some(alt) = &mut self.image_alt {
+                    alt.push_str(&s);
+                } else {
+                    self.spans.push(Span {
+                        text: s.into_string(),
+                        strong: self.strong > 0,
+                        emph: self.emph > 0,
+                        code: true,
+                        link: self.link.clone(),
+                    });
+                }
+            }
+            Event::Html(s) => {
+                if let Some(html) = &mut self.html {
+                    html.push_str(&s);
+                }
+            }
+            Event::InlineHtml(s) => {
+                if s.contains("<!--") && !s.contains("-->") {
+                    self.in_comment = true;
+                } else {
+                    let text = strip_html(&s);
+                    self.add_span(text);
+                }
+            }
+            Event::SoftBreak => {
+                if let Some(alt) = &mut self.image_alt {
+                    alt.push(' ');
+                } else if self.code.is_none() {
+                    self.add_span(" ".to_string());
+                }
+            }
+            Event::HardBreak => self.add_span("\n".to_string()),
+            Event::Rule => {
+                self.flush_implicit();
+                self.push_block(Block::Rule);
+            }
+            _ => {}
+        }
+    }
+
+    fn start(&mut self, tag: Tag<'_>) {
+        match tag {
+            Tag::Paragraph => {
+                self.flush_implicit();
+                self.inline = Some(Inline::Paragraph);
+            }
+            Tag::Heading { level, .. } => {
+                self.flush_implicit();
+                self.inline = Some(Inline::Heading(level as u8));
+            }
+            Tag::BlockQuote(_) => self.open_container(Frame::Quote(Vec::new())),
+            Tag::List(first) => self.open_container(Frame::List {
+                ordered: first.is_some(),
+                items: Vec::new(),
+            }),
+            Tag::Item => self.open_container(Frame::Item(Vec::new())),
+            Tag::CodeBlock(_) => {
+                self.flush_implicit();
+                self.code = Some(String::new());
+            }
+            Tag::HtmlBlock => {
+                self.flush_implicit();
+                self.html = Some(String::new());
+            }
+            Tag::Table(_) => {
+                self.flush_implicit();
+                self.table = Some(Vec::new());
+            }
+            Tag::TableHead | Tag::TableRow => self.row = Vec::new(),
+            Tag::TableCell => {
+                self.spans.clear();
+                self.inline = Some(Inline::Cell);
+            }
+            Tag::Strong => self.strong += 1,
+            Tag::Emphasis => self.emph += 1,
+            Tag::Link { dest_url, .. } => {
+                self.link = is_safe_link(&dest_url).then(|| dest_url.into_string());
+            }
+            Tag::Image { .. } => self.image_alt = Some(String::new()),
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, end: TagEnd) {
+        match end {
+            TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell => self.end_inline(),
+            TagEnd::BlockQuote(_) => self.close_container(false),
+            TagEnd::List(_) => self.close_container(false),
+            TagEnd::Item => self.close_container(true),
+            TagEnd::CodeBlock => {
+                if let Some(code) = self.code.take() {
+                    self.push_block(Block::CodeBlock(code));
+                }
+            }
+            TagEnd::HtmlBlock => {
+                if let Some(html) = self.html.take() {
+                    let text = strip_html(&html);
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        self.push_block(Block::Paragraph(vec![Span {
+                            text: text.to_string(),
+                            ..Span::default()
+                        }]));
+                    }
+                }
+            }
+            TagEnd::TableHead | TagEnd::TableRow => {
+                let row = std::mem::take(&mut self.row);
+                if let Some(t) = &mut self.table {
+                    t.push(row);
+                }
+            }
+            TagEnd::Table => {
+                if let Some(rows) = self.table.take() {
+                    self.push_block(Block::Table(rows));
+                }
+            }
+            TagEnd::Strong => self.strong = self.strong.saturating_sub(1),
+            TagEnd::Emphasis => self.emph = self.emph.saturating_sub(1),
+            TagEnd::Link => self.link = None,
+            TagEnd::Image => {
+                if let Some(alt) = self.image_alt.take() {
+                    let alt = alt.trim();
+                    let text = if alt.is_empty() {
+                        "[image]".to_string()
+                    } else {
+                        format!("[image: {alt}]")
+                    };
+                    self.add_span(text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn finish(mut self) -> (Vec<Block>, bool) {
+        if !self.truncated {
+            self.flush_implicit();
+        }
+        while self.frames.len() > 1 {
+            self.merge_top();
+        }
+        let blocks = match self.frames.pop() {
+            Some(Frame::Root(v)) => v,
+            _ => Vec::new(),
+        };
+        (blocks, self.truncated)
+    }
+}
+
+/// Removes tags, comments and the content of script and style elements,
+/// keeping the text between them.
+fn strip_html(src: &str) -> String {
+    let mut out = String::new();
+    let mut rest = src;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        if let Some(after) = tail.strip_prefix("<!--") {
+            rest = after.find("-->").map_or("", |j| &after[j + 3..]);
+            continue;
+        }
+        let starts_tag = tail[1..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
+        if !starts_tag {
+            out.push('<');
+            rest = &tail[1..];
+            continue;
+        }
+        let name: String = tail[1..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let tag_end = tail.find('>').map_or(tail.len(), |j| j + 1);
+        rest = &tail[tag_end..];
+        if matches!(name.as_str(), "script" | "style") && !tail.starts_with("</") {
+            let close = format!("</{name}");
+            let lower = rest.to_ascii_lowercase();
+            rest = match lower.find(&close) {
+                Some(j) => {
+                    let after = &rest[j..];
+                    after.find('>').map_or("", |k| &after[k + 1..])
+                }
+                None => "",
+            };
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Rough characters per wrapped line, used to estimate paragraph height.
+const LINE_CHARS: usize = 90;
+
+struct Budget {
+    lines: usize,
+    chars: usize,
+    cut: bool,
+}
+
+fn span_chars(spans: &[Span]) -> usize {
+    spans.iter().map(|s| s.text.chars().count()).sum()
+}
+
+/// The leading `max` characters of `spans`, ending in an ellipsis.
+fn truncate_spans(spans: &[Span], max: usize) -> Vec<Span> {
+    let mut left = max;
+    let mut out = Vec::new();
+    for s in spans {
+        if left == 0 {
+            break;
+        }
+        let n = s.text.chars().count();
+        if n <= left {
+            left -= n;
+            out.push(s.clone());
+        } else {
+            let mut cut = s.clone();
+            cut.text = s.text.chars().take(left).collect();
+            out.push(cut);
+            left = 0;
+        }
+    }
+    out.push(Span {
+        text: "…".to_string(),
+        ..Span::default()
+    });
+    out
+}
+
+fn take(blocks: &[Block], b: &mut Budget) -> Vec<Block> {
+    let mut out = Vec::new();
+    for block in blocks {
+        if b.cut {
+            break;
+        }
+        match block {
+            Block::Heading(_, spans) => {
+                let chars = span_chars(spans);
+                if b.lines >= 1 && b.chars >= chars {
+                    b.lines -= 1;
+                    b.chars -= chars;
+                    out.push(block.clone());
+                } else {
+                    b.cut = true;
+                }
+            }
+            Block::Rule => {
+                if b.lines >= 1 {
+                    b.lines -= 1;
+                    out.push(Block::Rule);
+                } else {
+                    b.cut = true;
+                }
+            }
+            Block::Paragraph(spans) => {
+                let chars = span_chars(spans);
+                let lines = chars.div_ceil(LINE_CHARS).max(1);
+                if lines <= b.lines && chars <= b.chars {
+                    b.lines -= lines;
+                    b.chars -= chars;
+                    out.push(block.clone());
+                } else {
+                    let allowed = b.chars.min(b.lines * LINE_CHARS);
+                    if allowed > 0 {
+                        out.push(Block::Paragraph(truncate_spans(spans, allowed)));
+                    }
+                    b.cut = true;
+                }
+            }
+            Block::CodeBlock(code) => {
+                let lines = code.lines().count().max(1);
+                if lines <= b.lines && code.chars().count() <= b.chars {
+                    b.lines -= lines;
+                    b.chars -= code.chars().count();
+                    out.push(block.clone());
+                } else {
+                    let mut kept = String::new();
+                    let mut used = 0;
+                    for line in code.lines().take(b.lines) {
+                        let n = line.chars().count() + 1;
+                        if used + n > b.chars {
+                            break;
+                        }
+                        used += n;
+                        kept.push_str(line);
+                        kept.push('\n');
+                    }
+                    if !kept.is_empty() {
+                        out.push(Block::CodeBlock(kept));
+                    }
+                    b.cut = true;
+                }
+            }
+            Block::Table(rows) => {
+                let mut kept = Vec::new();
+                for row in rows {
+                    let chars: usize = row.iter().map(|c| span_chars(c)).sum();
+                    if b.lines >= 1 && b.chars >= chars {
+                        b.lines -= 1;
+                        b.chars -= chars;
+                        kept.push(row.clone());
+                    } else {
+                        b.cut = true;
+                        break;
+                    }
+                }
+                if !kept.is_empty() {
+                    out.push(Block::Table(kept));
+                }
+            }
+            Block::Quote(inner) => {
+                let kept = take(inner, b);
+                if !kept.is_empty() {
+                    out.push(Block::Quote(kept));
+                }
+            }
+            Block::List { ordered, items } => {
+                let mut kept = Vec::new();
+                for item in items {
+                    if b.cut {
+                        break;
+                    }
+                    let inner = take(item, b);
+                    if !inner.is_empty() {
+                        kept.push(inner);
+                    }
+                }
+                if !kept.is_empty() {
+                    out.push(Block::List {
+                        ordered: *ordered,
+                        items: kept,
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The leading part of `blocks` within `limits`, and whether more follows.
-pub fn preview(blocks: &[Block], _limits: PreviewLimits) -> (Vec<Block>, bool) {
-    (blocks.to_vec(), false)
+pub fn preview(blocks: &[Block], limits: PreviewLimits) -> (Vec<Block>, bool) {
+    let mut budget = Budget {
+        lines: limits.lines,
+        chars: limits.chars,
+        cut: false,
+    };
+    let kept = take(blocks, &mut budget);
+    (kept, budget.cut)
 }
 
 #[cfg(test)]
