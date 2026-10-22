@@ -1,5 +1,14 @@
 //! Application shell: top bar, downloads dock, status bar and view bodies.
 
+use crate::runtime::{BackendRequest, UiEvent};
+use crate::theme::{mono, semibold, tokens};
+use crate::widgets::segmented_nav;
+use eframe::egui::{self, vec2, Color32, Margin, RichText, Sense, Stroke};
+use hf2ollama_core::config::Settings;
+use hf2ollama_core::fit::Machine;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Browse,
@@ -7,23 +16,245 @@ pub enum View {
     Settings,
 }
 
+impl View {
+    const ALL: [View; 3] = [View::Browse, View::Installed, View::Settings];
+
+    fn label(self) -> &'static str {
+        match self {
+            View::Browse => "Browse",
+            View::Installed => "Installed",
+            View::Settings => "Settings",
+        }
+    }
+}
+
 pub struct AppState {
     pub view: View,
+    pub query: String,
+    /// `None` until the first poll answers; then the version if reachable.
+    pub ollama: Option<Option<String>>,
+    pub installed_count: Option<usize>,
+    pub ollama_host: String,
+    pub staging_dir: PathBuf,
+    pub delete_after_import: bool,
+    /// Detected or overridden once at startup; NVML probing is not free.
+    pub machine: Machine,
 }
 
 impl AppState {
     pub fn new() -> AppState {
-        AppState { view: View::Browse }
+        AppState {
+            view: View::Browse,
+            query: String::new(),
+            ollama: None,
+            installed_count: None,
+            ollama_host: String::new(),
+            staging_dir: PathBuf::new(),
+            delete_after_import: true,
+            machine: Machine {
+                ram_gb: 0.0,
+                vram_gb: None,
+            },
+        }
     }
 
-    pub fn select(&mut self, _view: View) {
-        todo!()
+    pub fn select(&mut self, view: View) {
+        self.view = view;
+    }
+
+    /// Folds a backend event into the state; may ask for a follow-up request.
+    pub fn on_event(&mut self, ev: &UiEvent) -> Option<BackendRequest> {
+        match ev {
+            UiEvent::OllamaStatus(v) => {
+                let became_reachable =
+                    v.is_some() && self.ollama.as_ref().is_none_or(|o| o.is_none());
+                self.ollama = Some(v.clone());
+                became_reachable.then_some(BackendRequest::ListInstalled)
+            }
+            UiEvent::InstalledLoaded(Ok(models)) => {
+                self.installed_count = Some(models.len());
+                None
+            }
+            // Job, search, detail and delete events belong to the views that
+            // are built next.
+            _ => None,
+        }
     }
 }
 
 /// `http://localhost:11434/` becomes `localhost:11434`.
-pub fn host_of(_url: &str) -> String {
-    todo!()
+pub fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest).to_string()
+}
+
+pub struct App {
+    state: AppState,
+    tx: Sender<BackendRequest>,
+    rx: Receiver<UiEvent>,
+}
+
+impl App {
+    pub fn new(
+        settings: &Settings,
+        staging_dir: PathBuf,
+        machine: Machine,
+        tx: Sender<BackendRequest>,
+        rx: Receiver<UiEvent>,
+    ) -> App {
+        let mut state = AppState::new();
+        state.ollama_host = host_of(&settings.ollama_url);
+        state.staging_dir = staging_dir;
+        state.delete_after_import = settings.delete_after_import;
+        state.machine = machine;
+        App { state, tx, rx }
+    }
+}
+
+/// Red for the "not reachable" dot; the spec palette has no error token.
+fn bad(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(0xf2, 0x76, 0x6b)
+    } else {
+        Color32::from_rgb(0xb3, 0x26, 0x1e)
+    }
+}
+
+fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui::Frame {
+    egui::Frame::new()
+        .fill(fill)
+        .inner_margin(margin)
+        .stroke(Stroke::new(1.0, line))
+}
+
+impl eframe::App for App {
+    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        while let Ok(ev) = self.rx.try_recv() {
+            if let Some(req) = self.state.on_event(&ev) {
+                let _ = self.tx.send(req);
+            }
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let t = tokens(ui);
+        let dark = ui.visuals().dark_mode;
+
+        egui::Panel::top("top")
+            .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+                    ui.painter().rect_filled(r, 6.0, t.accent);
+                    ui.painter()
+                        .circle_stroke(r.center(), 5.0, Stroke::new(2.0, t.accent_fg));
+                    ui.label(RichText::new("hf2ollama").font(semibold(16.0)));
+                    ui.add_space(8.0);
+
+                    let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
+                    let badges: Vec<Option<String>> = View::ALL
+                        .iter()
+                        .map(|v| match v {
+                            View::Installed => self.state.installed_count.map(|n| n.to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                    let current = View::ALL
+                        .iter()
+                        .position(|v| *v == self.state.view)
+                        .unwrap_or(0);
+                    if let Some(i) = segmented_nav(ui, &labels, &badges, current) {
+                        self.state.select(View::ALL[i]);
+                    }
+
+                    if self.state.view == View::Browse {
+                        ui.add_space(8.0);
+                        ui.add_sized(
+                            vec2(360.0, 32.0),
+                            egui::TextEdit::singleline(&mut self.state.query)
+                                .hint_text("Search Hugging Face models")
+                                .margin(Margin::symmetric(10, 7)),
+                        );
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (dot, label) = match &self.state.ollama {
+                            Some(Some(v)) => {
+                                (t.ok, format!("Ollama {v} · {}", self.state.ollama_host))
+                            }
+                            Some(None) => (bad(dark), "Ollama not reachable".to_string()),
+                            None => (t.fg3, "Checking Ollama…".to_string()),
+                        };
+                        egui::Frame::new()
+                            .fill(t.surface2)
+                            .stroke(Stroke::new(1.0, t.line))
+                            .corner_radius(99.0)
+                            .inner_margin(Margin::symmetric(10, 3))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let (r, _) =
+                                        ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                                    ui.painter().circle_filled(r.center(), 4.0, dot);
+                                    ui.label(RichText::new(label).size(12.0).color(t.fg2));
+                                });
+                            });
+                    });
+                });
+            });
+
+        // Free space of the staging folder is not exposed by the core, so the
+        // status bar leaves it out. The Ollama store path is omitted until the
+        // server reports it.
+        egui::Panel::bottom("status")
+            .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 6)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label(RichText::new("Staging folder").size(12.0).color(t.fg3));
+                    ui.label(
+                        RichText::new(self.state.staging_dir.display().to_string())
+                            .font(mono(11.5))
+                            .color(t.fg2),
+                    );
+                    if self.state.delete_after_import {
+                        ui.label(
+                            RichText::new("(files deleted after each import)")
+                                .size(12.0)
+                                .color(t.fg3),
+                        );
+                    }
+                });
+            });
+
+        egui::Panel::bottom("dock")
+            .frame(panel_frame(t.surface2, t.line, Margin::symmetric(16, 10)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Downloads & imports").size(12.0).color(t.fg3));
+                    ui.label(
+                        RichText::new("Nothing running. Pick a model above to start.")
+                            .size(13.0)
+                            .color(t.fg3),
+                    );
+                });
+            });
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(t.surface)
+                    .inner_margin(Margin::symmetric(24, 20)),
+            )
+            .show(ui, |ui| {
+                let text = match self.state.view {
+                    View::Browse => "Browse coming next",
+                    View::Installed => "Installed models coming next",
+                    View::Settings => "Settings coming next",
+                };
+                ui.heading(self.state.view.label());
+                ui.label(RichText::new(text).color(t.fg3));
+            });
+    }
 }
 
 #[cfg(test)]

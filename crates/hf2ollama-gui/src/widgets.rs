@@ -57,7 +57,6 @@ pub fn tag(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) {
 }
 
 /// Thin horizontal quality bar; `frac` is clamped to 0..=1.
-#[allow(dead_code)] // used by the Browse view
 pub fn quality_bar(ui: &mut egui::Ui, frac: f32, width: f32) {
     let t = tokens(ui);
     let (rect, _) = ui.allocate_exact_size(vec2(width, 6.0), Sense::hover());
@@ -68,7 +67,6 @@ pub fn quality_bar(ui: &mut egui::Ui, frac: f32, width: f32) {
 }
 
 /// Accent-filled primary action; returns true when clicked.
-#[allow(dead_code)] // used by the Browse view
 pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
     let t = tokens(ui);
     let b = egui::Button::new(RichText::new(text).font(semibold(14.0)).color(if enabled {
@@ -83,7 +81,6 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
 }
 
 /// Compact secondary button; returns true when clicked.
-#[allow(dead_code)] // used by the downloads dock
 pub fn small_button(ui: &mut egui::Ui, text: &str) -> bool {
     let t = tokens(ui);
     ui.add(egui::Button::new(RichText::new(text).size(12.0).color(t.fg2)).min_size(vec2(0.0, 24.0)))
@@ -157,7 +154,6 @@ pub fn segmented_nav(
 }
 
 /// Rounded status pill showing the fit estimate.
-#[allow(dead_code)] // used by the Browse view
 pub fn fit_pill(ui: &mut egui::Ui, fit: Fit) {
     let t = tokens(ui);
     let (fg, bg) = match fit_pill_kind(fit) {
