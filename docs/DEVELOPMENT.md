@@ -134,3 +134,11 @@ HF2O_MEMORY_TOKEN_STORE=1 HF2O_MEMORY_TOKEN=hf_example \
 
 - `HF2O_MEMORY_TOKEN_STORE=1` (exactly `1`) keeps the Hugging Face token in memory instead of the system keychain. The app prints a warning at startup and Settings shows "dev: token not persisted".
 - `HF2O_MEMORY_TOKEN` is the token the in-memory store starts with.
+
+## Releases
+
+Merging code to `main` publishes a release automatically (`.github/workflows/release.yml`). Docs-only merges (Markdown, `docs/`, licences) do not. The workflow runs the full CI first, then builds for macOS (Apple Silicon and Intel), Windows and Linux, and creates a GitHub release with the archives and a `SHA256SUMS.txt`.
+
+Versions are `YY.M.N`: the year without the century, the month without a leading zero, and the number of the release in that month. The first release of October 2026 is `26.10.1`, the next `26.10.2`, and the first of November `26.11.1`. The number is found by counting the existing `vYY.M.*` tags. The version is written into the crate manifests only inside the build, so the checked-in `Cargo.toml` files keep their own numbers. To release without a code change, run the workflow by hand from the Actions tab.
+
+The builds are not signed or notarized, so macOS and Windows warn on first launch; the release notes say how to get past that.

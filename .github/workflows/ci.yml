@@ -1,17 +1,28 @@
 name: CI
 
-# Push runs only on the default branch (main or master); every other branch is covered by its
-# pull request. This avoids running everything twice for a PR branch.
 on:
+  # Tests run on every push except main (main is tested by release.yml, which
+  # calls this workflow before it builds anything) and on pull requests.
   push:
-    branches: [main, master]  # the default branch name is not decided yet; either works
-    tags: ["v*"]
+    branches-ignore: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".github/ISSUE_TEMPLATE/**"
+  workflow_call:
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
+# Releases are built by release.yml.
 # Actions are pinned to major tags. TODO: pin each action to a full commit SHA
 # (a follow-up, tracked in docs/ROADMAP.md).
 jobs:
@@ -50,35 +61,3 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
       - run: cargo clippy --workspace --all-targets --features hf2ollama-gui/dev-hooks -- -D warnings
       - run: cargo test --workspace --features hf2ollama-gui/dev-hooks
-
-  release-build:
-    # Only on a manual run or a version tag.
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    needs: [check, dev-hooks]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Linux GUI dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
-      - run: cargo build --release -p hf2ollama-gui
-      - name: Collect the binary
-        shell: bash
-        run: |
-          mkdir -p dist
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp target/release/hf2ollama-gui.exe dist/
-          else
-            cp target/release/hf2ollama-gui dist/
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hf2ollama-gui-${{ runner.os }}
-          path: dist/*
-          if-no-files-found: error

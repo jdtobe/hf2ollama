@@ -7,7 +7,7 @@ This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-h
 - Core library: Hugging Face and Ollama clients, compatibility classification, fit estimation, hardware detection, settings and portable paths, staging and cleanup, history, import pipeline, job manager, model card fetch, token check.
 - Desktop app: window shell, Browse (search, filters, details, model card, import plan), downloads dock, Installed, Settings, light and dark themes, startup sweep of orphaned job folders.
 - Retry of the download step (3 times, backoff) after network errors, 5xx and 429; a confirmation when closing the window with running downloads; a name-collision re-check before `create` and protection against starting the same name twice; settings enum values written in kebab-case (old values still load); Clear cached files also removes failed downloads.
-- Project files, CI (fmt, clippy, tests on three OSes, `dev-hooks` job, release-build job) and cargo-deny.
+- Project files, CI (fmt, clippy, tests on three OSes, `dev-hooks` job) and an automatic release on every code merge to `main` and cargo-deny.
 - A real end-to-end run against a throwaway Ollama 0.40.8 on macOS; see [the acceptance record](superpowers/notes/acceptance.md).
 
 See [CHANGELOG.md](../CHANGELOG.md).

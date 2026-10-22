@@ -2,7 +2,7 @@ name: Deny
 
 on:
   push:
-    branches: [main, master]  # the default branch name is not decided yet; either works
+    branches: [main]
   pull_request:
 
 jobs:
