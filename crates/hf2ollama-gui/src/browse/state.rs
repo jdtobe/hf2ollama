@@ -94,6 +94,9 @@ pub fn friendly_error(raw: &str) -> String {
     raw.to_string()
 }
 
+/// How many frames a new plan keeps asking the options table to scroll.
+pub const SCROLL_REQUEST_FRAMES: u8 = 3;
+
 /// At most this many repository lookups run at once.
 pub const MAX_INFO_IN_FLIGHT: usize = 4;
 /// Related GGUF repositories shown for an unsupported one.
@@ -944,14 +947,23 @@ mod tests {
         st.select_repo(id);
         assert!(!st.take_scroll_request(), "nothing to scroll to yet");
         st.on_model_info(id, Ok(i));
-        assert!(st.take_scroll_request(), "plan arrived");
-        assert!(!st.take_scroll_request(), "only once");
+        // The pane layout settles over the first frames, so the request
+        // lasts a few of them, then stops so manual scrolling is left alone.
+        for frame in 0..SCROLL_REQUEST_FRAMES {
+            assert!(st.take_scroll_request(), "frame {frame}");
+        }
+        assert!(!st.take_scroll_request(), "then it stops");
         st.select_option(0);
         assert!(!st.take_scroll_request(), "user clicks never scroll");
         let (id2, i2) = st_repo();
         st.on_model_info(id2, Ok(i2));
         st.select_repo(id2);
         assert!(st.take_scroll_request(), "cached repo selected");
+        st.select_option(1);
+        for _ in 0..SCROLL_REQUEST_FRAMES {
+            st.take_scroll_request();
+        }
+        assert!(!st.take_scroll_request());
     }
 
     #[test]
