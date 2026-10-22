@@ -521,6 +521,16 @@ impl SettingsState {
         self.pending.push(BackendRequest::ListCached);
     }
 
+    /// The user opened the Settings view: read the cached files again, and
+    /// ask Hugging Face about a saved token once.
+    pub fn on_opened(&mut self) {
+        self.refresh_cached();
+        if self.token_status == HfTokenStatus::Saved && !self.token_busy {
+            self.token_busy = true;
+            self.pending.push(BackendRequest::CheckHfToken);
+        }
+    }
+
     // ---- saving ----
 
     /// A change was applied: the file is being written.

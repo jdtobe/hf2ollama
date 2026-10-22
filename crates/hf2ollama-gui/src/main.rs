@@ -66,7 +66,13 @@ fn main() -> eframe::Result<()> {
         eprintln!("could not load settings ({e}); using defaults");
         Settings::default()
     });
-    let machine = hf2ollama_core::hardware::effective(&settings);
+    // Probing the GPU is not free: once, then reused for the override.
+    let detected = hf2ollama_core::hardware::detect();
+    let machine = settings
+        .hardware_override
+        .clone()
+        .unwrap_or_else(|| detected.clone());
+    let default_staging = paths.default_staging.clone();
     let staging_dir = settings
         .staging_dir
         .clone()
@@ -87,6 +93,7 @@ fn main() -> eframe::Result<()> {
             theme::apply_choice(&cc.egui_ctx, theme_override().unwrap_or(settings.theme));
             let (tx, rx) = runtime::Backend::spawn(cc.egui_ctx.clone(), settings.clone(), paths);
             let mut app = app::App::new(&settings, staging_dir, machine, tx, rx);
+            app.set_environment(default_staging, detected);
             let (query, select) = preset();
             app.preset(query, select);
             if let Some(view) = view_override() {

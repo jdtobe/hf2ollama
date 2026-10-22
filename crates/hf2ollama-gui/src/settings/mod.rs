@@ -5,6 +5,8 @@
 pub mod state;
 pub mod validate;
 
+use crate::app::AppState;
+use crate::runtime::BackendRequest;
 use eframe::egui;
 use hf2ollama_core::config::Settings;
 use hf2ollama_core::fit::Machine;
@@ -32,4 +34,20 @@ impl SettingsView {
         let _ = (ui, settings);
         SettingsChange::default()
     }
+}
+
+/// Draws the Settings view in the central panel, applies what changed and
+/// queues the request that saves it.
+pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+    let t = crate::theme::tokens(ui);
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::new()
+                .fill(t.surface)
+                .inner_margin(egui::Margin::symmetric(24, 20)),
+        )
+        .show(ui, |ui| {
+            let change = app.settings_view.show(ui, &mut app.settings);
+            out.extend(app.apply_change(change, ui.ctx()));
+        });
 }

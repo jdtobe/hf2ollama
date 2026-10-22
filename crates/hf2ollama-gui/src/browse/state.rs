@@ -583,6 +583,7 @@ impl BrowseState {
         self.rebuild_plan();
     }
 
+    #[cfg(test)]
     pub fn machine(&self) -> &Machine {
         &self.machine
     }
@@ -591,7 +592,19 @@ impl BrowseState {
     /// option and the "fits my machine" filter follow. The chosen option and
     /// name edits stay.
     pub fn set_machine(&mut self, machine: Machine) {
+        if self.machine == machine {
+            return;
+        }
         self.machine = machine;
+        self.apply_filters();
+        let (chosen, scroll) = (self.selected_option, self.scroll_frames_left);
+        self.rebuild_plan();
+        let rows = self.plan.as_ref().map_or(0, |p| p.rows.len());
+        if let Some(i) = chosen.filter(|&i| i < rows) {
+            self.selected_option = Some(i);
+        }
+        self.scroll_frames_left = scroll;
+        self.rederive_name();
     }
 
     pub fn select_option(&mut self, idx: usize) {

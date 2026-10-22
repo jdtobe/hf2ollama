@@ -1103,18 +1103,20 @@ mod tests {
         };
         h.tx.send(BackendRequest::ApplySettings(settings.clone()))
             .unwrap();
-        let saved = wait_for(&h.rx, |e| match e {
-            UiEvent::SettingsSaved(r) => Some(r.clone()),
-            _ => None,
+        // The save answer and the first poll of the new address may arrive in
+        // either order.
+        let (mut saved, mut version) = (None, None);
+        wait_for(&h.rx, |e| {
+            match e {
+                UiEvent::SettingsSaved(r) => saved = Some(r.clone()),
+                UiEvent::OllamaStatus(Some(v)) if v == "7.7.7" => version = Some(v.clone()),
+                _ => {}
+            }
+            (saved.is_some() && version.is_some()).then_some(())
         });
-        assert_eq!(saved, Ok(()));
+        assert_eq!(saved, Some(Ok(())));
         assert_eq!(Settings::load(&h.paths.config_file).unwrap(), settings);
-        // The status poll now talks to the new server.
-        let v = wait_for(&h.rx, |e| match e {
-            UiEvent::OllamaStatus(Some(v)) if v == "7.7.7" => Some(v.clone()),
-            _ => None,
-        });
-        assert_eq!(v, "7.7.7");
+        assert_eq!(version.as_deref(), Some("7.7.7"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

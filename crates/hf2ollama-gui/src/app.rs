@@ -4,7 +4,7 @@ use crate::browse::state::BrowseState;
 use crate::dock::jobs::JobsState;
 use crate::dock::{self, DockAction, DockUi};
 use crate::installed::state::{InstalledState, ListStatus};
-use crate::runtime::{BackendRequest, HfTokenStatus, UiEvent};
+use crate::runtime::{BackendRequest, UiEvent};
 use crate::settings::{self, SettingsView};
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::{ellipsize_middle, segmented_nav};
@@ -100,6 +100,9 @@ impl AppState {
 
     pub fn select(&mut self, view: View) {
         self.view = view;
+        if view == View::Settings {
+            self.settings_view.state.on_opened();
+        }
     }
 
     /// Applies what the user changed in the Settings view to the live app
@@ -110,8 +113,43 @@ impl AppState {
         change: settings::state::SettingsChange,
         ctx: &egui::Context,
     ) -> Vec<BackendRequest> {
-        let _ = (change, ctx);
-        Vec::new()
+        if !change.any() {
+            return Vec::new();
+        }
+        let settings = &self.settings;
+        if change.theme {
+            crate::theme::apply_choice(ctx, settings.theme);
+        }
+        if change.auto_dismiss {
+            self.auto_dismiss = settings.auto_dismiss;
+        }
+        if change.delete_after_import {
+            self.delete_after_import = settings.delete_after_import;
+        }
+        if change.staging_dir {
+            self.staging_dir = settings
+                .staging_dir
+                .clone()
+                .unwrap_or_else(|| self.default_staging.clone());
+        }
+        if change.ollama_url {
+            self.ollama_host = host_of(&settings.ollama_url);
+            // Until the poll answers for the new address.
+            self.ollama = None;
+        }
+        if change.hardware {
+            let detected = self.settings_view.state.detected().cloned();
+            let machine = settings.hardware_override.clone().unwrap_or_else(|| {
+                detected.unwrap_or(Machine {
+                    ram_gb: 0.0,
+                    vram_gb: None,
+                })
+            });
+            self.machine = machine.clone();
+            self.browse.set_machine(machine);
+        }
+        self.settings_view.state.note_change(change);
+        vec![BackendRequest::ApplySettings(self.settings.clone())]
     }
 
     /// Folds a backend event into the state; may ask for a follow-up request.
@@ -168,8 +206,28 @@ impl AppState {
                 // A finished import changes what Ollama has installed.
                 matches!(job, JobEvent::Finished { .. }).then_some(BackendRequest::ListInstalled)
             }
-            // Connection tests belong to the Settings view.
-            _ => None,
+            UiEvent::ConnectionTest(r) => {
+                self.settings_view.state.on_connection_test(r);
+                None
+            }
+            UiEvent::SettingsSaved(r) => {
+                self.settings_view.state.on_saved(r, Instant::now());
+                None
+            }
+            UiEvent::HfTokenStatus(status) => {
+                self.settings_view.state.on_token_status(status);
+                None
+            }
+            UiEvent::CachedLoaded(r) => {
+                self.settings_view.state.on_cached_loaded(r);
+                None
+            }
+            UiEvent::CachedCleared(r) => {
+                self.settings_view
+                    .state
+                    .on_cached_cleared(r, Instant::now());
+                None
+            }
         }
     }
 }
@@ -212,6 +270,15 @@ impl App {
         state.staging_dir = staging_dir;
         state.delete_after_import = settings.delete_after_import;
         state.auto_dismiss = settings.auto_dismiss;
+        state.settings = settings.clone();
+        if settings.staging_dir.is_none() {
+            state.default_staging = state.staging_dir.clone();
+        }
+        let detected = settings
+            .hardware_override
+            .is_none()
+            .then(|| machine.clone());
+        state.settings_view = SettingsView::new(settings, state.default_staging.clone(), detected);
         state.browse = BrowseState::new(machine.clone());
         state.machine = machine;
         App { state, tx, rx }
@@ -227,7 +294,14 @@ impl App {
     /// What the Settings view needs besides the settings: where staging goes
     /// by default and what hardware was detected (before any override).
     pub fn set_environment(&mut self, default_staging: PathBuf, detected: Machine) {
-        let _ = (default_staging, detected);
+        let state = &mut self.state;
+        state.staging_dir = state
+            .settings
+            .staging_dir
+            .clone()
+            .unwrap_or_else(|| default_staging.clone());
+        state.default_staging = default_staging.clone();
+        state.settings_view = SettingsView::new(&state.settings, default_staging, Some(detected));
     }
 
     /// Screenshot helper: starts on the given view.
@@ -285,6 +359,14 @@ impl App {
             if let Some(req) = self.state.on_event(&ev) {
                 let _ = self.tx.send(req);
             }
+        }
+        self.flush_settings_requests();
+    }
+
+    /// Sends what the Settings view queued (test connection, token, cached files).
+    fn flush_settings_requests(&mut self) {
+        for req in self.state.settings_view.state.take_requests() {
+            let _ = self.tx.send(req);
         }
     }
 
@@ -456,28 +538,21 @@ impl App {
                 let _ = self.tx.send(r);
             }
         } else {
-            egui::CentralPanel::default()
-                .frame(
-                    egui::Frame::new()
-                        .fill(t.surface)
-                        .inner_margin(Margin::symmetric(24, 20)),
-                )
-                .show(ui, |ui| {
-                    let text = match self.state.view {
-                        View::Browse => "",
-                        View::Installed => "Installed models coming next",
-                        View::Settings => "Settings coming next",
-                    };
-                    ui.heading(self.state.view.label());
-                    ui.label(RichText::new(text).color(t.fg3));
-                });
+            let mut requests = Vec::new();
+            crate::settings::show(ui, &mut self.state, &mut requests);
+            for r in requests {
+                let _ = self.tx.send(r);
+            }
         }
+        // Whatever the nav click or a button queued in the Settings state.
+        self.flush_settings_requests();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::HfTokenStatus;
 
     #[test]
     fn nav_selection_changes_view_state() {
