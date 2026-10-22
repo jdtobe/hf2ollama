@@ -134,6 +134,20 @@ impl InstalledState {
         }
     }
 
+    /// Ollama stopped answering: a list that never loaded becomes an error.
+    pub fn on_unreachable(&mut self) {
+        if self.status != ListStatus::Loaded {
+            self.status = ListStatus::Error("Ollama is not reachable.".to_string());
+        }
+    }
+
+    /// A new read of the list is under way (after an error or a Retry).
+    pub fn begin_load(&mut self) {
+        if matches!(self.status, ListStatus::Error(_)) {
+            self.status = ListStatus::Loading;
+        }
+    }
+
     pub fn rows(&self) -> &[InstalledRow] {
         &self.rows
     }
@@ -414,7 +428,7 @@ pub fn thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

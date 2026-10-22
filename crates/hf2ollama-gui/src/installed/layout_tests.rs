@@ -217,7 +217,12 @@ fn delete_and_details_buttons_are_fully_visible_in_every_row() {
                     "{tag}: delete {:?}",
                     r.delete_btn
                 );
-                assert!(inside(r.details_btn, r.rect), "{tag}: details vs row");
+                assert!(
+                    inside(r.details_btn, r.rect),
+                    "{tag}: details {:?} vs row {:?}",
+                    r.details_btn,
+                    r.rect
+                );
                 assert!(inside(r.delete_btn, r.rect), "{tag}: delete vs row");
                 assert!(
                     r.details_btn.right() < r.delete_btn.left(),
@@ -265,8 +270,12 @@ fn confirm_button_state_keeps_the_row_height_stable() {
                 assert!(
                     (b.delete_btn.width() - a.delete_btn.width()).abs() < 0.5
                         && (b.details_btn.left() - a.details_btn.left()).abs() < 0.5,
-                    "{tag}: buttons of {} resized",
-                    b.name
+                    "{tag}: buttons of {} resized {:?}/{:?} -> {:?}/{:?}",
+                    b.name,
+                    b.details_btn,
+                    b.delete_btn,
+                    a.details_btn,
+                    a.delete_btn
                 );
             }
             // Second click confirms with exactly that name.

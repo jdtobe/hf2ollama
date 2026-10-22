@@ -40,6 +40,7 @@ pub struct AppState {
     /// `None` until the first poll answers; then the version if reachable.
     pub ollama: Option<Option<String>>,
     pub installed: InstalledState,
+    #[cfg(test)]
     pub installed_ui: crate::installed::InstalledUi,
     pub ollama_host: String,
     pub staging_dir: PathBuf,
@@ -66,6 +67,7 @@ impl AppState {
             query: String::new(),
             ollama: None,
             installed: InstalledState::new(),
+            #[cfg(test)]
             installed_ui: Default::default(),
             ollama_host: String::new(),
             staging_dir: PathBuf::new(),
@@ -98,7 +100,26 @@ impl AppState {
                 let became_reachable =
                     v.is_some() && self.ollama.as_ref().is_none_or(|o| o.is_none());
                 self.ollama = Some(v.clone());
+                if v.is_none() {
+                    self.installed.on_unreachable();
+                } else if became_reachable {
+                    self.installed.begin_load();
+                }
                 became_reachable.then_some(BackendRequest::ListInstalled)
+            }
+            UiEvent::InstalledLoaded(r) => {
+                self.installed.on_installed_loaded(r);
+                None
+            }
+            UiEvent::InstalledDetails(name, r) => {
+                self.installed.on_details(name, r);
+                None
+            }
+            UiEvent::DeleteDone(name, r) => {
+                // A deleted model changes what Ollama reports: read it again.
+                self.installed
+                    .on_delete_done(name, r, Instant::now())
+                    .then_some(BackendRequest::ListInstalled)
             }
             UiEvent::SearchDone(q, r) => {
                 self.browse.on_search_done(q, r.clone());
@@ -125,8 +146,7 @@ impl AppState {
                 // A finished import changes what Ollama has installed.
                 matches!(job, JobEvent::Finished { .. }).then_some(BackendRequest::ListInstalled)
             }
-            // Installed and delete events belong to the views that are
-            // built next.
+            // Connection tests belong to the Settings view.
             _ => None,
         }
     }

@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::Notify;
 
-// TODO(task 16 Installed, task 17 Settings): the Installed and Settings
-// views construct the remaining variants.
+// TODO(task 17 Settings): the Settings view constructs TestConnection and
+// ApplySettings.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum BackendRequest {
@@ -34,8 +34,7 @@ pub enum BackendRequest {
     ApplySettings(Settings),
 }
 
-// TODO(task 16 Installed, task 17 Settings): the payloads of Installed*,
-// Delete* and ConnectionTest events are read by those views.
+// TODO(task 17 Settings): the Settings view reads the ConnectionTest payload.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum UiEvent {
