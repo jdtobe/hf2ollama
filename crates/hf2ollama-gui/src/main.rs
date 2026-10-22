@@ -10,8 +10,8 @@ mod theme;
 mod widgets;
 
 use eframe::egui;
-use hf2ollama_core::config::{Settings, ThemeChoice};
-use hf2ollama_core::paths::{OsDirs, Paths};
+use hf2ollama_core::config::ThemeChoice;
+use hf2ollama_core::paths::OsDirs;
 
 /// `HF2O_THEME=light|dark` overrides the saved theme. Only meant for taking
 /// screenshots of both themes; it is not a user-facing setting.
@@ -95,11 +95,19 @@ fn main() -> eframe::Result<()> {
         .ok()
         .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_default();
-    let paths = Paths::resolve(&exe_dir, OsDirs::detect());
-    let settings = Settings::load(&paths.config_file).unwrap_or_else(|e| {
-        eprintln!("could not load settings ({e}); using defaults");
-        Settings::default()
-    });
+    let started = startup::startup(&exe_dir, OsDirs::detect());
+    let startup::Startup {
+        paths,
+        settings,
+        staging_dir,
+        notice,
+    } = started;
+    if let Some(n) = &notice {
+        startup::append_log(&paths.log_dir, n);
+    }
+    // Before any job exists, off the UI thread; it only removes job folders
+    // that carry our marker.
+    startup::spawn_sweep(staging_dir.clone(), paths.log_dir.clone());
     // Probing the GPU is not free: once, then reused for the override.
     let detected = hf2ollama_core::hardware::detect();
     let machine = settings
@@ -107,10 +115,6 @@ fn main() -> eframe::Result<()> {
         .clone()
         .unwrap_or_else(|| detected.clone());
     let default_staging = paths.default_staging.clone();
-    let staging_dir = settings
-        .staging_dir
-        .clone()
-        .unwrap_or_else(|| paths.default_staging.clone());
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -141,6 +145,7 @@ fn main() -> eframe::Result<()> {
             #[cfg(feature = "dev-hooks")]
             app.set_dev_memory_store(dev_store);
             app.set_environment(default_staging, detected);
+            app.set_startup_notice(notice);
             let (query, select) = preset();
             app.preset(query, select);
             if let Some(view) = view_override() {

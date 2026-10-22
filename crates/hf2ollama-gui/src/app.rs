@@ -64,6 +64,8 @@ pub struct AppState {
     pub search_rect: Option<egui::Rect>,
     /// Extent of the status bar contents as last painted (for layout tests).
     pub status_rect: Option<egui::Rect>,
+    /// One-line startup message (e.g. an ignored saved setting).
+    pub startup_notice: Option<String>,
 }
 
 impl AppState {
@@ -95,6 +97,7 @@ impl AppState {
             pill_rect: None,
             search_rect: None,
             status_rect: None,
+            startup_notice: None,
         }
     }
 
@@ -308,6 +311,11 @@ impl App {
         state.settings_view = SettingsView::new(&state.settings, default_staging, Some(detected));
     }
 
+    /// Something startup ignored or fixed; shown in the status bar.
+    pub fn set_startup_notice(&mut self, notice: Option<String>) {
+        self.state.startup_notice = notice;
+    }
+
     /// Dev-hooks runs: the token store is in memory, say so in Settings.
     #[cfg(feature = "dev-hooks")]
     pub fn set_dev_memory_store(&mut self, on: bool) {
@@ -508,14 +516,18 @@ impl App {
                             .x
                     };
                     let small = egui::FontId::proportional(12.0);
-                    let note = "(files deleted after each import)";
+                    let notice = self.state.startup_notice.clone();
+                    let note = notice
+                        .as_deref()
+                        .unwrap_or("(files deleted after each import)");
                     let label_w = measure("Staging folder", small.clone());
                     let path_w = measure(&path, mono(11.5));
                     let note_w = measure(note, small);
                     let room = ui.available_width() - label_w - gap;
                     // The note is the first thing to give way, then the path
                     // loses its middle (the end is the part people look for).
-                    let show_note = self.state.delete_after_import && path_w + gap + note_w <= room;
+                    let show_note = (self.state.delete_after_import || notice.is_some())
+                        && path_w + gap + note_w <= room;
                     let path_room = if show_note { path_w } else { room };
                     let shown = ellipsize_middle(ui, &path, mono(11.5), path_room);
                     ui.label(RichText::new("Staging folder").size(12.0).color(t.fg3));
@@ -524,7 +536,8 @@ impl App {
                         r.on_hover_text(path);
                     }
                     if show_note {
-                        ui.label(RichText::new(note).size(12.0).color(t.fg3));
+                        let color = if notice.is_some() { t.warn } else { t.fg3 };
+                        ui.label(RichText::new(note).size(12.0).color(color));
                     }
                 });
                 self.state.status_rect = Some(row.response.rect);

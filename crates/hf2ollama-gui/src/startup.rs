@@ -127,8 +127,10 @@ mod tests {
     fn a_valid_saved_staging_folder_is_used() {
         let root = tempfile::tempdir().unwrap();
         let p = paths(root.path());
-        let mut s = Settings::default();
-        s.staging_dir = Some(root.path().join("mine"));
+        let s = Settings {
+            staging_dir: Some(root.path().join("mine")),
+            ..Settings::default()
+        };
         let (dir, notice) = effective_staging_dir(&s, &p);
         assert_eq!(dir, root.path().join("mine"));
         assert_eq!(notice, None);
@@ -156,8 +158,10 @@ mod tests {
             PathBuf::from(""),
             abs_parent,
         ] {
-            let mut s = Settings::default();
-            s.staging_dir = Some(bad.clone());
+            let s = Settings {
+                staging_dir: Some(bad.clone()),
+                ..Settings::default()
+            };
             let (dir, notice) = effective_staging_dir(&s, &p);
             assert_eq!(dir, p.default_staging, "{bad:?}");
             assert_eq!(
@@ -208,7 +212,10 @@ mod tests {
         let osd = tempfile::tempdir().unwrap();
         let st = startup(exe.path(), os(osd.path()));
         assert!(!st.paths.portable);
-        assert_eq!(st.paths.config_file, osd.path().join("config/hf2ollama.toml"));
+        assert_eq!(
+            st.paths.config_file,
+            osd.path().join("config/hf2ollama.toml")
+        );
         assert_eq!(st.staging_dir, osd.path().join("cache/staging"));
         assert_eq!(st.paths.log_dir, osd.path().join("state/logs"));
         sweep_staging(&st.staging_dir, &st.paths.log_dir, SystemTime::now());
