@@ -1,0 +1,10 @@
+[package]
+name = "hf2ollama-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.37"
+egui_extras = "0.37"
+hf2ollama-core = { version = "0.1.0", path = "../hf2ollama-core" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
