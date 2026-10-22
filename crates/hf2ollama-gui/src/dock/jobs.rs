@@ -207,8 +207,17 @@ impl JobsState {
     /// Removes settled rows older than `auto`; returns when the next settled
     /// row will be due, or `None` when nothing is waiting.
     pub fn tick(&mut self, now: Instant, auto: AutoDismiss) -> Option<Instant> {
-        let _ = (now, auto);
-        None
+        let limit = auto.duration()?;
+        self.rows.retain(|r| match r.settled_at {
+            Some(at) if r.status.is_settled() => now.saturating_duration_since(at) < limit,
+            _ => true,
+        });
+        self.rows
+            .iter()
+            .filter(|r| r.status.is_settled())
+            .filter_map(|r| r.settled_at)
+            .map(|at| at + limit)
+            .min()
     }
 
     pub fn header_text(&self) -> String {
