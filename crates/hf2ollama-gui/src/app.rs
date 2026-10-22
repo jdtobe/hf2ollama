@@ -202,6 +202,11 @@ impl App {
         &mut self.state
     }
 
+    /// Screenshot helper: starts on the given view.
+    pub fn preset_view(&mut self, view: View) {
+        self.state.view = view;
+    }
+
     /// Screenshot helper: pre-fills the search box and selects a repository.
     pub fn preset(&mut self, query: Option<String>, select: Option<String>) {
         if let Some(q) = query {

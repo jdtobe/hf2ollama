@@ -43,6 +43,17 @@ fn preset() -> (Option<String>, Option<String>) {
     )
 }
 
+/// `HF2O_VIEW=installed|settings|browse` starts on that view. Only meant for
+/// screenshots; inert unless set.
+fn view_override() -> Option<app::View> {
+    match std::env::var("HF2O_VIEW").as_deref() {
+        Ok("installed") => Some(app::View::Installed),
+        Ok("settings") => Some(app::View::Settings),
+        Ok("browse") => Some(app::View::Browse),
+        _ => None,
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -76,6 +87,9 @@ fn main() -> eframe::Result<()> {
             let mut app = app::App::new(&settings, staging_dir, machine, tx, rx);
             let (query, select) = preset();
             app.preset(query, select);
+            if let Some(view) = view_override() {
+                app.preset_view(view);
+            }
             Ok(Box::new(app))
         }),
     )
