@@ -122,6 +122,37 @@ impl InstalledState {
         &self.rows
     }
 
+    /// First click on Delete: the row shows "Confirm delete" for `ARM_WINDOW`.
+    /// Arming another row disarms the first.
+    pub fn arm_delete(&mut self, _name: &str, _now: Instant) {
+        unimplemented!("arm_delete")
+    }
+
+    /// True while `name` shows "Confirm delete".
+    pub fn is_armed(&self, _name: &str, _now: Instant) -> bool {
+        unimplemented!("is_armed")
+    }
+
+    /// Second click on the same row inside the window: the delete to send.
+    pub fn confirm_delete(&mut self, _name: &str, _now: Instant) -> Option<DeleteAction> {
+        unimplemented!("confirm_delete")
+    }
+
+    /// One click on a Delete button: arms, or confirms when already armed.
+    pub fn click_delete(&mut self, _name: &str, _now: Instant) -> Option<DeleteAction> {
+        unimplemented!("click_delete")
+    }
+
+    /// Expires the armed state; returns when the next expiry is due.
+    pub fn tick(&mut self, _now: Instant) -> Option<Instant> {
+        unimplemented!("tick")
+    }
+
+    /// Bytes on disk by source, over every installed model.
+    pub fn usage(&self) -> UsageSplit {
+        unimplemented!("usage")
+    }
+
     /// Rows after the text filter, the source filter and the sort.
     pub fn visible(&self) -> Vec<&InstalledRow> {
         let needle = self.filter_text.trim().to_lowercase();
@@ -392,5 +423,121 @@ mod tests {
             ["alpha:1b", "beta:3b", "Qwen2.5:7b", "llama3:8b"],
             "unparsable dates sort last"
         );
+    }
+
+    // ---- delete arming, usage, source link ----
+
+    #[test]
+    fn first_click_arms_second_click_confirms() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        assert!(s.click_delete("alpha:1b", t0).is_none());
+        assert!(s.is_armed("alpha:1b", t0));
+        let act = s.click_delete("alpha:1b", t0 + Duration::from_secs(2));
+        assert_eq!(
+            act,
+            Some(DeleteAction {
+                name: "alpha:1b".into()
+            })
+        );
+        assert!(!s.is_armed("alpha:1b", t0 + Duration::from_secs(2)));
+        // The confirmation is spent; the next click arms again.
+        assert!(s
+            .click_delete("alpha:1b", t0 + Duration::from_secs(3))
+            .is_none());
+    }
+
+    #[test]
+    fn armed_state_expires_after_4_seconds() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        s.arm_delete("alpha:1b", t0);
+        assert!(s.is_armed("alpha:1b", t0 + Duration::from_millis(3_999)));
+        assert!(!s.is_armed("alpha:1b", t0 + Duration::from_secs(4)));
+        assert_eq!(s.tick(t0), Some(t0 + Duration::from_secs(4)));
+        assert!(s.is_armed("alpha:1b", t0 + Duration::from_millis(3_999)));
+        assert_eq!(s.tick(t0 + Duration::from_millis(3_999)).is_some(), true);
+        assert_eq!(s.tick(t0 + Duration::from_secs(4)), None);
+        assert!(!s.is_armed("alpha:1b", t0));
+        assert!(s
+            .confirm_delete("alpha:1b", t0 + Duration::from_secs(5))
+            .is_none());
+    }
+
+    #[test]
+    fn arming_another_row_disarms_the_first() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        s.arm_delete("alpha:1b", t0);
+        s.arm_delete("beta:3b", t0 + Duration::from_secs(1));
+        assert!(!s.is_armed("alpha:1b", t0 + Duration::from_secs(1)));
+        assert!(s.is_armed("beta:3b", t0 + Duration::from_secs(1)));
+        assert!(s
+            .confirm_delete("alpha:1b", t0 + Duration::from_secs(1))
+            .is_none());
+        assert!(s
+            .confirm_delete("beta:3b", t0 + Duration::from_secs(1))
+            .is_some());
+    }
+
+    #[test]
+    fn click_after_expiry_rearms_instead_of_confirming() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        assert!(s.click_delete("alpha:1b", t0).is_none());
+        let late = t0 + Duration::from_secs(5);
+        assert!(
+            s.click_delete("alpha:1b", late).is_none(),
+            "expired: re-arm"
+        );
+        assert!(s.is_armed("alpha:1b", late));
+        assert!(s
+            .click_delete("alpha:1b", late + Duration::from_secs(1))
+            .is_some());
+    }
+
+    #[test]
+    fn confirm_returns_exact_name_only() {
+        let mut s = sample();
+        let t0 = Instant::now();
+        s.arm_delete("Qwen2.5:7b", t0);
+        assert!(s.confirm_delete("qwen2.5:7b", t0).is_none(), "case differs");
+        assert!(s.confirm_delete("Qwen2.5", t0).is_none(), "prefix differs");
+        assert!(s.confirm_delete("beta:3b", t0).is_none());
+        assert!(s.is_armed("Qwen2.5:7b", t0), "a wrong name does not disarm");
+        assert_eq!(
+            s.confirm_delete("Qwen2.5:7b", t0).map(|a| a.name),
+            Some("Qwen2.5:7b".to_string())
+        );
+        assert!(s.confirm_delete("Qwen2.5:7b", t0).is_none(), "single use");
+    }
+
+    #[test]
+    fn usage_split_sums_by_source() {
+        let s = sample();
+        assert_eq!(
+            s.usage(),
+            UsageSplit {
+                imported: 6_000,
+                library: 10_000
+            }
+        );
+        assert_eq!(InstalledState::new().usage(), UsageSplit::default());
+    }
+
+    #[test]
+    fn source_link_is_huggingface_url_for_imported_only() {
+        let s = sample();
+        let url = |n: &str| {
+            s.rows()
+                .iter()
+                .find(|r| r.name() == n)
+                .and_then(|r| r.source_url())
+        };
+        assert_eq!(
+            url("Qwen2.5:7b"),
+            Some("https://huggingface.co/o/qwen".to_string())
+        );
+        assert_eq!(url("alpha:1b"), None);
     }
 }
