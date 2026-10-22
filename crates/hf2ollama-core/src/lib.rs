@@ -4,6 +4,7 @@ pub mod control;
 pub mod error;
 pub mod events;
 pub mod fit;
+pub mod hardware;
 pub mod hf;
 pub mod history;
 pub mod model;
