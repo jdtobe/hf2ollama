@@ -239,7 +239,8 @@ pub fn options_table(
         let sel = selected == Some(i);
         if sel {
             *selected_rect = Some(row);
-            if scroll_to_selected {
+            // Only when it is out of view, so a short table keeps the header on screen.
+            if scroll_to_selected && !ui.clip_rect().contains_rect(row) {
                 ui.scroll_to_rect(row, Some(egui::Align::Center));
             }
             ui.painter().rect_filled(row, 0.0, t.accent_soft);
