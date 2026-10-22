@@ -586,7 +586,7 @@ impl BrowseState {
     /// True while a scroll request is still running, so the UI keeps
     /// repainting until it has completed.
     pub fn scroll_request_pending(&self) -> bool {
-        false
+        self.scroll_frames_left > 0
     }
 
     /// True when the selected repository loaded but is marked gated.

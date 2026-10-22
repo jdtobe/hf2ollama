@@ -128,7 +128,7 @@ fn now_unix() -> i64 {
 }
 
 /// A bordered message box; `warn` picks the amber palette.
-fn callout(ui: &mut egui::Ui, warn: bool, text: &str) {
+fn callout(ui: &mut egui::Ui, warn: bool, text: &str) -> Rect {
     let t = tokens(ui);
     let (fill, stroke) = if warn {
         (t.warn_soft, t.warn)
@@ -143,7 +143,9 @@ fn callout(ui: &mut egui::Ui, warn: bool, text: &str) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new(text).size(13.0).color(t.fg));
-        });
+        })
+        .response
+        .rect
 }
 
 const TABLE_PAD: f32 = 14.0;
@@ -416,16 +418,23 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 );
                 return;
             };
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let info = app.browse.info_for(&id).cloned();
+            header(
+                ui,
+                &id,
+                info.as_ref().and_then(|r| r.as_ref().ok()).map(|i| &**i),
+            );
+            #[cfg(test)]
+            {
+                app.browse.probe.pane = Some(ui.max_rect());
+                app.browse.probe.notices.clear();
+            }
+            notices(ui, app, &id, info.as_ref());
             let scroll = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
-                    let info = app.browse.info_for(&id).cloned();
-                    header(
-                        ui,
-                        &id,
-                        info.as_ref().and_then(|r| r.as_ref().ok()).map(|i| &**i),
-                    );
                     match info {
                         None => {
                             ui.horizontal(|ui| {
@@ -433,17 +442,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                                 ui.label(RichText::new("Loading the file list…").color(t.fg3));
                             });
                         }
-                        Some(Err(e)) => {
-                            let text = if is_gated_error(&e) {
-                                GATED_MESSAGE.to_string()
-                            } else {
-                                crate::browse::state::friendly_error(&e)
-                            };
-                            callout(ui, true, &text);
-                            if small_button(ui, "Retry") {
-                                app.browse.retry_info(&id);
-                            }
-                        }
+                        Some(Err(_)) => {}
                         Some(Ok(info)) => ready(ui, app, &info),
                     }
                 });
@@ -455,6 +454,75 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
             #[cfg(not(test))]
             let _ = scroll;
         });
+}
+
+/// Messages that carry the key instruction for a state (gated repo, token
+/// error, unsupported reason). They sit above the scroll area so no scroll
+/// can hide them; the region is bounded so the scroll area keeps room.
+fn notices(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    id: &str,
+    info: Option<&Result<std::sync::Arc<ModelInfo>, String>>,
+) {
+    let unsupported = match app.browse.plan().map(|p| &p.kind) {
+        Some(PlanKind::Unsupported(reason)) => Some(reason.clone()),
+        _ => None,
+    };
+    let has_notice = match info {
+        Some(Err(_)) => true,
+        Some(Ok(_)) => app.browse.selected_info_gated() || unsupported.is_some(),
+        None => false,
+    };
+    if !has_notice {
+        return;
+    }
+    let max_h = (ui.available_height() - MIN_SCROLL_H).max(60.0);
+    egui::ScrollArea::vertical()
+        .id_salt("notices")
+        .max_height(max_h)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let mut shown = Vec::new();
+            match info {
+                Some(Err(e)) => {
+                    let text = if is_gated_error(e) {
+                        GATED_MESSAGE.to_string()
+                    } else {
+                        crate::browse::state::friendly_error(e)
+                    };
+                    shown.push(callout(ui, true, &text));
+                    if small_button(ui, "Retry") {
+                        app.browse.retry_info(id);
+                    }
+                }
+                Some(Ok(_)) => {
+                    if app.browse.selected_info_gated() {
+                        shown.push(callout(ui, true, GATED_REPO_WARNING));
+                        ui.hyperlink_to(
+                            RichText::new("Open on huggingface.co ↗").size(12.0),
+                            format!("https://huggingface.co/{id}"),
+                        );
+                    }
+                    if let Some(reason) = &unsupported {
+                        shown.push(callout(
+                            ui,
+                            true,
+                            &format!("Ollama cannot import this repository. {reason}"),
+                        ));
+                    }
+                }
+                None => {}
+            }
+            #[cfg(test)]
+            {
+                app.browse.probe.notices = shown;
+            }
+            #[cfg(not(test))]
+            let _ = shown;
+        });
+    ui.add_space(6.0);
 }
 
 fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
@@ -480,14 +548,6 @@ fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
 }
 
 fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
-    if app.browse.selected_info_gated() {
-        callout(ui, true, GATED_REPO_WARNING);
-        ui.hyperlink_to(
-            RichText::new("Open on huggingface.co ↗").size(12.0),
-            format!("https://huggingface.co/{}", info.id),
-        );
-        ui.add_space(6.0);
-    }
     meta_strip(ui, &metadata(info));
     ui.add_space(12.0);
 
@@ -496,6 +556,10 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
     };
     let selected = app.browse.selected_option();
     let scroll = app.browse.take_scroll_request();
+    if app.browse.scroll_request_pending() {
+        // The request counts frames; keep frames coming until it is done.
+        ui.ctx().request_repaint();
+    }
     let mut selected_rect = None;
     let mut clicked = None;
     match &plan.kind {
@@ -534,12 +598,7 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
             );
         }
         PlanKind::Unsupported(reason) => {
-            callout(
-                ui,
-                true,
-                &format!("Ollama cannot import this repository. {reason}"),
-            );
-            ui.add_space(6.0);
+            let _ = reason;
             related(ui, app);
         }
     }
@@ -804,7 +863,8 @@ mod tests {
                 egui::Event::PointerMoved(egui::pos2(700.0, 500.0)),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
-                    delta: vec2(0.0, 600.0),
+                    // Content moves down (scrolls up) when we are scrolled, else up.
+                    delta: vec2(0.0, if start > 5.0 { 600.0 } else { -600.0 }),
                     modifiers: egui::Modifiers::NONE,
                     phase: egui::TouchPhase::Move,
                     source: egui::MouseWheelSource::Wheel,
