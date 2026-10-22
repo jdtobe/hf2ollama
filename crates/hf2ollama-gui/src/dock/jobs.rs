@@ -68,6 +68,11 @@ impl JobRow {
         (self.done as f64 / self.total as f64).clamp(0.0, 1.0) as f32
     }
 
+    /// Status column text, e.g. `Downloading 42%` or `Ready in Ollama`.
+    pub fn status_text(&self) -> String {
+        String::new()
+    }
+
     fn settle(&mut self, status: RowStatus, now: Instant) {
         if self.status.is_settled() {
             return;
@@ -559,5 +564,41 @@ mod tests {
             s.tick(now + Duration::from_secs(95), AutoDismiss::OneMinute),
             None
         );
+    }
+
+    #[test]
+    fn status_text_covers_every_state() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        s.apply(&progress(1, 420, 1000), now);
+        assert_eq!(row(&s, 1).status_text(), "Downloading 42%");
+        s.apply(&JobEvent::Paused { id: id(1) }, now);
+        assert_eq!(row(&s, 1).status_text(), "Paused 42%");
+        s.apply(&JobEvent::Resumed { id: id(1) }, now);
+        for (st, want) in [
+            (Stage::Verifying, "Verifying"),
+            (Stage::Uploading, "Uploading"),
+            (Stage::Creating, "Creating"),
+            (Stage::CleaningUp, "Cleaning up"),
+        ] {
+            s.apply(&stage(1, st), now);
+            assert_eq!(row(&s, 1).status_text(), want);
+        }
+        s.apply(&JobEvent::Finished { id: id(1) }, now);
+        assert_eq!(row(&s, 1).status_text(), "Ready in Ollama");
+        s.apply(&stage(2, Stage::Queued), now);
+        assert_eq!(row(&s, 2).status_text(), "Queued");
+        s.apply(
+            &JobEvent::Failed {
+                id: id(2),
+                error: "x".into(),
+            },
+            now,
+        );
+        assert_eq!(row(&s, 2).status_text(), "Failed");
+        s.apply(&stage(3, Stage::Queued), now);
+        s.apply(&JobEvent::Cancelled { id: id(3) }, now);
+        assert_eq!(row(&s, 3).status_text(), "Cancelled");
     }
 }

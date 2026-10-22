@@ -439,7 +439,7 @@ fn metadata(info: &ModelInfo) -> Vec<(&'static str, String)> {
 
 /// Smallest height the scrolling part of the pane keeps at any window size
 /// the app allows (see `MIN_WINDOW` in main.rs).
-const MIN_SCROLL_H: f32 = 160.0;
+pub(crate) const MIN_SCROLL_H: f32 = 160.0;
 /// Vertical margins of the detail pane (top plus bottom).
 const PANE_MARGIN_V: f32 = 28.0;
 /// Space between the header, the notices and the scroll area.

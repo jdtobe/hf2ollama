@@ -31,8 +31,8 @@ pub enum BackendRequest {
     ApplySettings(Settings),
 }
 
-// TODO(task 15 dock, task 16 Installed, task 17 Settings): the payloads of
-// Job, Installed*, Delete* and ConnectionTest events are read by those views.
+// TODO(task 16 Installed, task 17 Settings): the payloads of Installed*,
+// Delete* and ConnectionTest events are read by those views.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum UiEvent {

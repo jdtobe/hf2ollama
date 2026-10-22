@@ -1,14 +1,18 @@
 //! Application shell: top bar, downloads dock, status bar and view bodies.
 
 use crate::browse::state::BrowseState;
+use crate::dock::jobs::JobsState;
+use crate::dock::{self, DockAction, DockUi};
 use crate::runtime::{BackendRequest, UiEvent};
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::segmented_nav;
 use eframe::egui::{self, vec2, Color32, Margin, RichText, Sense, Stroke};
-use hf2ollama_core::config::Settings;
+use hf2ollama_core::config::{AutoDismiss, Settings};
+use hf2ollama_core::events::Command;
 use hf2ollama_core::fit::Machine;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -41,6 +45,10 @@ pub struct AppState {
     /// Detected or overridden once at startup; NVML probing is not free.
     pub machine: Machine,
     pub browse: BrowseState,
+    pub jobs: JobsState,
+    pub dock: DockUi,
+    /// Current auto-dismiss setting; applies to rows already settled.
+    pub auto_dismiss: AutoDismiss,
     /// Where the status pill was last painted (for layout tests).
     pub pill_rect: Option<egui::Rect>,
     /// Where the search field was last painted; `None` when hidden for lack of room.
@@ -65,6 +73,9 @@ impl AppState {
                 ram_gb: 0.0,
                 vram_gb: None,
             }),
+            jobs: JobsState::new(),
+            dock: DockUi::default(),
+            auto_dismiss: AutoDismiss::Never,
             pill_rect: None,
             search_rect: None,
         }
@@ -95,7 +106,7 @@ impl AppState {
                 self.browse.on_model_info(id, r.clone());
                 None
             }
-            // Job, installed and delete events belong to the views that are
+            // Installed and delete events belong to the views that are
             // built next.
             _ => None,
         }
@@ -139,6 +150,7 @@ impl App {
         state.ollama_host = host_of(&settings.ollama_url);
         state.staging_dir = staging_dir;
         state.delete_after_import = settings.delete_after_import;
+        state.auto_dismiss = settings.auto_dismiss;
         state.browse = BrowseState::new(machine.clone());
         state.machine = machine;
         App { state, tx, rx }
@@ -163,7 +175,7 @@ impl App {
 }
 
 /// Red for the "not reachable" dot; the spec palette has no error token.
-fn bad(dark: bool) -> Color32 {
+pub(crate) fn bad(dark: bool) -> Color32 {
     if dark {
         Color32::from_rgb(0xf2, 0x76, 0x6b)
     } else {
@@ -171,7 +183,7 @@ fn bad(dark: bool) -> Color32 {
     }
 }
 
-fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui::Frame {
+pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui::Frame {
     egui::Frame::new()
         .fill(fill)
         .inner_margin(margin)
@@ -179,11 +191,16 @@ fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui::Frame {
 }
 
 impl eframe::App for App {
-    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(ev) = self.rx.try_recv() {
             if let Some(req) = self.state.on_event(&ev) {
                 let _ = self.tx.send(req);
             }
+        }
+        // Wake up again only when a settled row is waiting for its deadline.
+        let now = Instant::now();
+        if let Some(due) = self.state.jobs.tick(now, self.state.auto_dismiss) {
+            ctx.request_repaint_after(due.saturating_duration_since(now));
         }
     }
 
@@ -193,6 +210,26 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn apply_dock_action(&mut self, action: DockAction) {
+        let command = |c: Command| BackendRequest::Core(c);
+        match action {
+            DockAction::Pause(id) => {
+                let _ = self.tx.send(command(Command::Pause(id)));
+            }
+            DockAction::Resume(id) => {
+                let _ = self.tx.send(command(Command::Resume(id)));
+            }
+            DockAction::Cancel(id) => {
+                let _ = self.tx.send(command(Command::Cancel(id)));
+            }
+            DockAction::Dismiss(id) => {
+                self.state.jobs.dismiss(id);
+                self.state.dock.open_logs.remove(&id);
+            }
+            DockAction::ClearFinished => self.state.jobs.clear_finished(),
+        }
+    }
+
     /// The whole window; separate from `eframe::App::ui` so tests can run it headless.
     pub(crate) fn show(&mut self, ui: &mut egui::Ui) {
         let t = tokens(ui);
@@ -307,18 +344,10 @@ impl App {
                 });
             });
 
-        egui::Panel::bottom("dock")
-            .frame(panel_frame(t.surface2, t.line, Margin::symmetric(16, 10)))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Downloads & imports").size(12.0).color(t.fg3));
-                    ui.label(
-                        RichText::new("Nothing running. Pick a model above to start.")
-                            .size(13.0)
-                            .color(t.fg3),
-                    );
-                });
-            });
+        let actions = dock::show(ui, &self.state.jobs, &mut self.state.dock);
+        for action in actions {
+            self.apply_dock_action(action);
+        }
 
         if self.state.view == View::Browse {
             let mut requests = Vec::new();
@@ -349,6 +378,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hf2ollama_core::events::JobEvent;
 
     #[test]
     fn nav_selection_changes_view_state() {
@@ -491,5 +521,124 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- dock wiring ----
+
+    fn app_with_channels() -> (
+        App,
+        std::sync::mpsc::Receiver<BackendRequest>,
+        std::sync::mpsc::Sender<UiEvent>,
+    ) {
+        let (tx, req_rx) = std::sync::mpsc::channel();
+        let (ev_tx, rx) = std::sync::mpsc::channel();
+        let app = App::new(
+            &Settings::default(),
+            PathBuf::from("/tmp/staging"),
+            Machine {
+                ram_gb: 16.0,
+                vram_gb: None,
+            },
+            tx,
+            rx,
+        );
+        (app, req_rx, ev_tx)
+    }
+
+    #[test]
+    fn job_events_fold_into_the_dock_state() {
+        use crate::dock::jobs::RowStatus;
+        use hf2ollama_core::events::{JobId, Stage};
+        let mut s = AppState::new();
+        let id = JobId(4);
+        let accepted = UiEvent::JobAccepted {
+            id,
+            model_name: "qwen:q4".into(),
+            total_bytes: 900,
+        };
+        assert!(s.on_event(&accepted).is_none());
+        let stage = UiEvent::Job(JobEvent::Stage {
+            id,
+            stage: Stage::Downloading,
+        });
+        assert!(s.on_event(&stage).is_none());
+        let row = &s.jobs.rows()[0];
+        assert_eq!((row.name.as_str(), row.total), ("qwen:q4", 900));
+        assert_eq!(row.status, RowStatus::Running);
+    }
+
+    #[test]
+    fn finished_job_asks_the_backend_for_the_installed_list() {
+        use hf2ollama_core::events::JobId;
+        let mut s = AppState::new();
+        let fin = UiEvent::Job(JobEvent::Finished { id: JobId(1) });
+        assert!(matches!(
+            s.on_event(&fin),
+            Some(BackendRequest::ListInstalled)
+        ));
+        let failed = UiEvent::Job(JobEvent::Failed {
+            id: JobId(2),
+            error: "x".into(),
+        });
+        assert!(s.on_event(&failed).is_none());
+    }
+
+    #[test]
+    fn dock_actions_send_core_commands_and_dismiss_locally() {
+        use hf2ollama_core::events::{JobId, Stage};
+        let (mut app, reqs, _) = app_with_channels();
+        let id = JobId(9);
+        let now = Instant::now();
+        app.state.jobs.accept(id, "m:q4".into(), 10);
+        app.state.jobs.apply(
+            &JobEvent::Stage {
+                id,
+                stage: Stage::Downloading,
+            },
+            now,
+        );
+        app.state.dock.open_logs.insert(id);
+        app.apply_dock_action(DockAction::Pause(id));
+        app.apply_dock_action(DockAction::Resume(id));
+        app.apply_dock_action(DockAction::Cancel(id));
+        let sent: Vec<_> = reqs.try_iter().collect();
+        assert!(matches!(
+            sent.as_slice(),
+            [
+                BackendRequest::Core(Command::Pause(a)),
+                BackendRequest::Core(Command::Resume(b)),
+                BackendRequest::Core(Command::Cancel(c)),
+            ] if *a == id && *b == id && *c == id
+        ));
+        assert_eq!(
+            app.state.jobs.rows().len(),
+            1,
+            "commands do not remove rows"
+        );
+        app.apply_dock_action(DockAction::Dismiss(id));
+        assert!(app.state.jobs.rows().is_empty());
+        assert!(app.state.dock.open_logs.is_empty());
+        assert!(reqs.try_recv().is_err(), "dismiss is local");
+    }
+
+    #[test]
+    fn auto_dismiss_setting_comes_from_settings() {
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, rx) = std::sync::mpsc::channel();
+        let settings = Settings {
+            auto_dismiss: AutoDismiss::FiveMinutes,
+            ..Settings::default()
+        };
+        let app = App::new(
+            &settings,
+            PathBuf::from("/tmp/staging"),
+            Machine {
+                ram_gb: 16.0,
+                vram_gb: None,
+            },
+            tx,
+            rx,
+        );
+        assert_eq!(app.state.auto_dismiss, AutoDismiss::FiveMinutes);
     }
 }
