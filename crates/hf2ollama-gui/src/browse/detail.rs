@@ -443,12 +443,16 @@ fn metadata(info: &ModelInfo) -> Vec<(&'static str, String)> {
 }
 
 /// Smallest height the scrolling part of the pane keeps at any window size
-/// the app allows (see `MIN_WINDOW` in main.rs).
-pub(crate) const MIN_SCROLL_H: f32 = 160.0;
+/// the app allows (see `MIN_WINDOW` in main.rs). The `Files | About` switch
+/// is pinned above it (it used to scroll, so this was 160 with the switch
+/// inside it).
+pub(crate) const MIN_SCROLL_H: f32 = 120.0;
 /// Vertical margins of the detail pane (top plus bottom).
 const PANE_MARGIN_V: f32 = 28.0;
 /// Space between the header, the notices and the scroll area.
 const GAP: f32 = 6.0;
+/// Height the pinned `Files | About` switch takes, with its spacing.
+const TAB_SWITCH_H: f32 = 40.0;
 /// What the header needs before it has been measured once.
 const DEFAULT_HEADER_H: f32 = 90.0;
 /// Smallest the pinned card may get: caption, name field and button.
@@ -524,7 +528,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 app.browse.probe.pane = Some(ui.max_rect());
                 app.browse.probe.notices.clear();
             }
-            let notices_used = notices(ui, app, &id, info.as_ref());
+            let mut notices_used = notices(ui, app, &id, info.as_ref());
+            if matches!(info, Some(Ok(_))) {
+                notices_used += tab_switch(ui, app);
+            }
             let now = (measured_header_h, notices_used);
             if (now.0 - header_h).abs() > 0.5 || (now.1 - notices_h).abs() > 0.5 {
                 ui.ctx().data_mut(|d| d.insert_temp(budget_id, now));
@@ -612,7 +619,12 @@ fn notices(
     if retry {
         natural += GAP + 32.0;
     }
-    let cap = (ui.available_height() - GAP - MIN_SCROLL_H).max(0.0);
+    let switch_h = if matches!(info, Some(Ok(_))) {
+        TAB_SWITCH_H
+    } else {
+        0.0
+    };
+    let cap = (ui.available_height() - GAP - MIN_SCROLL_H - switch_h).max(0.0);
     let max_h = (natural + 2.0).min(cap);
     let region = egui::ScrollArea::vertical()
         .id_salt("notices")
@@ -698,18 +710,10 @@ fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
     ui.add_space(2.0);
 }
 
-fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
-    #[cfg(test)]
-    let strip_top = ui.cursor().top();
-    meta_strip(ui, &metadata(info));
-    #[cfg(test)]
-    {
-        app.browse.probe.meta_strip = Some(Rect::from_min_max(
-            egui::pos2(ui.max_rect().left(), strip_top),
-            egui::pos2(ui.max_rect().right(), ui.cursor().top()),
-        ));
-    }
-    ui.add_space(10.0);
+/// The `Files | About` switch. It sits above the scroll area, so it never
+/// scrolls away and a tab change cannot move it. Returns the height used.
+fn tab_switch(ui: &mut egui::Ui, app: &mut AppState) -> f32 {
+    let top = ui.cursor().top();
     let tab = app.browse.tab();
     let switch = ui.scope(|ui| {
         segmented_nav(
@@ -736,7 +740,22 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
             ui.ctx().request_repaint();
         }
     }
+    ui.cursor().top() - top
+}
+
+fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
+    #[cfg(test)]
+    let strip_top = ui.cursor().top();
+    meta_strip(ui, &metadata(info));
+    #[cfg(test)]
+    {
+        app.browse.probe.meta_strip = Some(Rect::from_min_max(
+            egui::pos2(ui.max_rect().left(), strip_top),
+            egui::pos2(ui.max_rect().right(), ui.cursor().top()),
+        ));
+    }
     ui.add_space(12.0);
+    let tab = app.browse.tab();
     if tab == DetailTab::About {
         about::show(ui, app, info, &info.id);
         return;

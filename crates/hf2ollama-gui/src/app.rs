@@ -279,6 +279,8 @@ pub fn pill_size(text_width: f32) -> egui::Vec2 {
 const SEARCH_PILL_GAP: f32 = 16.0;
 /// Narrowest useful search field; below this the field is hidden.
 const SEARCH_MIN_W: f32 = 120.0;
+/// Side of the clear (✕) button inside the search field.
+const CLEAR_SIZE: f32 = 18.0;
 const PILL_PAD_X: f32 = 10.0;
 const PILL_DOT: f32 = 8.0;
 const PILL_GAP: f32 = 6.0;
@@ -501,18 +503,64 @@ impl App {
                         let room = ui.available_width() - pill_w - SEARCH_PILL_GAP - 8.0;
                         let field_w = room.min(360.0);
                         if field_w >= SEARCH_MIN_W {
+                            let has_text = !self.state.query.is_empty();
                             let r = ui.add_sized(
                                 vec2(field_w, 32.0),
                                 egui::TextEdit::singleline(&mut self.state.query)
                                     .hint_text("Search Hugging Face models")
-                                    .margin(Margin::symmetric(10, 7)),
+                                    .margin(Margin {
+                                        left: 10,
+                                        right: if has_text { 10 + CLEAR_SIZE as i8 } else { 10 },
+                                        top: 7,
+                                        bottom: 7,
+                                    }),
                             );
                             self.state.search_rect = Some(r.rect);
+                            self.state.search_clear_rect = None;
+                            if has_text {
+                                let rect = egui::Rect::from_center_size(
+                                    egui::pos2(
+                                        r.rect.right() - 6.0 - CLEAR_SIZE / 2.0,
+                                        r.rect.center().y,
+                                    ),
+                                    vec2(CLEAR_SIZE, CLEAR_SIZE),
+                                );
+                                self.state.search_clear_rect = Some(rect);
+                                let hit = ui
+                                    .interact(rect, r.id.with("clear"), Sense::click())
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text("Clear search");
+                                let fg = if hit.hovered() { t.fg } else { t.fg3 };
+                                if hit.hovered() {
+                                    ui.painter().circle_filled(
+                                        rect.center(),
+                                        CLEAR_SIZE / 2.0,
+                                        t.surface2,
+                                    );
+                                }
+                                let c = rect.center();
+                                let arm = 3.5;
+                                let stroke = Stroke::new(1.5, fg);
+                                ui.painter().line_segment(
+                                    [c + vec2(-arm, -arm), c + vec2(arm, arm)],
+                                    stroke,
+                                );
+                                ui.painter().line_segment(
+                                    [c + vec2(-arm, arm), c + vec2(arm, -arm)],
+                                    stroke,
+                                );
+                                if hit.clicked() {
+                                    self.state.query.clear();
+                                    r.request_focus();
+                                }
+                            }
                         } else {
                             self.state.search_rect = None;
+                            self.state.search_clear_rect = None;
                         }
                     } else {
                         self.state.search_rect = None;
+                        self.state.search_clear_rect = None;
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -785,7 +833,7 @@ mod tests {
         );
         app.state.ollama = Some(None);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1180.0, 820.0));
-        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
             let input = egui::RawInput {
                 screen_rect: Some(screen),
                 events,

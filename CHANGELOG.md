@@ -10,6 +10,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### Added
 
+- A clear (✕) button in the Browse search field.
 - Workspace with two crates: `hf2ollama-core` (library, no UI dependencies) and `hf2ollama-gui` (egui binary).
 - Core library: shared event and command types, with a channel roundtrip test.
 - Core library: Hugging Face search and model metadata (per-file sizes and SHA-256 for LFS files, GGUF metadata), with the access token redacted from `Debug` output.
@@ -49,6 +50,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - An unreadable settings file is renamed to `hf2ollama.toml.bak` before defaults are used (logged in `startup.log` and shown in the status bar).
 - The typed Hugging Face token and its undo history are wiped when leaving Settings and after Save or Clear.
 - Sweeping and clearing the staging folder continue past a folder that cannot be removed and report it.
+
+### Fixed
+
+- The Files and About tabs were stacked on top of each other and scrolled away with the page. They are now one row, pinned above the scrolling area, and no longer change width when selected.
 
 ### Changed
 

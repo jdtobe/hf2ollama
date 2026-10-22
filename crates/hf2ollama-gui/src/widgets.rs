@@ -189,52 +189,62 @@ pub fn segmented_nav(
         .corner_radius(8.0)
         .inner_margin(2.0)
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for (i, name) in labels.iter().enumerate() {
-                let on = i == selected;
-                let font = if on {
-                    semibold(14.0)
-                } else {
-                    FontId::proportional(14.0)
-                };
-                let color = if on { t.fg } else { t.fg2 };
-                let galley = ui.painter().layout_no_wrap((*name).into(), font, color);
-                let badge = badges
-                    .get(i)
-                    .and_then(|b| b.as_deref())
-                    .map(|b| ui.painter().layout_no_wrap(b.into(), mono(11.0), t.fg2));
-                let badge_w = badge.as_ref().map_or(0.0, |g| g.size().x + 14.0);
-                let (rect, resp) = ui.allocate_exact_size(
-                    vec2(galley.size().x + 26.0 + badge_w, 28.0),
-                    Sense::click(),
-                );
-                if on {
-                    ui.painter().rect_filled(rect, 6.0, t.surface);
-                    ui.painter().rect_stroke(
-                        rect,
-                        6.0,
-                        Stroke::new(1.0, t.line),
-                        StrokeKind::Inside,
+            // Always one row, whatever layout the caller is in.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (i, name) in labels.iter().enumerate() {
+                    let on = i == selected;
+                    let font = if on {
+                        semibold(14.0)
+                    } else {
+                        FontId::proportional(14.0)
+                    };
+                    let color = if on { t.fg } else { t.fg2 };
+                    let galley = ui.painter().layout_no_wrap((*name).into(), font, color);
+                    // Size by the bolder face so selecting a segment never resizes it.
+                    let widest = ui
+                        .painter()
+                        .layout_no_wrap((*name).into(), semibold(14.0), color)
+                        .size()
+                        .x
+                        .max(galley.size().x);
+                    let badge = badges
+                        .get(i)
+                        .and_then(|b| b.as_deref())
+                        .map(|b| ui.painter().layout_no_wrap(b.into(), mono(11.0), t.fg2));
+                    let badge_w = badge.as_ref().map_or(0.0, |g| g.size().x + 14.0);
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(widest + 26.0 + badge_w, 28.0), Sense::click());
+                    if on {
+                        ui.painter().rect_filled(rect, 6.0, t.surface);
+                        ui.painter().rect_stroke(
+                            rect,
+                            6.0,
+                            Stroke::new(1.0, t.line),
+                            StrokeKind::Inside,
+                        );
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(rect, 6.0, t.surface);
+                    }
+                    let text_pos = egui::pos2(
+                        rect.min.x + 13.0 + (widest - galley.size().x) / 2.0,
+                        rect.center().y - galley.size().y / 2.0,
                     );
-                } else if resp.hovered() {
-                    ui.painter().rect_filled(rect, 6.0, t.surface);
+                    let text_right = text_pos.x + galley.size().x;
+                    ui.painter().galley(text_pos, galley, color);
+                    if let Some(g) = badge {
+                        let r = egui::Rect::from_min_size(
+                            egui::pos2(text_right + 6.0, rect.center().y - 9.0),
+                            vec2(g.size().x + 10.0, 18.0),
+                        );
+                        ui.painter().rect_filled(r, CornerRadius::same(9), t.line);
+                        ui.painter().galley(r.center() - g.size() / 2.0, g, t.fg2);
+                    }
+                    if resp.clicked() {
+                        clicked = Some(i);
+                    }
                 }
-                let text_pos =
-                    egui::pos2(rect.min.x + 13.0, rect.center().y - galley.size().y / 2.0);
-                let text_right = text_pos.x + galley.size().x;
-                ui.painter().galley(text_pos, galley, color);
-                if let Some(g) = badge {
-                    let r = egui::Rect::from_min_size(
-                        egui::pos2(text_right + 6.0, rect.center().y - 9.0),
-                        vec2(g.size().x + 10.0, 18.0),
-                    );
-                    ui.painter().rect_filled(r, CornerRadius::same(9), t.line);
-                    ui.painter().galley(r.center() - g.size() / 2.0, g, t.fg2);
-                }
-                if resp.clicked() {
-                    clicked = Some(i);
-                }
-            }
+            });
         });
     clicked
 }

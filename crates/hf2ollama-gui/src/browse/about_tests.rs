@@ -214,6 +214,11 @@ fn chips_do_not_repeat_the_pipeline_tag() {
 
 // ---- switch and states ----
 
+/// Equal to within a pixel (layout settles in sub-pixel steps).
+fn same_place(a: Rect, b: Rect) -> bool {
+    (a.min - b.min).abs().max_elem() < 1.0 && (a.max - b.max).abs().max_elem() < 1.0
+}
+
 #[test]
 fn switch_is_pinned_above_the_scroll_area_and_never_moves() {
     for size in SIZES {
@@ -225,16 +230,26 @@ fn switch_is_pinned_above_the_scroll_area_and_never_moves() {
             let first = app.state_mut().browse.probe.switch.expect("switch");
             let view = pane_viewport(&mut app);
             assert!(
+                first.height() < 40.0 && first.width() > first.height() * 2.0,
+                "{size:?} dark={dark}: tabs are not one row: {first:?}"
+            );
+            assert!(
                 first.bottom() <= view.top() + 0.5,
                 "{size:?} dark={dark}: switch {first:?} overlaps the scroll area {view:?}"
             );
             scroll_by(&mut app, &mut h, size, -500.0);
             let scrolled = app.state_mut().browse.probe.switch.expect("switch");
-            assert_eq!(first, scrolled, "{size:?} dark={dark}: moved on scroll");
+            assert!(
+                same_place(first, scrolled),
+                "{size:?} dark={dark}: moved on scroll"
+            );
             app.state_mut().browse.set_tab(DetailTab::Files);
             run(&mut app, &mut h, size, 6);
             let files = app.state_mut().browse.probe.switch.expect("switch");
-            assert_eq!(first, files, "{size:?} dark={dark}: moved on tab change");
+            assert!(
+                same_place(first, files),
+                "{size:?} dark={dark}: moved on tab change"
+            );
         }
     }
 }
@@ -251,7 +266,10 @@ fn clicking_the_pinned_switch_changes_tab_without_moving_it() {
             click(&mut app, &mut h, size, about);
             assert_eq!(app.state_mut().browse.tab(), DetailTab::About);
             let after = app.state_mut().browse.probe.switch.expect("switch");
-            assert_eq!(sw, after, "{size:?} dark={dark}");
+            assert!(
+                same_place(sw, after),
+                "{size:?} dark={dark}: {sw:?} {after:?}"
+            );
             let files = Pos2::new(sw.left() + 20.0, sw.center().y);
             click(&mut app, &mut h, size, files);
             assert_eq!(app.state_mut().browse.tab(), DetailTab::Files);
