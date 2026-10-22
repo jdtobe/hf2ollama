@@ -9,8 +9,20 @@
 //!   cargo test -p hf2ollama-core --test e2e_real_ollama -- --ignored --test-threads=1
 //! ```
 //!
-//! The tests create and delete models named `hf2o-e2e-*` only. As a guard they
-//! refuse Ollama's default port (11434) unless `HF2OLLAMA_E2E_ALLOW_DEFAULT=1`.
+//! Safety rules, all checked by `e2e_environment()` before any test touches
+//! Ollama (a test that fails a rule prints why and skips):
+//!
+//! - the URL is http(s) on a loopback host (`HF2OLLAMA_E2E_ALLOW_REMOTE=1`
+//!   allows another host);
+//! - the port is not 11434 (`HF2OLLAMA_E2E_CONFIRM_DISPOSABLE=1` allows it);
+//! - `/api/tags` shows the server is empty or holds only `hf2o-e2e-*` models.
+//!   There is no override for this rule.
+//!
+//! Tests create and delete models named `hf2o-e2e-*` only; every delete goes
+//! through `delete_e2e_model`, which panics on any other name. An `E2eCleanup`
+//! guard deletes a test's models even when an assertion fails.
+//! `HF2OLLAMA_E2E_FORCE_FAIL=1` makes the GGUF import test fail on purpose to
+//! show that cleanup (the server should be empty afterwards).
 
 use hf2ollama_core::compat::{bundled_supported, classify, Compat};
 use hf2ollama_core::config::Settings;
@@ -37,19 +49,155 @@ const E2E_PREFIX: &str = "hf2o-e2e-";
 /// Accepts loopback http(s) URLs whose port is not Ollama's default 11434.
 /// `allow_remote` also accepts other hosts.
 fn url_is_acceptable(url: &str, allow_remote: bool) -> Result<(), String> {
-    let _ = (url, allow_remote);
+    url_is_acceptable_with(url, allow_remote, false)
+}
+
+/// As [`url_is_acceptable`], with an explicit opt-in for port 11434.
+fn url_is_acceptable_with(
+    url: &str,
+    allow_remote: bool,
+    allow_default_port: bool,
+) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("not a valid URL ({e})"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("the URL must start with http:// or https://".into());
+    }
+    let host = parsed.host_str().ok_or("the URL has no host")?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if !loopback && !allow_remote {
+        return Err(format!(
+            "host {host} is not a loopback address (set HF2OLLAMA_E2E_ALLOW_REMOTE=1 for a disposable remote server)"
+        ));
+    }
+    // No explicit port means 80 or 443, never Ollama's default.
+    if parsed.port_or_known_default() == Some(11434) && !allow_default_port {
+        return Err(
+            "port 11434 is Ollama's default; use a disposable instance on another port (or set HF2OLLAMA_E2E_CONFIRM_DISPOSABLE=1 if this one really is disposable)"
+                .into(),
+        );
+    }
     Ok(())
 }
 
 /// True when the server holds nothing but models these tests created.
 fn models_are_all_e2e(names: &[String]) -> bool {
-    let _ = names;
-    true
+    names.iter().all(|n| n.starts_with(E2E_PREFIX))
 }
 
 /// Panics unless `name` is one of ours; every delete goes through this.
 fn assert_e2e_name(name: &str) {
-    let _ = name;
+    assert!(
+        name.starts_with(E2E_PREFIX),
+        "{name:?} is not an e2e model (must start with {E2E_PREFIX})"
+    );
+}
+
+/// The only way this file deletes a model.
+async fn delete_e2e_model(ollama: &OllamaClient, name: &str) -> Result<(), Error> {
+    assert_e2e_name(name);
+    ollama.delete(name).await
+}
+
+/// Deletes the named models when dropped, also when an assertion failed. It
+/// runs on its own thread with its own runtime, so it works inside a test's
+/// runtime, and it never panics.
+struct E2eCleanup {
+    url: String,
+    names: Vec<String>,
+}
+
+impl E2eCleanup {
+    fn new(url: &str, names: &[&str]) -> E2eCleanup {
+        for n in names {
+            assert_e2e_name(n);
+        }
+        E2eCleanup {
+            url: url.to_string(),
+            names: names.iter().map(|n| n.to_string()).collect(),
+        }
+    }
+}
+
+impl Drop for E2eCleanup {
+    fn drop(&mut self) {
+        let (url, names) = (self.url.clone(), self.names.clone());
+        let work = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                let ollama = OllamaClient::new(&url);
+                for n in &names {
+                    // A model that was never created is fine.
+                    let _ = delete_e2e_model(&ollama, n).await;
+                }
+            });
+        });
+        let _ = work.join();
+    }
+}
+
+/// What a test needs once the environment passed every safety check.
+struct E2eEnv {
+    url: String,
+}
+
+/// `None` (with the reason printed) unless it is safe to run. Rules: the URL
+/// variable is set; it is http(s) on a loopback host (or
+/// `HF2OLLAMA_E2E_ALLOW_REMOTE=1`); the port is not 11434 (unless
+/// `HF2OLLAMA_E2E_CONFIRM_DISPOSABLE=1`); and the server is empty or holds only
+/// `hf2o-e2e-*` models. The last rule has no override. Leftover `hf2o-e2e-*`
+/// models are removed.
+async fn e2e_environment() -> Option<E2eEnv> {
+    let flag = |k: &str| std::env::var(k).as_deref() == Ok("1");
+    let url = match std::env::var("HF2OLLAMA_E2E_OLLAMA_URL") {
+        Ok(u) if !u.trim().is_empty() => u,
+        _ => {
+            eprintln!(
+                "SKIPPED: set HF2OLLAMA_E2E_OLLAMA_URL to a throwaway Ollama to run this test"
+            );
+            return None;
+        }
+    };
+    if let Err(why) = url_is_acceptable_with(
+        &url,
+        flag("HF2OLLAMA_E2E_ALLOW_REMOTE"),
+        flag("HF2OLLAMA_E2E_CONFIRM_DISPOSABLE"),
+    ) {
+        eprintln!("SKIPPED: refusing {url}: {why}");
+        return None;
+    }
+    let ollama = OllamaClient::new(&url);
+    let names: Vec<String> = match ollama.list().await {
+        Ok(models) => models.into_iter().map(|m| m.name).collect(),
+        Err(e) => {
+            eprintln!("SKIPPED: could not read /api/tags from {url}: {e}");
+            return None;
+        }
+    };
+    if !models_are_all_e2e(&names) {
+        eprintln!(
+            "SKIPPED: this Ollama holds other models; point the e2e tests at a disposable instance (separate OLLAMA_HOST and OLLAMA_MODELS)"
+        );
+        return None;
+    }
+    for n in &names {
+        let _ = delete_e2e_model(&ollama, n).await;
+    }
+    Some(E2eEnv { url })
+}
+
+/// `HF2OLLAMA_E2E_FORCE_FAIL=1` makes the GGUF import test fail on purpose
+/// after it created a model, to show that the cleanup guard still deletes it.
+fn force_fail() -> bool {
+    std::env::var("HF2OLLAMA_E2E_FORCE_FAIL").as_deref() == Ok("1")
 }
 
 #[cfg(test)]
@@ -124,28 +272,22 @@ mod guard_tests {
     }
 
     #[test]
+    #[should_panic(expected = "not an e2e model")]
+    fn cleanup_guard_refuses_a_foreign_name() {
+        let _ = E2eCleanup::new("http://127.0.0.1:1", &["hf2o-e2e-ok", "llama3"]);
+    }
+
+    #[test]
+    fn cleanup_guard_never_panics_when_the_server_is_unreachable() {
+        // Port 1 refuses connections; dropping the guard must just return.
+        drop(E2eCleanup::new("http://127.0.0.1:1", &["hf2o-e2e-x"]));
+    }
+
+    #[test]
     fn delete_wrapper_accepts_prefixed_names() {
         assert_e2e_name("hf2o-e2e-gguf");
         assert_e2e_name("hf2o-e2e-gguf:latest");
     }
-}
-
-fn ollama_url() -> Option<String> {
-    let url = match std::env::var("HF2OLLAMA_E2E_OLLAMA_URL") {
-        Ok(u) if !u.trim().is_empty() => u,
-        _ => {
-            eprintln!(
-                "SKIPPED: set HF2OLLAMA_E2E_OLLAMA_URL to a throwaway Ollama to run this test"
-            );
-            return None;
-        }
-    };
-    assert!(
-        !url.contains(":11434")
-            || std::env::var("HF2OLLAMA_E2E_ALLOW_DEFAULT").as_deref() == Ok("1"),
-        "refusing to run against the default Ollama port; use a throwaway server"
-    );
-    Some(url)
 }
 
 struct Harness {
@@ -300,14 +442,21 @@ fn history_source(h: &Harness, name: &str) -> Option<String> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a throwaway Ollama and network; see the file header"]
 async fn gguf_import_deletes_staging_and_records_history() {
-    let Some(url) = ollama_url() else { return };
+    let Some(env) = e2e_environment().await else {
+        return;
+    };
+    let url = env.url.clone();
     let h = Harness::new(&url, true, true);
     let name = "hf2o-e2e-gguf";
-    let _ = h.ctx.ollama.delete(name).await;
+    let _cleanup = E2eCleanup::new(&url, &[name]);
     let (r, events) = h.run(1, gguf_request(name, false).await).await;
     assert_eq!(r, Ok(()), "events: {events:?}");
     assert!(finished(&events));
     assert!(h.installed(name).await, "model missing from /api/tags");
+    assert!(
+        !force_fail(),
+        "HF2OLLAMA_E2E_FORCE_FAIL=1: failing on purpose; the cleanup guard must still delete the model"
+    );
     assert_eq!(history_source(&h, name).as_deref(), Some(GGUF_REPO));
     assert!(
         h.job_dirs().is_empty(),
@@ -315,17 +464,20 @@ async fn gguf_import_deletes_staging_and_records_history() {
         h.job_dirs()
     );
     assert_eq!(h.show_format(name).await, "gguf");
-    h.ctx.ollama.delete(name).await.expect("delete");
+    delete_e2e_model(&h.ctx.ollama, name).await.expect("delete");
     assert!(!h.installed(name).await, "model still listed after delete");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a throwaway Ollama and network; see the file header"]
 async fn gguf_import_with_delete_off_keeps_the_files_listed() {
-    let Some(url) = ollama_url() else { return };
+    let Some(env) = e2e_environment().await else {
+        return;
+    };
+    let url = env.url.clone();
     let h = Harness::new(&url, false, true);
     let name = "hf2o-e2e-keep";
-    let _ = h.ctx.ollama.delete(name).await;
+    let _cleanup = E2eCleanup::new(&url, &[name]);
     let (r, events) = h.run(2, gguf_request(name, false).await).await;
     assert_eq!(r, Ok(()), "events: {events:?}");
     let cached = h.ctx.staging.list_cached().expect("list cached");
@@ -337,19 +489,22 @@ async fn gguf_import_with_delete_off_keeps_the_files_listed() {
         cached[0].bytes
     );
     assert!(h.job_dirs().is_empty());
-    h.ctx.ollama.delete(name).await.expect("delete");
+    delete_e2e_model(&h.ctx.ollama, name).await.expect("delete");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a throwaway Ollama and network; see the file header"]
 async fn safetensors_import_with_int8_and_unquantized() {
-    let Some(url) = ollama_url() else { return };
+    let Some(env) = e2e_environment().await else {
+        return;
+    };
+    let url = env.url.clone();
     let h = Harness::new(&url, true, true);
     for (name, quant) in [
         ("hf2o-e2e-st-int8", Some("int8")),
         ("hf2o-e2e-st-none", None),
     ] {
-        let _ = h.ctx.ollama.delete(name).await;
+        let _cleanup = E2eCleanup::new(&url, &[name]);
         let (r, events) = h.run(3, safetensors_request(name, quant).await).await;
         assert_eq!(r, Ok(()), "{name}: events: {events:?}");
         assert!(h.installed(name).await, "{name} missing from /api/tags");
@@ -365,7 +520,7 @@ async fn safetensors_import_with_int8_and_unquantized() {
             "staging not empty: {:?}",
             h.job_dirs()
         );
-        h.ctx.ollama.delete(name).await.expect("delete");
+        delete_e2e_model(&h.ctx.ollama, name).await.expect("delete");
         assert!(!h.installed(name).await);
     }
 }
@@ -373,11 +528,14 @@ async fn safetensors_import_with_int8_and_unquantized() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a throwaway Ollama and network; see the file header"]
 async fn cancel_in_the_middle_of_a_download_removes_the_job_dir() {
-    let Some(url) = ollama_url() else { return };
+    let Some(env) = e2e_environment().await else {
+        return;
+    };
+    let url = env.url.clone();
     // keep_partials off: a cancelled job must leave nothing behind.
     let h = Harness::new(&url, true, false);
     let name = "hf2o-e2e-cancel";
-    let _ = h.ctx.ollama.delete(name).await;
+    let _cleanup = E2eCleanup::new(&url, &[name]);
     // stories15M.gguf is 98 MB, so the cancel lands while bytes are flowing.
     let files = files_of(GGUF_REPO).await;
     let req = ImportRequest {
@@ -424,10 +582,13 @@ async fn cancel_in_the_middle_of_a_download_removes_the_job_dir() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a throwaway Ollama and network; see the file header"]
 async fn pause_holds_a_job_until_resume() {
-    let Some(url) = ollama_url() else { return };
+    let Some(env) = e2e_environment().await else {
+        return;
+    };
+    let url = env.url.clone();
     let h = Harness::new(&url, true, true);
     let name = "hf2o-e2e-pause";
-    let _ = h.ctx.ollama.delete(name).await;
+    let _cleanup = E2eCleanup::new(&url, &[name]);
     let req = gguf_request(name, false).await;
     let (tx, rx) = mpsc::channel();
     let ctl = JobControl::new();
@@ -450,16 +611,19 @@ async fn pause_holds_a_job_until_resume() {
     assert_eq!(r, Ok(()), "events: {events:?}");
     assert!(finished(&events));
     assert!(h.installed(name).await);
-    h.ctx.ollama.delete(name).await.expect("delete");
+    delete_e2e_model(&h.ctx.ollama, name).await.expect("delete");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a throwaway Ollama and network; see the file header"]
 async fn name_collision_errors_then_overwrite_succeeds() {
-    let Some(url) = ollama_url() else { return };
+    let Some(env) = e2e_environment().await else {
+        return;
+    };
+    let url = env.url.clone();
     let h = Harness::new(&url, true, true);
     let name = "hf2o-e2e-collide";
-    let _ = h.ctx.ollama.delete(name).await;
+    let _cleanup = E2eCleanup::new(&url, &[name]);
     let (r, _) = h.run(6, gguf_request(name, false).await).await;
     assert_eq!(r, Ok(()));
     let (r, events) = h.run(7, gguf_request(name, false).await).await;
@@ -469,14 +633,16 @@ async fn name_collision_errors_then_overwrite_succeeds() {
     let (r, events) = h.run(8, gguf_request(name, true).await).await;
     assert_eq!(r, Ok(()), "events: {events:?}");
     assert!(h.installed(name).await);
-    h.ctx.ollama.delete(name).await.expect("delete");
+    delete_e2e_model(&h.ctx.ollama, name).await.expect("delete");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs network; see the file header"]
 async fn unsupported_repositories_are_classified_not_imported() {
     // Classification only: no Ollama needed, but keep the same opt-in gate.
-    let Some(_) = ollama_url() else { return };
+    let Some(_env) = e2e_environment().await else {
+        return;
+    };
     let info = HfClient::new(HF, None)
         .model_info("hf-internal-testing/tiny-random-GPT2LMHeadModel")
         .await
@@ -508,14 +674,17 @@ async fn imports_work_against_a_non_default_models_directory() {
     // The throwaway server is started with its own OLLAMA_MODELS directory
     // (see the file header), so every test above already exercises a
     // non-default store. Here we only prove the server is not the default one.
-    let Some(url) = ollama_url() else { return };
+    let Some(env) = e2e_environment().await else {
+        return;
+    };
+    let url = env.url.clone();
     let version = OllamaClient::new(&url).version().await.expect("version");
     eprintln!("throwaway Ollama {version} at {url}");
     let h = Harness::new(&url, true, true);
     let name = "hf2o-e2e-store";
-    let _ = h.ctx.ollama.delete(name).await;
+    let _cleanup = E2eCleanup::new(&url, &[name]);
     let (r, _) = h.run(9, gguf_request(name, false).await).await;
     assert_eq!(r, Ok(()));
     assert!(h.installed(name).await);
-    h.ctx.ollama.delete(name).await.expect("delete");
+    delete_e2e_model(&h.ctx.ollama, name).await.expect("delete");
 }
