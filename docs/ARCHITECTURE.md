@@ -139,8 +139,8 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 
 - Every job gets its own directory under the staging root. The directory handle is consumed by `finish(keep)` or `discard()`, and the pipeline routes every outcome through them.
 - Cancel always deletes the partial files.
-- A failed job keeps resumable partials for 7 days if that setting is on; otherwise it deletes them. On startup the GUI runs `Staging::sweep` once, off the UI thread, which removes only marker-guarded orphaned job directories and expired partials; foreign files in the staging folder are never touched.
-- With "delete downloaded files after import" on, no job leaves files after success, cancel or failure (other than resumable partials when enabled). With it off, kept files are listed as cached files and can be cleared.
+- A failed job keeps its files for 7 days if that setting is on (they are not reused by a new import; resuming after a restart is not supported yet); otherwise it deletes them. "Clear cached files" removes kept and failed job directories, never a directory without a marker (an active job). On startup the GUI runs `Staging::sweep` once, off the UI thread, which removes only marker-guarded orphaned job directories and expired partials; foreign files in the staging folder are never touched.
+- With "delete downloaded files after import" on, no job leaves files after success, cancel or failure (other than failed-job files kept for 7 days when enabled). With it off, kept files are listed as cached files and can be cleared.
 - A create that has already completed wins over a late cancel, and an in-flight create is not abandoned.
 
 ## What is intentionally not done
@@ -149,4 +149,4 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 - No deleting of blobs. Ollama has no blob-delete API, so a failed import after upload can leave an unused blob that Ollama prunes later.
 - No format conversion. There is no Python or llama.cpp step, so architectures Ollama does not support are reported as unsupported.
 - No running or chatting with models, no Modelfile editing beyond the model name, no uploading to Hugging Face, and no management of Ollama library pulls.
-- No cross-restart resume of in-progress downloads in v1 (partials are kept, but a restart does not pick the job back up).
+- No cross-restart resume of in-progress downloads in v1 (files of a failed job are kept for 7 days, but nothing reuses them and a restart does not pick the job back up).

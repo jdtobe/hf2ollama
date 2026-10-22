@@ -129,14 +129,14 @@ pub fn cached_total(rows: &[CachedRow]) -> String {
 }
 
 /// Help text for the "keep partial downloads" toggle.
-pub const KEEP_PARTIALS_HELP: &str = "If a transfer fails or you close the app, resume it later instead of starting over. Cancelling always deletes the partial file.";
+pub const KEEP_PARTIALS_HELP: &str = "Keeps the files of a failed download for 7 days, then removes them automatically. You can clear them sooner. Resuming after a restart is not supported yet. Cancelling always deletes the partial file.";
 
 /// Help text under the cached files total.
-pub const CACHED_HELP: &str = "Used in the staging folder right now. Partial downloads are kept for resuming and expire after 7 days.";
+pub const CACHED_HELP: &str = "Used in the staging folder right now. Failed downloads are kept for 7 days and then removed; clear them any time.";
 
 /// True when the Clear button may be used: any listed row can be removed.
 pub fn has_clearable(rows: &[CachedRow]) -> bool {
-    rows.iter().any(|r| !r.partial)
+    !rows.is_empty()
 }
 
 /// The machine used for fit estimates: the override, else what was detected.

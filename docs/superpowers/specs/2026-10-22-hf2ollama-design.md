@@ -86,7 +86,7 @@ Controls:
 
 - **Pause** stops reading and keeps the partial file. **Resume** continues from the partial file.
 - **Cancel** stops the job and deletes the partial files.
-- A failed job keeps resumable partial downloads for 7 days if that setting is on. Otherwise it deletes them.
+- A failed job keeps its partial downloads for 7 days if that setting is on. Otherwise it deletes them. Known limitation in v1: a new import allocates a new job folder and does not reuse kept partial files, and there is no resume action for failed jobs or after a restart; kept files are removed after 7 days or by "Clear cached files".
 - Each job has a timestamped log (queued, request results, stage completions, pause, resume, cancel, errors). The log stays available until the job row is dismissed. It is also written to a log file for bug reports.
 
 ## 5. Compatibility rules
@@ -202,7 +202,7 @@ Errors are shown in plain language with the next step, and every failure has a l
 - Ollama unreachable: pill turns red, Browse still works, import button explains the problem and offers Test and Settings.
 - Insufficient disk space: refuse before downloading, state needed and available space.
 - Gated or private repo: prompt for a token in Settings.
-- Network failure: job fails with partial file retained (per setting) and a Resume action.
+- Network failure: the download step retries up to 3 times with backoff on the same job folder; if it still fails, the job fails with its files retained (per setting). Known limitation in v1: there is no Resume action for a failed job.
 - Hash mismatch: delete the file, fail the job, say the download was corrupt.
 - Ollama rejects `create` (for example, unsupported architecture): show Ollama's message, clean up per settings.
 - Name collision with an existing model: ask before overwriting.
@@ -231,7 +231,7 @@ Errors are shown in plain language with the next step, and every failure has a l
 - Import a GGUF file into Ollama and see it in Installed and in `ollama list`.
 - Import a supported safetensors repo with a chosen quantization.
 - Unsupported repos are detected before download and explained.
-- With the delete setting on, no job leaves files in staging after success, cancel or failure (other than resumable partials when enabled). With it off, kept files appear under Cached files.
+- With the delete setting on, no job leaves files in staging after success, cancel or failure (other than kept partials when enabled). With it off, kept files appear under Cached files.
 - Works against an Ollama with a non-default models directory and against a remote Ollama.
 - Pause, resume, cancel, per-job logs, and dismissal behave as specified.
 - Delete from Installed removes the model through the API.

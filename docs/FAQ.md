@@ -25,7 +25,7 @@ A repo is unsupported when it has no GGUF files and its safetensors architecture
 
 Files are downloaded into a per-job folder in the staging folder (the OS cache directory by default; configurable). By default they are deleted after a successful import. Turn off "Delete downloaded files after import" to keep them; they then appear under Cached files in Settings, with a Clear button.
 
-Cancelling a job always deletes its partial files. A failed job keeps resumable partials for 7 days if "Keep partial downloads for 7 days" is on, otherwise it deletes them. A startup sweep removes orphaned job folders and expired partials.
+Cancelling a job always deletes its partial files. A failed job keeps its downloaded files for 7 days if "Keep partial downloads for 7 days" is on, otherwise it deletes them. Kept files are removed automatically after 7 days, and "Clear cached files" in Settings removes them sooner. A new import starts from the beginning; it does not reuse them yet. A startup sweep removes orphaned job folders and expired partials.
 
 ## Is it safe to read a model card inside the app?
 
@@ -46,7 +46,7 @@ Yes, that is the point of using the API. Set the Ollama address in Settings (def
 ## Known limitations
 
 - **Orphan blobs.** Ollama has no blob-delete API. If an import fails after upload, an unused blob can remain in Ollama's store (we observed 4 MB in testing). Ollama prunes unreferenced blobs on restart. hf2ollama documents this rather than working around it.
-- **No cross-restart download resume in v1.** Pause and resume work within a session, and partial files can be kept, but a job is not automatically restored after the app restarts.
+- **No cross-restart download resume in v1.** Pause and resume work within a running session. Files of a failed job are kept for 7 days (if enabled) but are not reused: a failed or interrupted job must be started again from the beginning, and a job is not restored after the app restarts.
 - **VRAM detection** covers NVIDIA GPUs and Apple Silicon unified memory only. Otherwise VRAM is shown as unknown and you can enter it manually. Fit results are estimates, not guarantees.
 - **Hash coverage.** Hugging Face publishes SHA-256 only for LFS files. Small config and tokenizer files are checked against a git SHA-1 only.
 - **Platforms.** The Ollama and Hugging Face behavior was verified on macOS only, and the UI prototype was checked on macOS only.

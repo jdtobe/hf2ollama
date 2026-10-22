@@ -1192,11 +1192,11 @@ mod tests {
             _ => None,
         })
         .unwrap();
-        assert!(freed >= 1500, "{freed}");
+        assert!(freed >= 1800, "{freed}");
         assert!(!h.paths.default_staging.join("job-1").exists());
         assert!(
-            h.paths.default_staging.join("job-2").exists(),
-            "partials stay"
+            !h.paths.default_staging.join("job-2").exists(),
+            "failed downloads are cleared too"
         );
         assert!(foreign.join("x.jpg").exists());
     }

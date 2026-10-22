@@ -171,11 +171,13 @@ impl Staging {
             .collect())
     }
 
-    /// Removes kept (finished with keep) job directories and returns the bytes freed.
+    /// Removes kept (finished with keep) and failed (`.partial`) job directories and
+    /// returns the bytes freed. A directory with neither marker may belong to a running
+    /// job and is never touched.
     pub fn clear_cached(&self) -> Result<u64> {
         let mut freed = 0;
         for job in self.jobs()? {
-            if has_marker(&job, KEPT_MARKER) {
+            if has_marker(&job, KEPT_MARKER) || has_marker(&job, PARTIAL_MARKER) {
                 let bytes = dir_size(&job);
                 remove_job_dir(&job)?;
                 freed += bytes;
