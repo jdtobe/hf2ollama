@@ -17,9 +17,28 @@ pub enum Fit {
     Unknown,
 }
 
+/// Runtime overhead (KV cache, buffers) added to the model size, in GB.
+const OVERHEAD_GB: f32 = 1.5;
+/// Fraction of VRAM a model may use and still count as a comfortable fit.
+const FITS_VRAM_FRACTION: f32 = 0.8;
+const EPSILON: f32 = 1e-4;
+
 /// Estimate how a model of `size_gb` will fit on machine `m`.
-pub fn fit(_size_gb: f32, _m: &Machine) -> Fit {
-    todo!()
+pub fn fit(size_gb: f32, m: &Machine) -> Fit {
+    let Some(vram) = m.vram_gb else {
+        return Fit::Unknown;
+    };
+    let need = size_gb + OVERHEAD_GB;
+    // Small epsilon so exact boundaries are not lost to f32 rounding.
+    if need <= vram * FITS_VRAM_FRACTION + EPSILON {
+        Fit::Fits
+    } else if need <= vram + EPSILON {
+        Fit::Tight
+    } else if need <= m.ram_gb + EPSILON {
+        Fit::PartialOffload
+    } else {
+        Fit::TooLarge
+    }
 }
 
 #[cfg(test)]
