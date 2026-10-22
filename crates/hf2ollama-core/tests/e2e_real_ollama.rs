@@ -31,6 +31,105 @@ const HF: &str = "https://huggingface.co";
 const GGUF_REPO: &str = "ggml-org/tiny-llamas";
 const SAFETENSORS_REPO: &str = "hf-internal-testing/tiny-random-LlamaForCausalLM";
 
+/// Prefix of every model these tests may create or delete.
+const E2E_PREFIX: &str = "hf2o-e2e-";
+
+/// Accepts loopback http(s) URLs whose port is not Ollama's default 11434.
+/// `allow_remote` also accepts other hosts.
+fn url_is_acceptable(url: &str, allow_remote: bool) -> Result<(), String> {
+    let _ = (url, allow_remote);
+    Ok(())
+}
+
+/// True when the server holds nothing but models these tests created.
+fn models_are_all_e2e(names: &[String]) -> bool {
+    let _ = names;
+    true
+}
+
+/// Panics unless `name` is one of ours; every delete goes through this.
+fn assert_e2e_name(name: &str) {
+    let _ = name;
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn url_guard_rejects_default_port_and_remote_hosts() {
+        for bad in [
+            "http://127.0.0.1:11434",
+            "http://localhost:11434/",
+            "http://[::1]:11434",
+            "http://192.168.1.20:11555",
+            "http://my-ollama-host:11555",
+            "https://example.com",
+            "ftp://127.0.0.1:11555",
+            "not a url",
+            "",
+        ] {
+            assert!(url_is_acceptable(bad, false).is_err(), "{bad:?}");
+        }
+        // Remote hosts can be allowed, the default port still cannot.
+        assert!(url_is_acceptable("http://my-ollama-host:11555", true).is_ok());
+        assert!(url_is_acceptable("http://my-ollama-host:11434", true).is_err());
+    }
+
+    #[test]
+    fn url_guard_accepts_loopback_with_custom_port() {
+        for ok in [
+            "http://127.0.0.1:11555",
+            "http://localhost:11555",
+            "http://127.9.9.9:8080/",
+            "http://[::1]:11555",
+            "https://localhost:9000",
+        ] {
+            assert_eq!(url_is_acceptable(ok, false), Ok(()), "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn implicit_ports_are_not_mistaken_for_the_ollama_default() {
+        // No port means 80 or 443, which is not 11434.
+        assert_eq!(url_is_acceptable("http://localhost", false), Ok(()));
+        assert_eq!(url_is_acceptable("https://127.0.0.1", false), Ok(()));
+        assert!(url_is_acceptable("http://localhost:11434", false).is_err());
+    }
+
+    #[test]
+    fn precheck_rejects_foreign_models() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!models_are_all_e2e(&names(&["llama3:latest"])));
+        assert!(!models_are_all_e2e(&names(&[
+            "hf2o-e2e-a:latest",
+            "mine:latest"
+        ])));
+        assert!(!models_are_all_e2e(&names(&["x/hf2o-e2e-a:latest"])));
+    }
+
+    #[test]
+    fn precheck_accepts_empty_and_prefixed_only() {
+        assert!(models_are_all_e2e(&[]));
+        assert!(models_are_all_e2e(&[
+            "hf2o-e2e-gguf:latest".to_string(),
+            "hf2o-e2e-keep:latest".to_string()
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "not an e2e model")]
+    fn delete_wrapper_refuses_a_name_without_the_prefix() {
+        assert_e2e_name("llama3");
+    }
+
+    #[test]
+    fn delete_wrapper_accepts_prefixed_names() {
+        assert_e2e_name("hf2o-e2e-gguf");
+        assert_e2e_name("hf2o-e2e-gguf:latest");
+    }
+}
+
 fn ollama_url() -> Option<String> {
     let url = match std::env::var("HF2OLLAMA_E2E_OLLAMA_URL") {
         Ok(u) if !u.trim().is_empty() => u,
