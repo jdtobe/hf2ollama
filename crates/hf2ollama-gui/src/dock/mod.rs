@@ -44,6 +44,9 @@ pub struct DockProbe {
 #[derive(Debug, Default)]
 pub struct DockUi {
     pub open_logs: HashSet<JobId>,
+    /// Panel height of the last frame; a change needs one more frame so the
+    /// panels above it (laid out from this frame's size) catch up.
+    last_height: f32,
     #[cfg(test)]
     pub probe: DockProbe,
 }
@@ -101,13 +104,21 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
                 rows(ui, cap, &t, jobs, st, &mut actions);
             }
         });
+    let height = resp.response.rect.height();
+    if height_changed(st.last_height, height) {
+        st.last_height = height;
+        ui.ctx().request_repaint();
+    }
     #[cfg(test)]
     {
         st.probe.panel = Some(resp.response.rect);
     }
-    #[cfg(not(test))]
-    let _ = resp;
     actions
+}
+
+/// True when the dock size moved enough that another frame is needed.
+fn height_changed(prev: f32, now: f32) -> bool {
+    (now - prev).abs() > 0.5
 }
 
 fn idle_line(ui: &mut egui::Ui, t: &Tokens, jobs: &JobsState) {
@@ -359,4 +370,17 @@ fn log_view(ui: &mut egui::Ui, t: &Tokens, row: &JobRow) {
                     }
                 });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn height_change_needs_another_frame_only_when_it_moved() {
+        assert!(height_changed(38.0, 290.0));
+        assert!(height_changed(290.0, 38.0));
+        assert!(!height_changed(290.0, 290.2));
+        assert!(!height_changed(38.0, 38.0));
+    }
 }
