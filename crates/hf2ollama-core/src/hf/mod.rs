@@ -86,6 +86,8 @@ pub struct HfClient {
     /// back to a default client without it; downloads must set their own
     /// timeouts per request.
     http: reqwest::Client,
+    /// Longest a download waits for response headers or for the next chunk.
+    stall_timeout: Duration,
 }
 
 impl std::fmt::Debug for HfClient {
@@ -259,7 +261,14 @@ impl HfClient {
             endpoint: endpoint.trim_end_matches('/').to_string(),
             token: token.filter(|t| !t.is_empty()),
             http,
+            stall_timeout: Duration::from_secs(30),
         }
+    }
+
+    /// Overrides the download stall timeout (default 30 s).
+    pub fn with_stall_timeout(mut self, d: Duration) -> HfClient {
+        self.stall_timeout = d;
+        self
     }
 
     /// Builds `<endpoint>/<segments...>`; each segment is percent-encoded

@@ -17,7 +17,6 @@ pub struct Downloaded {
     pub sha256: String,
 }
 
-const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 const REHASH_BUF: usize = 1024 * 1024;
 
 fn io_err(e: std::io::Error) -> Error {
@@ -174,7 +173,7 @@ impl HfClient {
                 if let Err(e) = ctl.checkpoint().await {
                     break Err(e);
                 }
-                let chunk = match tokio::time::timeout(STALL_TIMEOUT, resp.chunk()).await {
+                let chunk = match tokio::time::timeout(self.stall_timeout, resp.chunk()).await {
                     Err(_) => break Err(Error::Network("download stalled".to_string())),
                     Ok(Err(e)) => break Err(Error::Network(e.without_url().to_string())),
                     Ok(Ok(None)) => break Ok(()),
@@ -626,5 +625,131 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err, Error::GatedRepo(REPO.to_string()));
+    }
+
+    #[tokio::test]
+    async fn content_range_with_wrong_start_restarts_instead_of_appending() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = payload(10_000);
+        std::fs::write(dir.path().join("m.gguf.part"), &data[..4000]).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(header("range", "bytes=4000-"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("content-range", "bytes 0-5999/10000")
+                    .set_body_bytes(data[..6000].to_vec()),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(data.clone()))
+            .with_priority(5)
+            .mount(&server)
+            .await;
+        let file = RepoFile {
+            path: "m.gguf".to_string(),
+            size: 10_000,
+            sha256: None,
+            blob_id: None,
+        };
+        let out = run(&server, &file, dir.path(), &JobControl::new())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&out.path).unwrap(), data);
+        assert_eq!(out.sha256, sha256_hex(&data));
+    }
+
+    #[tokio::test]
+    async fn partial_content_without_content_range_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = payload(10_000);
+        std::fs::write(dir.path().join("m.gguf.part"), &data[..4000]).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(header("range", "bytes=4000-"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(vec![7u8; 6000]))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(data.clone()))
+            .with_priority(5)
+            .mount(&server)
+            .await;
+        let file = RepoFile {
+            path: "m.gguf".to_string(),
+            size: 10_000,
+            sha256: None,
+            blob_id: None,
+        };
+        let out = run(&server, &file, dir.path(), &JobControl::new())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&out.path).unwrap(), data);
+    }
+
+    /// Accepts connections and never answers; sockets stay open.
+    async fn silent_server() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn header_stall_times_out_and_keeps_part() {
+        let addr = silent_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let data = payload(1000);
+        std::fs::write(dir.path().join("m.gguf.part"), &data[..100]).unwrap();
+        let client = HfClient::new(&format!("http://{addr}"), None)
+            .with_stall_timeout(Duration::from_millis(200));
+        let err = timeout(
+            Duration::from_secs(5),
+            client.download(
+                REPO,
+                &lfs_file("m.gguf", &data),
+                dir.path(),
+                &JobControl::new(),
+                &mut |_, _| {},
+            ),
+        )
+        .await
+        .expect("download hung")
+        .unwrap_err();
+        assert_eq!(err, Error::Network("download stalled".to_string()));
+        assert_eq!(
+            std::fs::read(dir.path().join("m.gguf.part")).unwrap(),
+            data[..100]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_during_header_wait_returns_cancelled_promptly() {
+        let addr = silent_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let data = payload(1000);
+        let ctl = JobControl::new();
+        let client = HfClient::new(&format!("http://{addr}"), None);
+        let file = lfs_file("m.gguf", &data);
+        let mut on_progress = |_: u64, _: u64| {};
+        let download = client.download(REPO, &file, dir.path(), &ctl, &mut on_progress);
+        let canceller = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            ctl.cancel();
+        };
+        let (res, ()) = timeout(Duration::from_secs(5), async {
+            tokio::join!(download, canceller)
+        })
+        .await
+        .expect("download hung");
+        assert_eq!(res.unwrap_err(), Error::Cancelled);
     }
 }
