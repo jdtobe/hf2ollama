@@ -1,6 +1,6 @@
 # Handoff: where the work stands and how to pick it up
 
-Written 2026-10-22 so a new session (or a person) can continue without the earlier conversation. Read this first, then `follow-ups.md` and `acceptance.md` in this folder.
+Written 2026-10-22, refreshed 2026-10-23 after PRs #1-#4 were merged, so a new session (or a person) can continue without the earlier conversation. Read this first, then `follow-ups.md` and `acceptance.md` in this folder.
 
 ## What exists
 
@@ -11,32 +11,30 @@ All 18 planned tasks plus the model-card tab are implemented and reviewed. The F
 ## Branches and the remote
 
 - Remote: `origin` = `https://github.com/jdtobe/hf2ollama.git` (public repo, free GitHub account).
-- `main` holds the whole application (merged from `feat/hf2ollama` with a merge commit). `feat/hf2ollama` is kept locally and is fully merged.
-- `ci/release-workflow` holds the release automation and a few later fixes. It is meant to go through a **pull request that is not merged until the user says the whole effort is finished**.
-- Do not merge the PR, push tags, or run the release workflow by hand without being asked.
+- `main` holds the whole application and the CI and release workflows. PRs #1 to #4 are merged (merge commit `9371e99` for #3). The user merged them; the earlier "hold PR #3 until the whole effort is finished" rule is therefore over.
+- `feat/hf2ollama` and `ci/release-workflow` are kept locally and are fully merged; the remote branches can be deleted.
+- Still true: do not push tags or run the release workflow with `publish` ticked without being asked.
 
-## Release automation (on `ci/release-workflow` only)
+## Release automation (on `main`)
 
 - `.github/workflows/release.yml` is **manual only** (`workflow_dispatch`). The user decided on 2026-10-22 that automatic release on merge is too fast for now; the top of the file says how to turn it on later (add a `push` trigger on `main` and drop the `publish` condition).
 - A run tests (it calls `ci.yml`), works out the version, builds macOS (arm64, x86_64), Windows and Linux, and keeps the archives as run artifacts. The `publish` input (default off) additionally creates the GitHub release, but only when the run is on `main`.
 - Version format `YY.M.N`, tag `vYY.M.N`: two-digit year, month without a leading zero, release number within the month **counting from 0** (`26.10.0`, `26.10.1`, ..., then `26.11.0`).
 - `ci.yml` runs on every push including `main` and on pull requests, skipping docs-only changes.
-- Merging PR #3 therefore publishes nothing. A manual run is only possible once `release.yml` is on `main`.
-- The release matrix has never run. This is also the first build of the macOS Intel cross build, packaging and publishing.
+- The workflow is now on `main`, so it can be run by hand. It has **never run**: the macOS Intel cross build, packaging, version stamping and publishing are untried. Start with a dry run (publish unticked).
+- Actions are at `checkout@v7` and `upload-artifact@v7` (Dependabot bumps); `download-artifact` is still `v4`.
 - Builds are unsigned (macOS/Windows will warn; the release notes say how to proceed).
 
-## GitHub state (2026-10-22)
+## GitHub state (2026-10-23)
 
-- PR #3 (draft): `ci/release-workflow` into `main`. Do not merge until the user says the whole effort is done. Merging no longer publishes anything (releases are manual).
-- PR #4: `fix/windows-staging-test` into `main`, a one-test fix. The first CI run found that `settings::state::tests::staging_validation_uses_the_real_folder_rules` used a path without a drive letter, which fails on Windows. With the fix, CI is green on Linux, macOS and Windows. Once #4 is merged, merge `main` into `ci/release-workflow` (do not rebase; the history is shared) so PR #3 picks the fix up.
-- PRs #1 and #2 are Dependabot bumps of `actions/checkout` and `actions/upload-artifact` to newer majors. They were red only because of the same Windows test; ask Dependabot to rebase (`@dependabot rebase`) after #4 is merged. Pinning actions to SHAs (below) will touch the same lines.
-- No release, tag or release workflow run exists yet. `release.yml` is not on `main`.
+- PRs #1, #2 (Dependabot bumps), #3 (CI and release workflow) and #4 (Windows-only test fix) are all merged. CI was green on Linux, macOS and Windows (cargo-deny, check x3, dev-hooks) before the merge.
+- No release, tag or release workflow run exists yet.
 
 ## Not finished, in the order I would do it
 
-1. Done: the first CI run on all three systems passed apart from the one Windows test above. Still untried: the release build matrix (macOS x86_64 cross build, Windows and Linux release builds, packaging, the publish job). It can only be run by hand once `release.yml` is on `main`; start with a dry run (publish unticked).
-2. Pin every GitHub Action to a full commit SHA (a TODO is in `ci.yml`; Dependabot is configured for Actions).
-3. On GitHub: make `main` the default branch, turn on branch protection requiring the CI checks, turn on private vulnerability reporting (`SECURITY.md` assumes it), check Settings > Actions > Workflow permissions.
+1. CI is green on all three systems. Still untried: the release build matrix (macOS x86_64 cross build, Windows and Linux release builds, packaging, the publish job). Run it by hand from the Actions tab; start with a dry run (publish unticked).
+2. Pin every GitHub Action to a full commit SHA (a TODO is in `ci.yml`; Dependabot is configured for Actions), and bump `download-artifact` to match the others.
+3. On GitHub: check that `main` is the default branch, turn on branch protection requiring the CI checks, turn on private vulnerability reporting (`SECURITY.md` assumes it), check Settings > Actions > Workflow permissions.
 4. Visual verification that is still owed: see the list in `acceptance.md` (Installed, Settings, About tab, dock, both themes, a side-by-side against `docs/design/ui-mockup.html`). Only the Browse Files tab has been captured since the display was unlocked.
 5. README screenshots (a TODO comment marks the place) and a download link to the latest release. Take them from a clean setup: the Installed view shows the real model list of the machine.
 6. Items in `follow-ups.md` (before-release, first-follow-up, nice-to-have).
