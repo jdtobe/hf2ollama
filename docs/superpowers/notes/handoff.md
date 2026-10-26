@@ -38,7 +38,9 @@ All 18 planned tasks plus the model-card tab are implemented and reviewed. The F
 4. Visual verification that is still owed: see the list in `acceptance.md` (Installed, Settings, About tab, dock, both themes, a side-by-side against `docs/design/ui-mockup.html`). Only the Browse Files tab has been captured since the display was unlocked.
 5. README screenshots (a TODO comment marks the place) and a download link to the latest release. Take them from a clean setup: the Installed view shows the real model list of the machine.
 6. Items in `follow-ups.md` (before-release, first-follow-up, nice-to-have).
-7. A macOS `.app` bundle with an icon instead of a bare binary; optional signing and notarization (needs a paid Apple account, probably not worth it).
+7. Open question for the user: public commits carry `jdtobe@gmail.com`. Keep it, or switch to a GitHub noreply address for future commits (history would not be rewritten)? Not answered yet.
+8. Housekeeping: delete the merged remote branches (`ci/release-workflow`, `fix/windows-staging-test`, the two Dependabot branches). Untracked Finder duplicates with a " 2" suffix (for example `crates/hf2ollama-gui/src/dock/jobs 2.rs`) are not part of the project; the user should check and delete them, and `git add` must name paths so they are not picked up.
+9. A macOS `.app` bundle with an icon instead of a bare binary; optional signing and notarization (needs a paid Apple account, probably not worth it).
 
 ## Rules that must keep applying
 
