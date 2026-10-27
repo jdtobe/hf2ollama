@@ -8,6 +8,8 @@ hf2ollama: a portable Rust GUI (egui) to search Hugging Face and import models i
 
 All 18 planned tasks plus the model-card tab are implemented and reviewed. The Files/About tabs were reworked afterwards (one row, pinned above the scroll area) and the search field has a clear button.
 
+Branch `feat/log-speed-macos-release` (2026-10-27) adds: the committed Finder duplicates removed; a five-line scrollable log drawer above the dock with one log at a time; a rolling five-second download speed; an app icon and window icon; and macOS release packaging as a universal `.app` inside a drag-install `.dmg`, with `packaging/macos/package.sh` and `verify.sh`. The package was built and verified locally on macOS; the workflow change has not run on GitHub yet.
+
 ## Branches and the remote
 
 - Remote: `origin` = `https://github.com/jdtobe/hf2ollama.git` (public repo, free GitHub account).
@@ -39,8 +41,8 @@ All 18 planned tasks plus the model-card tab are implemented and reviewed. The F
 5. README screenshots (a TODO comment marks the place) and a download link to the latest release. Take them from a clean setup: the Installed view shows the real model list of the machine.
 6. Items in `follow-ups.md` (before-release, first-follow-up, nice-to-have).
 7. Open question for the user: public commits carry `jdtobe@gmail.com`. Keep it, or switch to a GitHub noreply address for future commits (history would not be rewritten)? Not answered yet.
-8. Housekeeping: delete the merged remote branches (`ci/release-workflow`, `fix/windows-staging-test`, the two Dependabot branches). Untracked Finder duplicates with a " 2" suffix (for example `crates/hf2ollama-gui/src/dock/jobs 2.rs`) are not part of the project; the user should check and delete them, and `git add` must name paths so they are not picked up.
-9. A macOS `.app` bundle with an icon instead of a bare binary; optional signing and notarization (needs a paid Apple account, probably not worth it).
+8. Housekeeping: delete the merged remote branches (`ci/release-workflow`, `fix/windows-staging-test`, the two Dependabot branches). The Finder duplicates with a " 2" suffix were committed by accident and are removed on `feat/log-speed-macos-release`.
+9. macOS `.app` and `.dmg` with an icon: done on `feat/log-speed-macos-release` (ad-hoc signed, not notarized). Optional Developer ID signing and notarization still need a paid Apple account.
 
 ## Rules that must keep applying
 

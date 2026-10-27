@@ -18,7 +18,7 @@ Everything below was found during review and deliberately left out of the first 
 - **Free space.** Show the staging folder's free space in the status bar and the import card (available locally through `fs4`).
 - **Resume after restart.** Partial downloads are kept for 7 days and can be cleared, but a new import starts fresh. Reuse a partial directory for the same repo and file.
 - **Overwrite prompt.** The GUI always sends `overwrite: false` and refuses an existing name. Add an explicit "replace existing model" confirmation.
-- **Log viewer.** At the 900x640 minimum window an open log shows about two lines. Move logs to a floating viewer or give an open log more room.
+- ~~**Log viewer.** At the 900x640 minimum window an open log shows about two lines. Move logs to a floating viewer or give an open log more room.~~ Done: the Log button opens a five-line, scrollable drawer above the dock, one log at a time, without shrinking Browse.
 - **Folder dialog** blocks the UI thread while open.
 - Prune old log files (`job-<id>.log` is never removed).
 - Warn when the Hugging Face endpoint is `http://` (the token would travel in clear).

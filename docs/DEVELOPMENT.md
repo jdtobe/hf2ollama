@@ -28,6 +28,8 @@ docs/
   superpowers/specs/          the design spec (source of truth)
   superpowers/plans/          the implementation plan
   superpowers/notes/          api-verification.md, acceptance.md
+packaging/
+  macos/                      .app/.dmg scripts, Info.plist template and icon generator
 .github/                      CI, cargo-deny workflow, templates, dependabot
 deny.toml                     cargo-deny policy
 ```
@@ -146,3 +148,19 @@ Versions are `YY.M.N`: the year without the century, the month without a leading
 The comment at the top of `release.yml` says how to switch to automatic releases on every code merge to `main`.
 
 The builds are not signed or notarized, so macOS and Windows warn on first launch; the release notes say how to get past that.
+
+### macOS app and DMG
+
+macOS is released as one universal `.dmg` containing `hf2ollama.app` for Apple Silicon and Intel. `packaging/macos/package.sh` lipos the two release binaries, builds the bundle (`Info.plist`, icon, notices), applies an ad-hoc signature, creates the DMG with an `Applications` link and runs `packaging/macos/verify.sh`. The verifier checks the checksum, layout, plist values, both architectures, the ICNS icon and the signature.
+
+To build it locally (the x86_64 target may need `rustup target add x86_64-apple-darwin`):
+
+```sh
+cargo build --release -p hf2ollama-gui --target aarch64-apple-darwin
+cargo build --release -p hf2ollama-gui --target x86_64-apple-darwin
+packaging/macos/package.sh 26.10.0 \
+  target/aarch64-apple-darwin/release/hf2ollama-gui \
+  target/x86_64-apple-darwin/release/hf2ollama-gui dist
+```
+
+The icon source is `crates/hf2ollama-gui/assets/icon-1024.png`; regenerate it with `python3 packaging/macos/make_icon.py`. The ad-hoc signature makes the bundle internally valid but is not Developer ID signing or notarization, so Gatekeeper still warns.

@@ -7,6 +7,8 @@ This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-h
 - Core library: Hugging Face and Ollama clients, compatibility classification, fit estimation, hardware detection, settings and portable paths, staging and cleanup, history, import pipeline, job manager, model card fetch, token check.
 - Desktop app: window shell, Browse (search, filters, details, model card, import plan), downloads dock, Installed, Settings, light and dark themes, startup sweep of orphaned job folders.
 - Retry of the download step (3 times, backoff) after network errors, 5xx and 429; a confirmation when closing the window with running downloads; a name-collision re-check before `create` and protection against starting the same name twice; settings enum values written in kebab-case (old values still load); Clear cached files also removes failed downloads.
+- Downloads dock: a rolling five-second speed beside the download percentage and a five-line, scrollable log drawer above the dock.
+- macOS release packaging: a universal `.app` with an icon inside a drag-install `.dmg`, ad-hoc signed and verified by a packaging script.
 - Project files, CI (fmt, clippy, tests on three OSes, `dev-hooks` job) and a manual release workflow (automatic releases on merge to `main` are the planned next step; see the comment in `release.yml`) and cargo-deny.
 - A real end-to-end run against a throwaway Ollama 0.40.8 on macOS; see [the acceptance record](superpowers/notes/acceptance.md).
 
@@ -16,7 +18,7 @@ See [CHANGELOG.md](../CHANGELOG.md).
 
 - Finish the visual verification that needs an unlocked display and capture the README screenshots (listed in the acceptance record).
 - Run the CI matrix for the first time on Linux and Windows and fix whatever it finds; verify the Linux package list.
-- Release packaging: one self-contained binary per platform, plus combined third-party license notices.
+- Release packaging: macOS is a universal `.app` inside a drag-install `.dmg` (icon, ad-hoc signature and CI verification included); Windows and Linux still ship as bare-binary archives with combined third-party license notices.
 
 ## Next
 
@@ -24,7 +26,6 @@ Known limitations to address after the first release candidate:
 
 - Resume of failed downloads: a Retry or Resume action for a failed job that reuses the kept partial files, including after a restart (today the files are kept for 7 days but a new import starts over).
 - An overwrite prompt for a name that already exists (today the import is refused and overwrite is not offered from the GUI).
-- The log viewer is cramped at the 900 by 640 minimum window (about two or three lines); a floating log viewer would fix it. Full logs are in `<log_dir>/job-<id>.log`.
 - Ollama does not report free space or the model store path, so the Installed usage bar shows two segments (models imported with this app, and all others) and the status bar omits the store path.
 - Each settings change creates a new job manager and keeps the old ones, so a long session leaks a few idle managers and the parallel limit is per manager. Prune idle managers.
 - Pin the CI actions to full commit SHAs.
