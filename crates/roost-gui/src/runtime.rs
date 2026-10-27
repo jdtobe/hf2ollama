@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 /// A Hugging Face token on its way to the keychain. `Debug` never shows it,
 /// there is no `Display`, and it is not serializable.
@@ -66,6 +66,8 @@ pub enum BackendRequest {
 /// What the Settings view shows about the Hugging Face token. Never the token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HfTokenStatus {
+    /// The current token store has not answered yet.
+    Checking,
     None,
     /// In the keychain, not checked (yet).
     Saved,
@@ -158,6 +160,7 @@ struct Shared {
     paths: Paths,
     store: Arc<dyn TokenStore>,
     legacy_store: Option<Arc<dyn TokenStore>>,
+    token_gate: AsyncMutex<()>,
     job_tx: Sender<JobEvent>,
     handle: tokio::runtime::Handle,
     out: Emitter,
@@ -339,6 +342,7 @@ fn run(
         paths,
         store,
         legacy_store,
+        token_gate: AsyncMutex::new(()),
         job_tx,
         handle: runtime.handle().clone(),
         out,
@@ -346,9 +350,11 @@ fn run(
     });
     shared.install_settings(&settings);
     // What the keychain holds, without asking Hugging Face.
-    shared
-        .out
-        .emit(UiEvent::HfTokenStatus(stored_token_status(&*shared.store)));
+    let token_status = runtime.block_on(async {
+        let _guard = shared.token_gate.lock().await;
+        stored_token_status(&*shared.store)
+    });
+    shared.out.emit(UiEvent::HfTokenStatus(token_status));
 
     runtime.spawn(poll_status(Arc::clone(&shared)));
     while let Ok(req) = req_rx.recv() {
@@ -406,8 +412,8 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
     }
 }
 
-fn keychain_failure(e: &roost_core::error::Error) -> HfTokenStatus {
-    HfTokenStatus::Invalid(format!("could not access the system keychain: {e}"))
+fn keychain_failure(_e: &roost_core::error::Error) -> HfTokenStatus {
+    HfTokenStatus::Invalid("could not access the system keychain".into())
 }
 
 /// `Saved`/`None` from the keychain alone: no network.
@@ -421,7 +427,11 @@ fn stored_token_status(store: &dyn TokenStore) -> HfTokenStatus {
 
 /// Asks Hugging Face whose token the keychain holds.
 async fn check_token(shared: &Shared) -> HfTokenStatus {
-    match shared.store.get() {
+    let stored = {
+        let _guard = shared.token_gate.lock().await;
+        shared.store.get()
+    };
+    match stored {
         Ok(None) => return HfTokenStatus::None,
         Err(e) => return keychain_failure(&e),
         Ok(Some(_)) => {}
@@ -494,9 +504,12 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         // Handled synchronously in `dispatch`.
         BackendRequest::Core(_) | BackendRequest::ApplySettings(_) => return,
         BackendRequest::SetHfToken(token) => {
-            let failure = match token {
-                Some(t) => shared.store.set(t.expose()).err(),
-                None => shared.store.clear().err(),
+            let failure = {
+                let _guard = shared.token_gate.lock().await;
+                match token {
+                    Some(t) => shared.store.set(t.expose()).err(),
+                    None => shared.store.clear().err(),
+                }
             };
             let status = match failure {
                 Some(e) => keychain_failure(&e),
@@ -513,6 +526,7 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         BackendRequest::CheckHfToken => UiEvent::HfTokenStatus(check_token(shared).await),
         BackendRequest::ImportLegacyToken => {
             if let Some(legacy) = &shared.legacy_store {
+                let _guard = shared.token_gate.lock().await;
                 let current = Arc::clone(&shared.store);
                 let legacy = Arc::clone(legacy);
                 let result =
@@ -561,6 +575,7 @@ mod tests {
     use roost_core::model::ImportRequest;
     use roost_core::secrets::MemoryStore;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
     use std::time::{Duration, Instant};
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1021,6 +1036,88 @@ mod tests {
         assert_eq!(legacy.get().unwrap().as_deref(), Some(SECRET));
     }
 
+    struct BlockingSaveStore {
+        token: Mutex<Option<String>>,
+        block_first_set: std::sync::atomic::AtomicBool,
+        save_started: Barrier,
+        release_save: Barrier,
+    }
+
+    impl BlockingSaveStore {
+        fn new() -> BlockingSaveStore {
+            BlockingSaveStore {
+                token: Mutex::new(None),
+                block_first_set: std::sync::atomic::AtomicBool::new(true),
+                save_started: Barrier::new(2),
+                release_save: Barrier::new(2),
+            }
+        }
+    }
+
+    impl TokenStore for BlockingSaveStore {
+        fn get(&self) -> roost_core::error::Result<Option<String>> {
+            Ok(self.token.lock().unwrap().clone())
+        }
+
+        fn set(&self, token: &str) -> roost_core::error::Result<()> {
+            if self.block_first_set.swap(false, Ordering::SeqCst) {
+                self.save_started.wait();
+                self.release_save.wait();
+            }
+            *self.token.lock().unwrap() = Some(token.to_string());
+            Ok(())
+        }
+
+        fn clear(&self) -> roost_core::error::Result<()> {
+            *self.token.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_save_that_gets_the_token_gate_first_cannot_be_overwritten_by_import() {
+        let current = Arc::new(BlockingSaveStore::new());
+        let legacy = Arc::new(MemoryStore::default());
+        legacy.set("legacy-token").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
+            log_dir: dir.path().join("logs"),
+            default_staging: dir.path().join("staging"),
+            portable: true,
+        };
+        let (tx, rx) = Backend::spawn_with_stores(
+            egui::Context::default(),
+            Settings::default(),
+            paths,
+            current.clone(),
+            Some(legacy.clone()),
+        );
+        wait_for(&rx, |e| match e {
+            UiEvent::HfTokenStatus(_) => Some(()),
+            _ => None,
+        });
+        tx.send(BackendRequest::SetHfToken(Some(HfToken::new(
+            "saved-token",
+        ))))
+        .unwrap();
+        current.save_started.wait();
+        tx.send(BackendRequest::ImportLegacyToken).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        current.release_save.wait();
+        assert!(matches!(
+            wait_for(&rx, |e| match e {
+                UiEvent::LegacyTokenImported(result) => Some(result.clone()),
+                _ => None,
+            }),
+            Ok(LegacyTokenMigration::NotFound)
+        ));
+        assert_eq!(current.get().unwrap().as_deref(), Some("saved-token"));
+        assert_eq!(legacy.get().unwrap().as_deref(), Some("legacy-token"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn clearing_token_removes_it_from_the_store() {
         let store = Arc::new(MemoryStore::default());
@@ -1093,13 +1190,13 @@ mod tests {
 
     impl TokenStore for BrokenStore {
         fn get(&self) -> roost_core::error::Result<Option<String>> {
-            Err(roost_core::error::Error::Io("keychain: locked".into()))
+            Err(roost_core::error::Error::Io(SECRET.into()))
         }
         fn set(&self, _: &str) -> roost_core::error::Result<()> {
-            Err(roost_core::error::Error::Io("keychain: locked".into()))
+            Err(roost_core::error::Error::Io(SECRET.into()))
         }
         fn clear(&self) -> roost_core::error::Result<()> {
-            Err(roost_core::error::Error::Io("keychain: locked".into()))
+            Err(roost_core::error::Error::Io(SECRET.into()))
         }
     }
 
@@ -1129,6 +1226,13 @@ mod tests {
             if m.starts_with("could not access the system keychain")),
             "{first:?}"
         );
+        assert!(!format!("{first:?}").contains(SECRET));
+        tx.send(BackendRequest::CheckHfToken).unwrap();
+        let checked = wait_for(&rx, |e| match e {
+            UiEvent::HfTokenStatus(s) => Some(s.clone()),
+            _ => None,
+        });
+        assert!(!format!("{checked:?}").contains(SECRET));
         tx.send(BackendRequest::SetHfToken(Some(HfToken::new(SECRET))))
             .unwrap();
         let s = wait_for(&rx, |e| match e {
@@ -1141,6 +1245,12 @@ mod tests {
             "{s:?}"
         );
         assert!(!format!("{s:?}").contains(SECRET));
+        tx.send(BackendRequest::SetHfToken(None)).unwrap();
+        let cleared = wait_for(&rx, |e| match e {
+            UiEvent::HfTokenStatus(s) => Some(s.clone()),
+            _ => None,
+        });
+        assert!(!format!("{cleared:?}").contains(SECRET));
     }
 
     #[test]

@@ -503,6 +503,31 @@ fn saving_the_token_clears_the_field_and_sends_it_only_to_the_backend() {
     assert!(!format!("{reqs:?}").contains(TYPED));
 }
 
+#[test]
+fn enter_does_not_save_a_token_while_the_token_store_is_busy() {
+    let size = SIZES[0];
+    let (mut app, sent) = settings_app();
+    let mut h = Harness::new(false);
+    {
+        let state = &mut app.state_mut().settings_view.state;
+        state.token_input = "hf_busy_token".into();
+        state.token_busy = true;
+    }
+    run(&mut app, &mut h, size, 4);
+    let field = reveal(&mut app, &mut h, size, "token");
+    click(&mut app, &mut h, size, field.center());
+    h.frame(vec2(size.0, size.1), vec![key(true, false)], |ui| {
+        app.show(ui)
+    });
+    assert_eq!(
+        app.state_mut().settings_view.state.token_input,
+        "hf_busy_token"
+    );
+    assert!(sent
+        .try_iter()
+        .all(|r| !matches!(r, BackendRequest::SetHfToken(_))));
+}
+
 fn fast_double_click(app: &mut App, h: &mut Harness, size: (f32, f32), at: Pos2) {
     // Two complete clicks without a pause between them.
     for _ in 0..2 {

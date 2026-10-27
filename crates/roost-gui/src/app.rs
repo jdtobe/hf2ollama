@@ -1467,6 +1467,8 @@ mod tests {
     #[test]
     fn settings_requests_are_forwarded_to_the_backend() {
         let (mut app, reqs, ev) = app_with_channels();
+        app.state
+            .on_event(&UiEvent::HfTokenStatus(HfTokenStatus::None));
         app.state.settings_view.state.token_input = "x".into();
         app.state.settings_view.state.save_token();
         ev.send(UiEvent::CachedCleared(Ok(1))).unwrap();

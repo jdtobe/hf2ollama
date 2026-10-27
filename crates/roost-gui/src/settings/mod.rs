@@ -684,8 +684,10 @@ fn hugging_face_card(
                             .margin(Margin::symmetric(10, 6)),
                     );
                     cx.rec("token", r.rect);
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        state.save_token();
+                    if r.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        && state.save_token()
+                    {
                         forget_token_field(ui.ctx(), state);
                     }
                     ui.horizontal(|ui| {
@@ -696,12 +698,10 @@ fn hugging_face_card(
                                 .min_size(vec2(BTN_W, FIELD_H)),
                         );
                         cx.rec("token-save", save.rect);
-                        if save.clicked() {
-                            state.save_token();
+                        if save.clicked() && state.save_token() {
                             forget_token_field(ui.ctx(), state);
                         }
-                        let can_clear = state.token_status != HfTokenStatus::None
-                            && !state.token_busy;
+                        let can_clear = state.token_status != HfTokenStatus::None && !state.token_busy;
                         let clear = ui.add_enabled(
                             can_clear,
                             egui::Button::new(RichText::new("Clear").size(12.0).color(cx.t.fg2))

@@ -106,6 +106,7 @@ pub enum BadgeKind {
 /// Text and colour class of the token badge.
 pub fn token_badge(status: &HfTokenStatus) -> (BadgeKind, String) {
     match status {
+        HfTokenStatus::Checking => (BadgeKind::Neutral, "Checking keychain…".to_string()),
         HfTokenStatus::None => (BadgeKind::Neutral, "No token saved".to_string()),
         HfTokenStatus::Saved => (BadgeKind::Neutral, "Saved, not checked yet".to_string()),
         HfTokenStatus::Valid(name) => (BadgeKind::Ok, format!("Valid, signed in as {name}")),
@@ -233,8 +234,8 @@ impl SettingsState {
             ram_error: None,
             vram_error: None,
             token_input: String::new(),
-            token_status: HfTokenStatus::None,
-            token_busy: false,
+            token_status: HfTokenStatus::Checking,
+            token_busy: true,
             connection: ConnectionState::Idle,
             cached: CachedStatus::Loading,
             clear: Confirm::default(),
@@ -475,19 +476,26 @@ impl SettingsState {
 
     // ---- Hugging Face token ----
 
-    pub fn save_token(&mut self) {
+    pub fn save_token(&mut self) -> bool {
+        if self.token_busy {
+            return false;
+        }
         let token = self.token_input.trim().to_string();
         // Gone from the field at once, whatever happens next.
         self.token_input.clear();
         if token.is_empty() {
-            return;
+            return false;
         }
         self.pending
             .push(BackendRequest::SetHfToken(Some(HfToken::new(token))));
         self.token_busy = true;
+        true
     }
 
     pub fn clear_token(&mut self) {
+        if self.token_busy {
+            return;
+        }
         self.token_input.clear();
         self.pending.push(BackendRequest::SetHfToken(None));
         self.token_busy = true;
@@ -517,7 +525,7 @@ impl SettingsState {
         self.token_status = match result {
             Ok(roost_core::secrets::LegacyTokenMigration::Imported) => HfTokenStatus::Saved,
             Ok(roost_core::secrets::LegacyTokenMigration::NotFound) => HfTokenStatus::None,
-            Err(e) => HfTokenStatus::Invalid(format!("Could not import legacy token: {e}")),
+            Err(_) => HfTokenStatus::Invalid("Could not import legacy token.".into()),
         };
     }
 
@@ -651,6 +659,10 @@ mod tests {
         (s, st)
     }
 
+    fn token_ready(st: &mut SettingsState) {
+        st.on_token_status(&HfTokenStatus::None);
+    }
+
     fn flags(c: SettingsChange) -> Vec<&'static str> {
         let mut v = Vec::new();
         for (on, name) in [
@@ -700,6 +712,14 @@ mod tests {
         );
         assert!(!d.override_on);
         assert_eq!(d.cached, CachedStatus::Loading);
+    }
+
+    #[test]
+    fn new_state_waits_for_current_token_status_before_offering_import() {
+        let (_s, st) = fresh();
+        assert_eq!(st.token_status, HfTokenStatus::Checking);
+        assert!(st.token_busy);
+        assert!(!st.can_import_legacy_token());
     }
 
     #[test]
@@ -956,6 +976,7 @@ mod tests {
     #[test]
     fn token_save_queues_one_request_and_clears_the_field() {
         let (_s, mut st) = fresh();
+        token_ready(&mut st);
         st.token_input = "  hf_secret_value \n".into();
         st.save_token();
         assert!(st.token_input.is_empty(), "the typed token is gone at once");
@@ -972,6 +993,7 @@ mod tests {
     #[test]
     fn empty_token_input_sends_nothing() {
         let (_s, mut st) = fresh();
+        token_ready(&mut st);
         st.token_input = "   ".into();
         st.save_token();
         assert!(st.take_requests().is_empty());
@@ -981,6 +1003,7 @@ mod tests {
     #[test]
     fn token_clear_and_status_updates() {
         let (_s, mut st) = fresh();
+        token_ready(&mut st);
         st.clear_token();
         assert!(matches!(
             st.take_requests().as_slice(),
@@ -990,6 +1013,25 @@ mod tests {
         st.on_token_status(&HfTokenStatus::Valid("jdtobe".into()));
         assert!(!st.token_busy);
         assert_eq!(st.token_status, HfTokenStatus::Valid("jdtobe".into()));
+    }
+
+    #[test]
+    fn token_actions_do_not_queue_while_an_operation_is_busy() {
+        let (_s, mut st) = fresh();
+        st.token_busy = true;
+        st.token_input = "hf_typed".into();
+        st.save_token();
+        st.clear_token();
+        st.import_legacy_token();
+        assert_eq!(st.token_input, "hf_typed");
+        assert!(st.take_requests().is_empty());
+    }
+
+    #[test]
+    fn legacy_import_error_state_redacts_event_text() {
+        let (_s, mut st) = fresh();
+        st.on_legacy_token_imported(&Err("hf_event_secret".into()));
+        assert!(!format!("{:?}", st.token_status).contains("hf_event_secret"));
     }
 
     #[test]
@@ -1321,6 +1363,7 @@ mod tests {
     #[test]
     fn legacy_import_is_only_queued_for_an_empty_production_store() {
         let (_s, mut st) = fresh();
+        token_ready(&mut st);
         st.import_legacy_token();
         assert!(matches!(
             st.take_requests().as_slice(),
