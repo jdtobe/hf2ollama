@@ -1,7 +1,8 @@
 name: Release
 
 # Run by hand from the Actions tab (Run workflow). It tests the code, builds
-# macOS, Windows and Linux, and, only when "publish" is ticked and the run is
+# macOS (a universal hf2ollama.app inside a drag-install .dmg), Windows and
+# Linux, and, only when "publish" is ticked and the run is
 # on main, publishes a GitHub release named YY.M.N (year without the century,
 # month without a leading zero, and the number of the release within that
 # month, counting from 0), for example v26.10.0. Without "publish" it only
@@ -55,8 +56,8 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { name: macos-arm64, os: macos-latest, target: aarch64-apple-darwin }
-          - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin }
+          # One universal .app/.dmg rather than separate architecture downloads.
+          - { name: macos-universal, os: macos-latest, target: "aarch64-apple-darwin,x86_64-apple-darwin" }
           - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
           - { name: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
@@ -67,7 +68,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.name }}
       - name: Linux GUI dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
@@ -80,19 +81,35 @@ jobs:
             sed -i.bak -E 's/(hf2ollama-core = \{ version = )"[^"]+"/\1"${{ needs.version.outputs.version }}"/' "$f"
             rm -f "$f.bak"
           done
-      - run: cargo build --release -p hf2ollama-gui --target ${{ matrix.target }}
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo build --release -p hf2ollama-gui --target aarch64-apple-darwin
+          cargo build --release -p hf2ollama-gui --target x86_64-apple-darwin
+      - name: Build
+        if: runner.os != 'macOS'
+        run: cargo build --release -p hf2ollama-gui --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
-          out="hf2ollama-${{ needs.version.outputs.version }}-${{ matrix.name }}"
-          mkdir -p "$out" dist
-          cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_LICENSES.md README.md "$out/"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/hf2ollama-gui.exe" "$out/"
-            7z a "dist/$out.zip" "$out" > /dev/null
+          version="${{ needs.version.outputs.version }}"
+          out="hf2ollama-${version}-${{ matrix.name }}"
+          mkdir -p dist
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            packaging/macos/package.sh "$version" \
+              "target/aarch64-apple-darwin/release/hf2ollama-gui" \
+              "target/x86_64-apple-darwin/release/hf2ollama-gui" dist
           else
-            cp "target/${{ matrix.target }}/release/hf2ollama-gui" "$out/"
-            tar -czf "dist/$out.tar.gz" "$out"
+            mkdir -p "$out"
+            cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_LICENSES.md README.md "$out/"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              cp "target/${{ matrix.target }}/release/hf2ollama-gui.exe" "$out/"
+              7z a "dist/$out.zip" "$out" > /dev/null
+            else
+              cp "target/${{ matrix.target }}/release/hf2ollama-gui" "$out/"
+              tar -czf "dist/$out.tar.gz" "$out"
+            fi
           fi
       - uses: actions/upload-artifact@v7
         with:
@@ -109,7 +126,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
@@ -123,7 +140,7 @@ jobs:
           cat > notes.md <<'NOTES'
           Unsigned builds. Your OS may warn the first time you open one.
 
-          - **macOS:** after extracting, run `xattr -dr com.apple.quarantine hf2ollama-*` or right-click the file and choose Open.
+          - **macOS:** open the `.dmg`, drag hf2ollama into Applications, then right-click the app and choose Open the first time. The build is unsigned and not notarized, so Gatekeeper warns on first launch.
           - **Windows:** SmartScreen may say the publisher is unknown; choose More info, then Run anyway.
           - **Linux:** extract, then run `./hf2ollama-gui`. It needs a running Ollama (default `http://localhost:11434`).
 
