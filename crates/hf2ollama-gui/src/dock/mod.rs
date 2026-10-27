@@ -41,6 +41,8 @@ pub struct DockProbe {
     pub log_panel: Option<egui::Rect>,
     /// The scrolling log text area inside the drawer.
     pub log_viewport: Option<egui::Rect>,
+    /// The drawer's close button.
+    pub log_close: Option<egui::Rect>,
 }
 
 /// View state of the dock (which logs are expanded).

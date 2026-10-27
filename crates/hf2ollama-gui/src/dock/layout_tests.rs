@@ -269,6 +269,34 @@ fn log_drawer_shows_five_scrollable_lines_above_the_dock() {
 }
 
 #[test]
+fn the_drawer_close_button_closes_the_drawer() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let (mut app, sent) = browse_app_chan(false);
+            add_job(&mut app, 1, Kind::Running, 12);
+            app.state_mut().dock.open_log = Some(JobId(1));
+            let mut harness = Harness::new(dark);
+            for _ in 0..10 {
+                harness.frame(vec2(size.0, size.1), vec![], |ui| app.show(ui));
+            }
+            let probe = app.state_mut().dock.probe.clone();
+            let drawer = probe.log_panel.expect("log drawer");
+            let close = probe.log_close.expect("log close button");
+            assert!(
+                inside(close, drawer) && close.width() >= 18.0,
+                "{size:?} dark={dark}: close {close:?} outside {drawer:?}"
+            );
+            let _ = click_at(&mut app, &sent, &mut harness, size, close.center());
+            assert_eq!(
+                app.state_mut().dock.open_log,
+                None,
+                "{size:?} dark={dark}: the close button did not close the drawer"
+            );
+        }
+    }
+}
+
+#[test]
 fn opening_a_log_does_not_resize_the_dock() {
     for size in SIZES {
         for dark in [false, true] {
