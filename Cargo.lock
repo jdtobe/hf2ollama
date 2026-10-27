@@ -1868,44 +1868,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
-name = "hf2ollama-core"
-version = "0.1.0"
-dependencies = [
- "directories",
- "fs4",
- "futures-util",
- "keyring",
- "nvml-wrapper",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
- "wiremock",
-]
-
-[[package]]
-name = "hf2ollama-gui"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui_extras",
- "hf2ollama-core",
- "png",
- "pulldown-cmark",
- "rfd",
- "serde_json",
- "tempfile",
- "tokio",
- "wiremock",
-]
-
-[[package]]
 name = "hkdf"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3781,6 +3743,44 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "roost-core"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "fs4",
+ "futures-util",
+ "keyring",
+ "nvml-wrapper",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "wiremock",
+]
+
+[[package]]
+name = "roost-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_extras",
+ "png",
+ "pulldown-cmark",
+ "rfd",
+ "roost-core",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

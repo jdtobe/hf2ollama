@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hf2ollama-core", "crates/hf2ollama-gui"]
+members = ["crates/roost-core", "crates/roost-gui"]
 
 [workspace.package]
 edition = "2021"

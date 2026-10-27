@@ -1,0 +1,32 @@
+[package]
+name = "roost-gui"
+version = "0.1.0"
+description = "Desktop app that finds models on Hugging Face and imports them into a local Ollama."
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Screenshot and trial hooks (in-memory token store). Off in release builds.
+dev-hooks = []
+
+[dependencies]
+eframe = "0.37"
+egui_extras = "0.37"
+roost-core = { version = "0.1.0", path = "../roost-core" }
+png = "0.18"
+pulldown-cmark = { version = "0.13.5", default-features = false }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+wiremock = "0.6.5"
+
+[[bin]]
+name = "roost"
+path = "src/main.rs"
