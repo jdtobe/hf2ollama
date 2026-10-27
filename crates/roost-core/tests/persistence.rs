@@ -1,4 +1,4 @@
-use roost_core::persistence::atomic_write;
+use roost_core::persistence::{atomic_write, atomic_write_if_absent};
 use std::fs;
 use std::sync::{Arc, Barrier};
 
@@ -21,6 +21,47 @@ fn round_trips_complete_bytes() {
     atomic_write(&path, bytes).unwrap();
 
     assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn write_if_absent_preserves_an_existing_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("metadata");
+    fs::write(&path, b"current").unwrap();
+
+    let published = atomic_write_if_absent(&path, b"legacy").unwrap();
+
+    assert!(!published);
+    assert_eq!(fs::read(&path).unwrap(), b"current");
+}
+
+#[test]
+fn concurrent_write_if_absent_has_one_publisher_and_keeps_its_complete_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Arc::new(dir.path().join("metadata"));
+    let start = Arc::new(Barrier::new(16));
+    let mut writers = Vec::new();
+
+    for writer in 0..16 {
+        let path = Arc::clone(&path);
+        let start = Arc::clone(&start);
+        writers.push(std::thread::spawn(move || {
+            start.wait();
+            let bytes = format!("writer-{writer}");
+            atomic_write_if_absent(&path, bytes.as_bytes()).unwrap()
+        }));
+    }
+
+    let publishers = writers
+        .into_iter()
+        .map(|writer| writer.join().unwrap())
+        .filter(|published| *published)
+        .count();
+
+    assert_eq!(publishers, 1);
+    assert!(std::str::from_utf8(&fs::read(&*path).unwrap())
+        .unwrap()
+        .starts_with("writer-"));
 }
 
 #[test]

@@ -49,8 +49,9 @@ fn migrate_one(
             return;
         }
     };
-    match crate::persistence::atomic_write(destination, &bytes) {
-        Ok(()) => report.migrated.push(label),
+    match crate::persistence::atomic_write_if_absent(destination, &bytes) {
+        Ok(true) => report.migrated.push(label),
+        Ok(false) => {}
         Err(error) => report
             .warnings
             .push(format!("could not migrate legacy {label}: {error}")),
