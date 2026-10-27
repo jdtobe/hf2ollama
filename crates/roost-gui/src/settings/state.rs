@@ -205,6 +205,7 @@ pub struct SettingsState {
     /// The change being saved moved the staging folder.
     staging_moved: bool,
     dev_memory_store: bool,
+    legacy_import_available: bool,
 }
 
 impl SettingsState {
@@ -244,6 +245,7 @@ impl SettingsState {
             pending: Vec::new(),
             staging_moved: false,
             dev_memory_store: false,
+            legacy_import_available: true,
         }
     }
 
@@ -255,6 +257,7 @@ impl SettingsState {
     #[cfg(any(test, feature = "dev-hooks"))]
     pub fn set_dev_memory_store(&mut self, on: bool) {
         self.dev_memory_store = on;
+        self.legacy_import_available = !on;
     }
 
     /// A note shown next to the token status in dev-hooks runs.
@@ -493,6 +496,29 @@ impl SettingsState {
     pub fn on_token_status(&mut self, status: &HfTokenStatus) {
         self.token_status = status.clone();
         self.token_busy = false;
+    }
+
+    pub fn can_import_legacy_token(&self) -> bool {
+        self.legacy_import_available && self.token_status == HfTokenStatus::None && !self.token_busy
+    }
+
+    pub fn import_legacy_token(&mut self) {
+        if self.can_import_legacy_token() {
+            self.pending.push(BackendRequest::ImportLegacyToken);
+            self.token_busy = true;
+        }
+    }
+
+    pub fn on_legacy_token_imported(
+        &mut self,
+        result: &Result<roost_core::secrets::LegacyTokenMigration, String>,
+    ) {
+        self.token_busy = false;
+        self.token_status = match result {
+            Ok(roost_core::secrets::LegacyTokenMigration::Imported) => HfTokenStatus::Saved,
+            Ok(roost_core::secrets::LegacyTokenMigration::NotFound) => HfTokenStatus::None,
+            Err(e) => HfTokenStatus::Invalid(format!("Could not import legacy token: {e}")),
+        };
     }
 
     // ---- connection test ----
@@ -1287,7 +1313,23 @@ mod tests {
         assert_eq!(st.token_note(), None);
         st.set_dev_memory_store(true);
         assert_eq!(st.token_note(), Some("dev: token not persisted"));
+        assert!(!st.can_import_legacy_token());
         st.set_dev_memory_store(false);
         assert_eq!(st.token_note(), None);
+    }
+
+    #[test]
+    fn legacy_import_is_only_queued_for_an_empty_production_store() {
+        let (_s, mut st) = fresh();
+        st.import_legacy_token();
+        assert!(matches!(
+            st.take_requests().as_slice(),
+            [BackendRequest::ImportLegacyToken]
+        ));
+        assert!(st.token_busy);
+
+        st.on_token_status(&HfTokenStatus::Saved);
+        st.import_legacy_token();
+        assert!(st.take_requests().is_empty());
     }
 }

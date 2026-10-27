@@ -1,27 +1,27 @@
 //! Opt-in end-to-end tests against a REAL Ollama and the PUBLIC Hugging Face
 //! API (no token). They are `#[ignore]`d and also skip themselves unless
-//! `HF2OLLAMA_E2E_OLLAMA_URL` is set. Point it at a throwaway server, never at
+//! `ROOST_E2E_OLLAMA_URL` is set. Point it at a throwaway server, never at
 //! your everyday one, for example:
 //!
 //! ```text
 //! OLLAMA_HOST=127.0.0.1:11555 OLLAMA_MODELS=/some/temp/dir ollama serve &
-//! HF2OLLAMA_E2E_OLLAMA_URL=http://127.0.0.1:11555 \
-//!   cargo test -p hf2ollama-core --test e2e_real_ollama -- --ignored --test-threads=1
+//! ROOST_E2E_OLLAMA_URL=http://127.0.0.1:11555 \
+//!   cargo test -p roost-core --test e2e_real_ollama -- --ignored --test-threads=1
 //! ```
 //!
 //! Safety rules, all checked by `e2e_environment()` before any test touches
 //! Ollama (a test that fails a rule prints why and skips):
 //!
-//! - the URL is http(s) on a loopback host (`HF2OLLAMA_E2E_ALLOW_REMOTE=1`
+//! - the URL is http(s) on a loopback host (`ROOST_E2E_ALLOW_REMOTE=1`
 //!   allows another host);
-//! - the port is not 11434 (`HF2OLLAMA_E2E_CONFIRM_DISPOSABLE=1` allows it);
+//! - the port is not 11434 (`ROOST_E2E_CONFIRM_DISPOSABLE=1` allows it);
 //! - `/api/tags` shows the server is empty or holds only `hf2o-e2e-*` models.
 //!   There is no override for this rule.
 //!
 //! Tests create and delete models named `hf2o-e2e-*` only; every delete goes
 //! through `delete_e2e_model`, which panics on any other name. An `E2eCleanup`
 //! guard deletes a test's models even when an assertion fails.
-//! `HF2OLLAMA_E2E_FORCE_FAIL=1` makes the GGUF import test fail on purpose to
+//! `ROOST_E2E_FORCE_FAIL=1` makes the GGUF import test fail on purpose to
 //! show that cleanup (the server should be empty afterwards).
 
 use roost_core::compat::{bundled_supported, classify, Compat};
@@ -70,13 +70,13 @@ fn url_is_acceptable_with(
             .is_ok_and(|ip| ip.is_loopback());
     if !loopback && !allow_remote {
         return Err(format!(
-            "host {host} is not a loopback address (set HF2OLLAMA_E2E_ALLOW_REMOTE=1 for a disposable remote server)"
+            "host {host} is not a loopback address (set ROOST_E2E_ALLOW_REMOTE=1 for a disposable remote server)"
         ));
     }
     // No explicit port means 80 or 443, never Ollama's default.
     if parsed.port_or_known_default() == Some(11434) && !allow_default_port {
         return Err(
-            "port 11434 is Ollama's default; use a disposable instance on another port (or set HF2OLLAMA_E2E_CONFIRM_DISPOSABLE=1 if this one really is disposable)"
+            "port 11434 is Ollama's default; use a disposable instance on another port (or set ROOST_E2E_CONFIRM_DISPOSABLE=1 if this one really is disposable)"
                 .into(),
         );
     }
@@ -151,25 +151,23 @@ struct E2eEnv {
 
 /// `None` (with the reason printed) unless it is safe to run. Rules: the URL
 /// variable is set; it is http(s) on a loopback host (or
-/// `HF2OLLAMA_E2E_ALLOW_REMOTE=1`); the port is not 11434 (unless
-/// `HF2OLLAMA_E2E_CONFIRM_DISPOSABLE=1`); and the server is empty or holds only
+/// `ROOST_E2E_ALLOW_REMOTE=1`); the port is not 11434 (unless
+/// `ROOST_E2E_CONFIRM_DISPOSABLE=1`); and the server is empty or holds only
 /// `hf2o-e2e-*` models. The last rule has no override. Leftover `hf2o-e2e-*`
 /// models are removed.
 async fn e2e_environment() -> Option<E2eEnv> {
     let flag = |k: &str| std::env::var(k).as_deref() == Ok("1");
-    let url = match std::env::var("HF2OLLAMA_E2E_OLLAMA_URL") {
+    let url = match std::env::var("ROOST_E2E_OLLAMA_URL") {
         Ok(u) if !u.trim().is_empty() => u,
         _ => {
-            eprintln!(
-                "SKIPPED: set HF2OLLAMA_E2E_OLLAMA_URL to a throwaway Ollama to run this test"
-            );
+            eprintln!("SKIPPED: set ROOST_E2E_OLLAMA_URL to a throwaway Ollama to run this test");
             return None;
         }
     };
     if let Err(why) = url_is_acceptable_with(
         &url,
-        flag("HF2OLLAMA_E2E_ALLOW_REMOTE"),
-        flag("HF2OLLAMA_E2E_CONFIRM_DISPOSABLE"),
+        flag("ROOST_E2E_ALLOW_REMOTE"),
+        flag("ROOST_E2E_CONFIRM_DISPOSABLE"),
     ) {
         eprintln!("SKIPPED: refusing {url}: {why}");
         return None;
@@ -194,10 +192,10 @@ async fn e2e_environment() -> Option<E2eEnv> {
     Some(E2eEnv { url })
 }
 
-/// `HF2OLLAMA_E2E_FORCE_FAIL=1` makes the GGUF import test fail on purpose
+/// `ROOST_E2E_FORCE_FAIL=1` makes the GGUF import test fail on purpose
 /// after it created a model, to show that the cleanup guard still deletes it.
 fn force_fail() -> bool {
-    std::env::var("HF2OLLAMA_E2E_FORCE_FAIL").as_deref() == Ok("1")
+    std::env::var("ROOST_E2E_FORCE_FAIL").as_deref() == Ok("1")
 }
 
 #[cfg(test)]
@@ -456,7 +454,7 @@ async fn gguf_import_deletes_staging_and_records_history() {
     assert!(h.installed(name).await, "model missing from /api/tags");
     assert!(
         !force_fail(),
-        "HF2OLLAMA_E2E_FORCE_FAIL=1: failing on purpose; the cleanup guard must still delete the model"
+        "ROOST_E2E_FORCE_FAIL=1: failing on purpose; the cleanup guard must still delete the model"
     );
     assert_eq!(history_source(&h, name).as_deref(), Some(GGUF_REPO));
     assert!(

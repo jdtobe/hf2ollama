@@ -9,7 +9,7 @@ use roost_core::history::History;
 use roost_core::ollama::{InstalledModel, ModelDetails, OllamaClient};
 use roost_core::paths::Paths;
 use roost_core::pipeline::{JobManager, PipelineCtx};
-use roost_core::secrets::{KeychainStore, TokenStore};
+use roost_core::secrets::{promote_legacy_token, KeychainStore, LegacyTokenMigration, TokenStore};
 use roost_core::staging::Staging;
 use std::ops::Not;
 use std::path::PathBuf;
@@ -57,6 +57,8 @@ pub enum BackendRequest {
     SetHfToken(Option<HfToken>),
     /// Asks Hugging Face whose token this is.
     CheckHfToken,
+    /// Explicitly copies a token from the legacy hf2ollama keychain service.
+    ImportLegacyToken,
     ListCached,
     ClearCached,
 }
@@ -104,6 +106,8 @@ pub enum UiEvent {
     /// Answer to `ApplySettings`: whether the TOML file was written.
     SettingsSaved(Result<(), String>),
     HfTokenStatus(HfTokenStatus),
+    /// Result of an explicit legacy keychain import. Never contains a token.
+    LegacyTokenImported(Result<LegacyTokenMigration, String>),
     CachedLoaded(Result<Vec<CachedRow>, String>),
     /// Bytes freed by `ClearCached`.
     CachedCleared(Result<u64, String>),
@@ -153,6 +157,7 @@ struct Shared {
     history: Arc<Mutex<History>>,
     paths: Paths,
     store: Arc<dyn TokenStore>,
+    legacy_store: Option<Arc<dyn TokenStore>>,
     job_tx: Sender<JobEvent>,
     handle: tokio::runtime::Handle,
     out: Emitter,
@@ -237,7 +242,13 @@ impl Backend {
         settings: Settings,
         paths: Paths,
     ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
-        Backend::spawn_with(ctx, settings, paths, Arc::new(KeychainStore))
+        Backend::spawn_with_stores(
+            ctx,
+            settings,
+            paths,
+            Arc::new(KeychainStore::roost()),
+            Some(Arc::new(KeychainStore::legacy())),
+        )
     }
 
     /// Starts the backend on its own thread, which owns the tokio runtime for
@@ -248,11 +259,23 @@ impl Backend {
         paths: Paths,
         store: Arc<dyn TokenStore>,
     ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
+        Backend::spawn_with_stores(ctx, settings, paths, store, None)
+    }
+
+    /// Starts with injected stores. Dev hooks pass no legacy store so they
+    /// cannot offer or access the production legacy keychain.
+    pub fn spawn_with_stores(
+        ctx: egui::Context,
+        settings: Settings,
+        paths: Paths,
+        store: Arc<dyn TokenStore>,
+        legacy_store: Option<Arc<dyn TokenStore>>,
+    ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<BackendRequest>();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiEvent>();
         let started = std::thread::Builder::new()
             .name("hf2ollama-backend".into())
-            .spawn(move || run(ctx, settings, paths, store, req_rx, ui_tx));
+            .spawn(move || run(ctx, settings, paths, store, legacy_store, req_rx, ui_tx));
         if let Err(e) = started {
             eprintln!("could not start the backend thread: {e}");
         }
@@ -265,6 +288,7 @@ fn run(
     settings: Settings,
     paths: Paths,
     store: Arc<dyn TokenStore>,
+    legacy_store: Option<Arc<dyn TokenStore>>,
     req_rx: Receiver<BackendRequest>,
     ui_tx: Sender<UiEvent>,
 ) {
@@ -314,6 +338,7 @@ fn run(
         history: Arc::new(Mutex::new(history)),
         paths,
         store,
+        legacy_store,
         job_tx,
         handle: runtime.handle().clone(),
         out,
@@ -486,6 +511,26 @@ async fn serve(shared: &Shared, req: BackendRequest) {
             UiEvent::HfTokenStatus(status)
         }
         BackendRequest::CheckHfToken => UiEvent::HfTokenStatus(check_token(shared).await),
+        BackendRequest::ImportLegacyToken => {
+            if let Some(legacy) = &shared.legacy_store {
+                let current = Arc::clone(&shared.store);
+                let legacy = Arc::clone(legacy);
+                let result =
+                    tokio::task::spawn_blocking(move || promote_legacy_token(&*current, &*legacy))
+                        .await
+                        .map_err(|e| format!("the background task failed: {e}"))
+                        .and_then(text);
+                if result == Ok(LegacyTokenMigration::Imported) {
+                    let settings = shared.clients().settings.clone();
+                    shared.install_settings(&settings);
+                }
+                UiEvent::LegacyTokenImported(result)
+            } else {
+                UiEvent::LegacyTokenImported(Err(
+                    "Legacy token import is unavailable in this build.".into(),
+                ))
+            }
+        }
         BackendRequest::ListCached => {
             let staging = Staging::new(shared.clients().staging.clone());
             let r = tokio::task::spawn_blocking(move || staging.list_cached()).await;
@@ -934,6 +979,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_legacy_import_promotes_without_deleting_the_legacy_token() {
+        let current = Arc::new(MemoryStore::default());
+        let legacy = Arc::new(MemoryStore::default());
+        legacy.set(SECRET).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
+            log_dir: dir.path().join("logs"),
+            default_staging: dir.path().join("staging"),
+            portable: true,
+        };
+        let (tx, rx) = Backend::spawn_with_stores(
+            egui::Context::default(),
+            Settings::default(),
+            paths,
+            current.clone(),
+            Some(legacy.clone()),
+        );
+        assert_eq!(
+            wait_for(&rx, |e| match e {
+                UiEvent::HfTokenStatus(s) => Some(s.clone()),
+                _ => None,
+            }),
+            HfTokenStatus::None
+        );
+        tx.send(BackendRequest::ImportLegacyToken).unwrap();
+        assert!(matches!(
+            wait_for(&rx, |e| match e {
+                UiEvent::LegacyTokenImported(r) => Some(r.clone()),
+                _ => None,
+            }),
+            Ok(roost_core::secrets::LegacyTokenMigration::Imported)
+        ));
+        assert_eq!(current.get().unwrap().as_deref(), Some(SECRET));
+        assert_eq!(legacy.get().unwrap().as_deref(), Some(SECRET));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

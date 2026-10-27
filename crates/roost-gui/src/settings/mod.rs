@@ -712,7 +712,29 @@ fn hugging_face_card(
                             state.clear_token();
                             forget_token_field(ui.ctx(), state);
                         }
+                        if state.can_import_legacy_token() {
+                            let import = ui.add_sized(
+                                vec2(170.0, FIELD_H),
+                                egui::Button::new(
+                                    RichText::new("Import hf2ollama token").size(12.0).color(cx.t.fg2),
+                                ),
+                            );
+                            cx.rec("token-import-legacy", import.rect);
+                            if import.clicked() {
+                                state.import_legacy_token();
+                            }
+                        }
                     });
+                    if state.can_import_legacy_token() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("macOS may display a Keychain access prompt.")
+                                    .size(11.5)
+                                    .color(cx.t.warn),
+                            )
+                            .wrap(),
+                        );
+                    }
                     token_badge_ui(ui, cx, state, w);
                     if let Some(note) = state.token_note() {
                         ui.add(

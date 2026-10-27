@@ -250,6 +250,10 @@ impl AppState {
                 self.settings_view.state.on_token_status(status);
                 None
             }
+            UiEvent::LegacyTokenImported(result) => {
+                self.settings_view.state.on_legacy_token_imported(result);
+                None
+            }
             UiEvent::CachedLoaded(r) => {
                 self.settings_view.state.on_cached_loaded(r);
                 None

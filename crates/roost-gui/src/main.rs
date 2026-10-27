@@ -17,12 +17,16 @@ use roost_core::config::ThemeChoice;
 use roost_core::paths::OsDirs;
 use std::io::Cursor;
 
-/// `HF2O_THEME=light|dark` overrides the saved theme. Only meant for taking
+/// `ROOST_THEME=light|dark` overrides the saved theme. Only meant for taking
 /// screenshots of both themes; it is not a user-facing setting.
 fn theme_override() -> Option<ThemeChoice> {
-    match std::env::var("HF2O_THEME").as_deref() {
-        Ok("light") => Some(ThemeChoice::Light),
-        Ok("dark") => Some(ThemeChoice::Dark),
+    theme_override_with(|name| std::env::var(name).ok())
+}
+
+fn theme_override_with(lookup: impl FnOnce(&str) -> Option<String>) -> Option<ThemeChoice> {
+    match lookup("ROOST_THEME").as_deref() {
+        Some("light") => Some(ThemeChoice::Light),
+        Some("dark") => Some(ThemeChoice::Dark),
         _ => None,
     }
 }
@@ -50,32 +54,41 @@ fn window_icon() -> Option<egui::IconData> {
     })
 }
 
-/// `HF2O_SIZE=WxH` overrides the initial window size, e.g. `900x640`. Only
+/// `ROOST_SIZE=WxH` overrides the initial window size, e.g. `900x640`. Only
 /// meant for taking screenshots at several widths; it cannot go below
 /// `MIN_WINDOW`.
 fn size_override() -> Option<[f32; 2]> {
-    let raw = std::env::var("HF2O_SIZE").ok()?;
+    size_override_with(|name| std::env::var(name).ok())
+}
+
+fn size_override_with(lookup: impl FnOnce(&str) -> Option<String>) -> Option<[f32; 2]> {
+    let raw = lookup("ROOST_SIZE")?;
     let (w, h) = raw.split_once('x')?;
     let (w, h): (f32, f32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
     Some([w.max(MIN_WINDOW[0]), h.max(MIN_WINDOW[1])])
 }
 
-/// `HF2O_QUERY=text` fills the search box and `HF2O_SELECT=owner/name`
+/// `ROOST_QUERY=text` fills the search box and `ROOST_SELECT=owner/name`
 /// selects a repository at startup. Only meant for screenshots.
 fn preset() -> (Option<String>, Option<String>) {
-    (
-        std::env::var("HF2O_QUERY").ok(),
-        std::env::var("HF2O_SELECT").ok(),
-    )
+    preset_with(|name| std::env::var(name).ok())
 }
 
-/// `HF2O_VIEW=installed|settings|browse` starts on that view. Only meant for
+fn preset_with(lookup: impl Fn(&str) -> Option<String>) -> (Option<String>, Option<String>) {
+    (lookup("ROOST_QUERY"), lookup("ROOST_SELECT"))
+}
+
+/// `ROOST_VIEW=installed|settings|browse` starts on that view. Only meant for
 /// screenshots; inert unless set.
 fn view_override() -> Option<app::View> {
-    match std::env::var("HF2O_VIEW").as_deref() {
-        Ok("installed") => Some(app::View::Installed),
-        Ok("settings") => Some(app::View::Settings),
-        Ok("browse") => Some(app::View::Browse),
+    view_override_with(|name| std::env::var(name).ok())
+}
+
+fn view_override_with(lookup: impl FnOnce(&str) -> Option<String>) -> Option<app::View> {
+    match lookup("ROOST_VIEW").as_deref() {
+        Some("installed") => Some(app::View::Installed),
+        Some("settings") => Some(app::View::Settings),
+        Some("browse") => Some(app::View::Browse),
         _ => None,
     }
 }
@@ -87,21 +100,28 @@ fn dev_memory_store_enabled(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
-/// Dev-hooks builds only: `HF2O_MEMORY_TOKEN_STORE=1` keeps the Hugging Face
+/// Dev-hooks builds only: `ROOST_MEMORY_TOKEN_STORE=1` keeps the Hugging Face
 /// token in memory instead of the system keychain, starting with
-/// `HF2O_MEMORY_TOKEN` when set. For screenshots and trials that must not
+/// `ROOST_MEMORY_TOKEN` when set. For screenshots and trials that must not
 /// touch the real keychain. Without the `dev-hooks` feature this does not
 /// exist, so a release binary cannot be switched to it.
 #[cfg(feature = "dev-hooks")]
 fn memory_token_store() -> Option<std::sync::Arc<dyn roost_core::secrets::TokenStore>> {
+    memory_token_store_with(|name| std::env::var(name).ok())
+}
+
+#[cfg(feature = "dev-hooks")]
+fn memory_token_store_with(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<std::sync::Arc<dyn roost_core::secrets::TokenStore>> {
     use roost_core::secrets::{MemoryStore, TokenStore};
-    let value = std::env::var("HF2O_MEMORY_TOKEN_STORE").ok();
+    let value = lookup("ROOST_MEMORY_TOKEN_STORE");
     if !dev_memory_store_enabled(value.as_deref()) {
         return None;
     }
     eprintln!("hf2ollama: dev-hooks: using an in-memory token store; the token will not be saved");
     let store = MemoryStore::default();
-    if let Ok(token) = std::env::var("HF2O_MEMORY_TOKEN") {
+    if let Some(token) = lookup("ROOST_MEMORY_TOKEN") {
         // Best effort: the in-memory store cannot fail.
         let _ = store.set(&token);
     }
@@ -212,11 +232,38 @@ mod tests {
         assert!(dev_memory_store_enabled(Some("1")));
     }
 
-    #[cfg(not(feature = "dev-hooks"))]
     #[test]
-    fn memory_token_store_is_absent_without_the_dev_hooks_feature() {
-        std::env::set_var("HF2O_MEMORY_TOKEN_STORE", "1");
-        std::env::set_var("HF2O_MEMORY_TOKEN", "hf_not_used");
-        assert!(memory_token_store().is_none());
+    fn environment_overrides_use_roost_names_through_an_injected_lookup() {
+        let lookup = |name: &str| match name {
+            "ROOST_THEME" => Some("dark".to_string()),
+            "ROOST_SIZE" => Some("800x500".to_string()),
+            "ROOST_QUERY" => Some("qwen".to_string()),
+            "ROOST_SELECT" => Some("org/model".to_string()),
+            "ROOST_VIEW" => Some("settings".to_string()),
+            _ => None,
+        };
+        assert_eq!(theme_override_with(lookup), Some(ThemeChoice::Dark));
+        assert_eq!(size_override_with(lookup), Some(MIN_WINDOW));
+        assert_eq!(
+            preset_with(lookup),
+            (Some("qwen".into()), Some("org/model".into()))
+        );
+        assert_eq!(view_override_with(lookup), Some(app::View::Settings));
+    }
+
+    #[test]
+    fn legacy_environment_names_are_not_aliases() {
+        let legacy = |name: &str| match name {
+            "HF2O_THEME" => Some("dark".to_string()),
+            "HF2O_SIZE" => Some("1200x800".to_string()),
+            "HF2O_QUERY" => Some("qwen".to_string()),
+            "HF2O_SELECT" => Some("org/model".to_string()),
+            "HF2O_VIEW" => Some("settings".to_string()),
+            _ => None,
+        };
+        assert_eq!(theme_override_with(legacy), None);
+        assert_eq!(size_override_with(legacy), None);
+        assert_eq!(preset_with(legacy), (None, None));
+        assert_eq!(view_override_with(legacy), None);
     }
 }
