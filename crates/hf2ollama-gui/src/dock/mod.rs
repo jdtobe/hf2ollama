@@ -98,6 +98,7 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
         st.probe.viewport = None;
         st.probe.log_panel = None;
         st.probe.log_viewport = None;
+        st.probe.log_close = None;
     }
     let resp = egui::Panel::bottom("dock")
         .frame(crate::app::panel_frame(
@@ -188,14 +189,27 @@ fn log_drawer(ui: &egui::Ui, dock: egui::Rect, t: &Tokens, row: &JobRow, st: &mu
                                 .color(t.fg3),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(RichText::new("✕").size(12.0).color(t.fg2))
-                                        .frame(false)
-                                        .min_size(vec2(20.0, 20.0)),
-                                )
-                                .clicked()
+                            let (rect, resp) =
+                                ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+                            let resp = resp
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text("Close log");
+                            let fg = if resp.hovered() { t.fg } else { t.fg3 };
+                            if resp.hovered() {
+                                ui.painter().circle_filled(rect.center(), 10.0, t.surface);
+                            }
+                            let c = rect.center();
+                            let arm = 3.5;
+                            let stroke = Stroke::new(1.5, fg);
+                            ui.painter()
+                                .line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
+                            ui.painter()
+                                .line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
+                            #[cfg(test)]
                             {
+                                st.probe.log_close = Some(rect);
+                            }
+                            if resp.clicked() {
                                 close = true;
                             }
                         });
