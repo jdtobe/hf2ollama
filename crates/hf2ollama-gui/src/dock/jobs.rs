@@ -109,6 +109,12 @@ impl JobRow {
     }
 }
 
+/// Formats a transfer rate, e.g. `12.4 MB/s`.
+#[allow(dead_code)]
+pub fn format_rate(_bytes_per_sec: f64) -> String {
+    String::new()
+}
+
 /// `tiny` and `tiny:latest` name the same Ollama model.
 pub fn normalize_name(name: &str) -> String {
     if name.contains(':') {
@@ -607,6 +613,91 @@ mod tests {
             s.tick(now + Duration::from_secs(95), AutoDismiss::OneMinute),
             None
         );
+    }
+
+    #[test]
+    fn download_speed_uses_the_last_five_seconds() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        s.apply(&progress(1, 10_000_000, 100_000_000), now);
+        assert_eq!(row(&s, 1).status_text(), "Downloading 10%");
+        s.apply(
+            &progress(1, 20_000_000, 100_000_000),
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(row(&s, 1).status_text(), "Downloading 20% · 10.0 MB/s");
+        // A gap longer than the window drops the old samples instead of
+        // carrying a stale rate forward.
+        s.apply(
+            &progress(1, 30_000_000, 100_000_000),
+            now + Duration::from_secs(7),
+        );
+        assert_eq!(row(&s, 1).status_text(), "Downloading 30%");
+        s.apply(
+            &progress(1, 40_000_000, 100_000_000),
+            now + Duration::from_secs(8),
+        );
+        assert_eq!(row(&s, 1).status_text(), "Downloading 40% · 10.0 MB/s");
+    }
+
+    #[test]
+    fn pause_and_resume_clear_the_speed() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        s.apply(&progress(1, 10_000_000, 100_000_000), now);
+        s.apply(
+            &progress(1, 20_000_000, 100_000_000),
+            now + Duration::from_secs(1),
+        );
+        assert!(row(&s, 1).status_text().contains("MB/s"));
+        s.apply(
+            &JobEvent::Paused { id: id(1) },
+            now + Duration::from_secs(2),
+        );
+        assert_eq!(row(&s, 1).status_text(), "Paused 20%");
+        s.apply(
+            &JobEvent::Resumed { id: id(1) },
+            now + Duration::from_secs(3),
+        );
+        assert_eq!(row(&s, 1).status_text(), "Downloading 20%");
+        s.apply(
+            &progress(1, 30_000_000, 100_000_000),
+            now + Duration::from_secs(3),
+        );
+        assert_eq!(row(&s, 1).status_text(), "Downloading 30%");
+        s.apply(
+            &progress(1, 40_000_000, 100_000_000),
+            now + Duration::from_secs(4),
+        );
+        assert_eq!(row(&s, 1).status_text(), "Downloading 40% · 10.0 MB/s");
+    }
+
+    #[test]
+    fn speed_is_only_shown_while_downloading() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        s.apply(&progress(1, 10_000_000, 100_000_000), now);
+        s.apply(
+            &progress(1, 20_000_000, 100_000_000),
+            now + Duration::from_secs(1),
+        );
+        s.apply(&stage(1, Stage::Verifying), now + Duration::from_secs(2));
+        assert_eq!(row(&s, 1).status_text(), "Verifying");
+        s.apply(&stage(1, Stage::Downloading), now + Duration::from_secs(3));
+        assert_eq!(row(&s, 1).status_text(), "Downloading 20%");
+    }
+
+    #[test]
+    fn rate_is_formatted_with_readable_units() {
+        assert_eq!(format_rate(0.0), "0 B/s");
+        assert_eq!(format_rate(999.0), "999 B/s");
+        assert_eq!(format_rate(1_500.0), "1.5 KB/s");
+        assert_eq!(format_rate(850_000.0), "850.0 KB/s");
+        assert_eq!(format_rate(12_400_000.0), "12.4 MB/s");
+        assert_eq!(format_rate(1_234_000_000.0), "1.23 GB/s");
     }
 
     #[test]
