@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build a proper universal hf2ollama.app and a drag-install DMG.
+# Build a proper universal Roost.app and a drag-install DMG.
 #
 #   packaging/macos/package.sh <version> <arm64-binary> <x86_64-binary> [out-dir]
 #
 # Both binaries must be release builds for their target. The output is
-# <out-dir>/hf2ollama-<version>-macos-universal.dmg (default out-dir: dist).
+# <out-dir>/roost-<version>-macos-universal.dmg (default out-dir: dist).
 set -euo pipefail
 
 if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
@@ -25,7 +25,7 @@ fi
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 
-for f in "$arm_bin" "$intel_bin" "$root/crates/hf2ollama-gui/assets/icon-1024.png" "$here/Info.plist.in"; do
+for f in "$arm_bin" "$intel_bin" "$root/crates/roost-gui/assets/icon-1024.png" "$here/Info.plist.in"; do
   [ -f "$f" ] || { echo "FAIL: missing $f" >&2; exit 1; }
 done
 
@@ -36,17 +36,17 @@ for tool in lipo sips iconutil codesign hdiutil plutil; do
   command -v "$tool" >/dev/null || { echo "FAIL: $tool is not available" >&2; exit 1; }
 done
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/hf2ollama-package.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/roost-package.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
-app="$tmp/hf2ollama.app"
+app="$tmp/Roost.app"
 res="$app/Contents/Resources"
 mkdir -p "$app/Contents/MacOS" "$res"
 
 echo "==> universal binary"
-lipo -create "$arm_bin" "$intel_bin" -output "$app/Contents/MacOS/hf2ollama"
-chmod +x "$app/Contents/MacOS/hf2ollama"
+lipo -create "$arm_bin" "$intel_bin" -output "$app/Contents/MacOS/roost"
+chmod +x "$app/Contents/MacOS/roost"
 
 echo "==> Info.plist"
 sed "s/@VERSION@/$version/g" "$here/Info.plist.in" > "$app/Contents/Info.plist"
@@ -56,9 +56,9 @@ echo "==> icon"
 iconset="$tmp/icon.iconset"
 mkdir -p "$iconset"
 for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" "$root/crates/hf2ollama-gui/assets/icon-1024.png" \
+  sips -z "$size" "$size" "$root/crates/roost-gui/assets/icon-1024.png" \
     --out "$iconset/icon_${size}x${size}.png" >/dev/null
-  sips -z "$((size * 2))" "$((size * 2))" "$root/crates/hf2ollama-gui/assets/icon-1024.png" \
+  sips -z "$((size * 2))" "$((size * 2))" "$root/crates/roost-gui/assets/icon-1024.png" \
     --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns -o "$res/icon.icns" "$iconset"
@@ -81,10 +81,10 @@ if command -v SetFile >/dev/null; then
   SetFile -a C "$stage"
 fi
 
-dmg="$out/hf2ollama-${version}-macos-universal.dmg"
+dmg="$out/roost-${version}-macos-universal.dmg"
 rm -f "$dmg"
 hdiutil create \
-  -volname "hf2ollama ${version}" \
+  -volname "Roost ${version}" \
   -srcfolder "$stage" \
   -ov \
   -format UDZO \

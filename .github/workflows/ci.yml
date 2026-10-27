@@ -44,6 +44,7 @@ jobs:
         # (rfd with xdg-portal) talks D-Bus in pure Rust and needs no GTK.
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
       - run: cargo fmt --check
+      - run: python3 scripts/check_roost_identity.py
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 

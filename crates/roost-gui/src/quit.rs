@@ -150,7 +150,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, tx: &Sender<BackendRequest>, n
             ui.set_width(width);
             ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
             ui.label(
-                RichText::new("Quit hf2ollama?")
+                RichText::new("Quit Roost?")
                     .font(semibold(16.0))
                     .color(t.fg),
             );

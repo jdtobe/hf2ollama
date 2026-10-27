@@ -2,7 +2,7 @@
 
 ## Status
 
-hf2ollama is pre-release software and has no supported releases yet. Security fixes are made on the default branch.
+Roost is pre-release software and has no supported releases yet. Security fixes are made on the default branch.
 
 ## Reporting a vulnerability
 

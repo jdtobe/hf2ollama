@@ -1,4 +1,4 @@
-# hf2ollama
+# Roost
 
 Browse Hugging Face and import GGUF and supported safetensors models into Ollama, from a single portable desktop app.
 
@@ -15,7 +15,7 @@ Browse Hugging Face and import GGUF and supported safetensors models into Ollama
 
 ## Why
 
-Getting a model from Hugging Face into Ollama usually means downloading files by hand, working out which quantization fits your machine, and writing a Modelfile. hf2ollama is meant to turn that into search, pick, import. It talks to Ollama only through its HTTP API, so it works with any Ollama you can reach, including one whose models directory is not `~/.ollama/models` and one running on another machine.
+Getting a model from Hugging Face into Ollama usually means downloading files by hand, working out which quantization fits your machine, and writing a Modelfile. Roost is meant to turn that into search, pick, import. It talks to Ollama only through its HTTP API, so it works with any Ollama you can reach, including one whose models directory is not `~/.ollama/models` and one running on another machine.
 
 ## Features (v0.1)
 
@@ -48,7 +48,7 @@ flowchart LR
     CR --> OL[(Ollama)]
 ```
 
-hf2ollama downloads the chosen files into a temporary staging folder, checks them against the checksums Hugging Face publishes, uploads each file to Ollama as a blob (`/api/blobs`), then asks Ollama to create the model from those blobs (`/api/create`). Staging files are removed afterwards unless you choose to keep them. Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Roost downloads the chosen files into a temporary staging folder, checks them against the checksums Hugging Face publishes, uploads each file to Ollama as a blob (`/api/blobs`), then asks Ollama to create the model from those blobs (`/api/create`). Staging files are removed afterwards unless you choose to keep them. Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Requirements
 
@@ -61,8 +61,8 @@ hf2ollama downloads the chosen files into a temporary staging folder, checks the
 Build needs Rust 1.95 or newer (the highest minimum declared by a dependency; `cargo +1.95 check` passes).
 
 ```sh
-cargo build --release -p hf2ollama-gui
-cargo run -p hf2ollama-gui --release
+cargo build --release -p roost-gui
+cargo run -p roost-gui --release
 ```
 
 On Linux you need the development packages used in CI: `libxkbcommon-dev`, `libwayland-dev`, `libx11-dev` and `libgl1-mesa-dev`. The file dialog uses the XDG desktop portal over D-Bus, so no GTK packages are needed, but a portal must be running for the folder picker to work. This list has not been tried on a real Linux machine yet. To run the tests (no network needed):

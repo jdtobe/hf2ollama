@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-hf2ollama-design.md`): its scope, acceptance criteria, known risks and non-goals. It is a statement of intent, not a schedule. There are no release dates and no releases yet.
+This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-Roost-design.md`): its scope, acceptance criteria, known risks and non-goals. It is a statement of intent, not a schedule. There are no release dates and no releases yet.
 
 ## Done
 
@@ -40,7 +40,7 @@ Known limitations to address after the first release candidate:
 
 - VRAM detection beyond NVIDIA and Apple Silicon (for example AMD and Intel), subject to reliable detection.
 - Accessibility improvements; egui has weaker accessibility than native toolkits.
-- A command-line front end on top of `hf2ollama-core` (the library split leaves room for it; not planned in detail).
+- A command-line front end on top of `Roost-core` (the library split leaves room for it; not planned in detail).
 - Handling of orphan blobs if Ollama ever adds a blob-delete API (today they are documented, not worked around).
 
 ## Non-goals for v1

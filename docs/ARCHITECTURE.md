@@ -1,6 +1,6 @@
 # Architecture
 
-This is a contributor overview. The approved design is in `docs/superpowers/specs/2026-10-22-hf2ollama-design.md` (sections 3 and 4 are summarized here), and verified API behavior is in `docs/superpowers/notes/api-verification.md`. If this page and the spec disagree, the spec and the code win; please fix this page.
+This is a contributor overview. The approved design is in `docs/superpowers/specs/2026-10-22-Roost-design.md` (sections 3 and 4 are summarized here), and verified API behavior is in `docs/superpowers/notes/api-verification.md`. If this page and the spec disagree, the spec and the code win; please fix this page.
 
 Status: the core crate and the GUI crate are implemented and tested.
 
@@ -10,12 +10,12 @@ The workspace has two crates. The core is a library with no UI dependencies; the
 
 ```mermaid
 flowchart TB
-    subgraph gui["hf2ollama-gui (binary, egui/eframe)"]
+    subgraph gui["roost-gui (binary, egui/eframe)"]
         views["Views: Browse, Installed, Settings, downloads dock"]
         theme["theme: tokens, fonts, custom widgets"]
         rt["tokio runtime + channel bridge"]
     end
-    subgraph core["hf2ollama-core (library)"]
+    subgraph core["roost-core (library)"]
         hf["hf: search, metadata, resumable download"]
         ollama["ollama: HTTP API client"]
         pipeline["pipeline: import job + JobManager"]
@@ -49,7 +49,7 @@ Hard rules that follow from this layout:
 - The public core API is async and returns typed errors (`thiserror`). No `unwrap` or `expect` on I/O, network or parse results in non-test code.
 - TLS is rustls only. OpenSSL must not enter the dependency tree (enforced by `deny.toml`).
 
-## Modules in `hf2ollama-core`
+## Modules in `roost-core`
 
 | Module | Responsibility |
 |---|---|
@@ -117,7 +117,7 @@ The GUI owns a tokio runtime. The UI thread sends `Command`s and drains `JobEven
 
 ## The GUI layer
 
-`hf2ollama-gui` is a binary with these parts:
+`roost-gui` is a binary with these parts:
 
 - **Startup** (`startup.rs`, `main.rs`). `startup()` resolves paths (portable or OS directories), loads settings and ignores an unusable saved staging folder (not absolute, contains `..`, or starts with `~`), without opening a window or writing files. `spawn_sweep` runs `Staging::sweep` once on its own thread before any job exists and appends the report to `startup.log` in the log directory.
 - **Backend bridge** (`runtime.rs`). The backend thread owns the tokio runtime, the Hugging Face and Ollama clients, the history and the job managers. The UI sends `BackendRequest` values (core commands, search, model info, model card, installed list and delete, settings apply, token set and check, cached files) over an mpsc channel and drains `UiEvent` values (job events, search and info results, installed lists, status polls, settings saved, token status, cached files). Every event wakes the UI with `ctx.request_repaint()`. The GUI makes no HTTP calls itself.

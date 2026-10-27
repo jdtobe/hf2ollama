@@ -478,11 +478,8 @@ impl App {
             .show(ui, |ui| {
                 let row = egui::Layout::left_to_right(egui::Align::Center);
                 ui.with_layout(row, |ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
-                    ui.painter().rect_filled(r, 6.0, t.accent);
-                    ui.painter()
-                        .circle_stroke(r.center(), 5.0, Stroke::new(2.0, t.accent_fg));
-                    ui.label(RichText::new("hf2ollama").font(semibold(16.0)));
+                    crate::identity::paint_tail(ui, 22.0);
+                    ui.label(RichText::new(crate::identity::PRODUCT_NAME).font(semibold(16.0)));
                     ui.add_space(8.0);
 
                     let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
@@ -677,6 +674,11 @@ impl App {
 mod tests {
     use super::*;
     use crate::runtime::HfTokenStatus;
+
+    #[test]
+    fn application_display_identity_is_roost() {
+        assert_eq!(crate::identity::PRODUCT_NAME, "Roost");
+    }
 
     #[test]
     fn nav_selection_changes_view_state() {

@@ -380,7 +380,7 @@ impl Backend {
             gate: token_gate,
         };
         let started = std::thread::Builder::new()
-            .name("hf2ollama-backend".into())
+            .name("roost-backend".into())
             .spawn(move || run(ctx, settings, paths, stores, req_rx, ui_tx));
         if let Err(e) = started {
             eprintln!("could not start the backend thread: {e}");
@@ -421,7 +421,7 @@ fn run(
     let (job_tx, job_rx) = std::sync::mpsc::channel::<JobEvent>();
     let forward = out.clone();
     let forwarder = std::thread::Builder::new()
-        .name("hf2ollama-job-events".into())
+        .name("roost-job-events".into())
         .spawn(move || {
             while let Ok(ev) = job_rx.recv() {
                 forward.emit(UiEvent::Job(ev));
@@ -753,6 +753,17 @@ mod tests {
             h.record(name, repo);
         }
         h.save().unwrap();
+    }
+
+    #[test]
+    fn migrated_history_provenance_uses_history_lookup_not_the_roost_display_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("history.json");
+        std::fs::write(&file, r#"{"imports":{"qwen:latest":"org/qwen"}}"#).unwrap();
+        let history = History::load(&file).unwrap();
+
+        assert_eq!(source_for(&history, "qwen:latest"), Some("org/qwen".into()));
+        assert_eq!(crate::installed::IMPORTED_LABEL, "Imported with Roost");
     }
 
     /// Next event matching `pick`, skipping others; panics after `WAIT`.

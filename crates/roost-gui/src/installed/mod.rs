@@ -34,6 +34,7 @@ const REFRESH_W: f32 = 70.0;
 const TOOLS_W: f32 = FILTER_W + SOURCE_W + SORT_W + REFRESH_W + 3.0 * TOOL_GAP;
 const TEXT_PX: f32 = 12.5;
 const LABEL_W: f32 = 96.0;
+pub const IMPORTED_LABEL: &str = "Imported with Roost";
 
 /// Painted rectangles recorded for the headless layout tests.
 #[cfg(test)]
@@ -191,11 +192,7 @@ fn tools(ui: &mut egui::Ui, state: &mut InstalledState, out: &mut Vec<BackendReq
         .width(SOURCE_W - 20.0)
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut state.source, SourceFilter::All, "All sources");
-            ui.selectable_value(
-                &mut state.source,
-                SourceFilter::Imported,
-                "Imported with hf2ollama",
-            );
+            ui.selectable_value(&mut state.source, SourceFilter::Imported, IMPORTED_LABEL);
             ui.selectable_value(
                 &mut state.source,
                 SourceFilter::Library,
@@ -255,12 +252,7 @@ fn usage(ui: &mut egui::Ui, state: &InstalledState, cx: &Ctx) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 18.0;
         for (colour, label, bytes, n) in [
-            (
-                cx.t.accent,
-                "Imported by hf2ollama",
-                split.imported,
-                imported,
-            ),
+            (cx.t.accent, "Imported with Roost", split.imported, imported),
             (cx.t.fg3, "Pulled from Ollama", split.library, library),
         ] {
             let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());

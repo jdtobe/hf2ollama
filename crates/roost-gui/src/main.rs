@@ -2,6 +2,7 @@ mod app;
 mod browse;
 mod confirm;
 mod dock;
+mod identity;
 mod installed;
 mod quit;
 #[cfg(test)]
@@ -119,7 +120,7 @@ fn memory_token_store_with(
     if !dev_memory_store_enabled(value.as_deref()) {
         return None;
     }
-    eprintln!("hf2ollama: dev-hooks: using an in-memory token store; the token will not be saved");
+    eprintln!("roost: dev-hooks: using an in-memory token store; the token will not be saved");
     let store = MemoryStore::default();
     if let Some(token) = lookup("ROOST_MEMORY_TOKEN") {
         // Best effort: the in-memory store cannot fail.
@@ -167,7 +168,7 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size(size_override().unwrap_or([1180.0, 820.0]))
         .with_min_inner_size(MIN_WINDOW)
-        .with_title("hf2ollama");
+        .with_title(identity::PRODUCT_NAME);
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -176,7 +177,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "hf2ollama",
+        identity::PRODUCT_NAME,
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);

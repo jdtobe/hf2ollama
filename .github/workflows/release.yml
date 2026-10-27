@@ -1,7 +1,7 @@
 name: Release
 
 # Run by hand from the Actions tab (Run workflow). It tests the code, builds
-# macOS (a universal hf2ollama.app inside a drag-install .dmg), Windows and
+# macOS (a universal Roost.app inside a drag-install .dmg), Windows and
 # Linux, and, only when "publish" is ticked and the run is
 # on main, publishes a GitHub release named YY.M.N (year without the century,
 # month without a leading zero, and the number of the release within that
@@ -78,36 +78,36 @@ jobs:
         run: |
           for f in crates/*/Cargo.toml; do
             sed -i.bak -E 's/^version = "[0-9]+\.[0-9]+\.[0-9]+"/version = "${{ needs.version.outputs.version }}"/' "$f"
-            sed -i.bak -E 's/(hf2ollama-core = \{ version = )"[^"]+"/\1"${{ needs.version.outputs.version }}"/' "$f"
+            sed -i.bak -E 's/(roost-core = \{ version = )"[^"]+"/\1"${{ needs.version.outputs.version }}"/' "$f"
             rm -f "$f.bak"
           done
       - name: Build (macOS universal)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          cargo build --release -p hf2ollama-gui --target aarch64-apple-darwin
-          cargo build --release -p hf2ollama-gui --target x86_64-apple-darwin
+          cargo build --release -p roost-gui --target aarch64-apple-darwin
+          cargo build --release -p roost-gui --target x86_64-apple-darwin
       - name: Build
         if: runner.os != 'macOS'
-        run: cargo build --release -p hf2ollama-gui --target ${{ matrix.target }}
+        run: cargo build --release -p roost-gui --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
           version="${{ needs.version.outputs.version }}"
-          out="hf2ollama-${version}-${{ matrix.name }}"
+          out="roost-${version}-${{ matrix.name }}"
           mkdir -p dist
           if [ "$RUNNER_OS" = "macOS" ]; then
             packaging/macos/package.sh "$version" \
-              "target/aarch64-apple-darwin/release/hf2ollama-gui" \
-              "target/x86_64-apple-darwin/release/hf2ollama-gui" dist
+              "target/aarch64-apple-darwin/release/roost" \
+              "target/x86_64-apple-darwin/release/roost" dist
           else
             mkdir -p "$out"
             cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_LICENSES.md README.md "$out/"
             if [ "$RUNNER_OS" = "Windows" ]; then
-              cp "target/${{ matrix.target }}/release/hf2ollama-gui.exe" "$out/"
+              cp "target/${{ matrix.target }}/release/roost.exe" "$out/"
               7z a "dist/$out.zip" "$out" > /dev/null
             else
-              cp "target/${{ matrix.target }}/release/hf2ollama-gui" "$out/"
+              cp "target/${{ matrix.target }}/release/roost" "$out/"
               tar -czf "dist/$out.tar.gz" "$out"
             fi
           fi
@@ -140,9 +140,9 @@ jobs:
           cat > notes.md <<'NOTES'
           Unsigned builds. Your OS may warn the first time you open one.
 
-          - **macOS:** open the `.dmg`, drag hf2ollama into Applications, then right-click the app and choose Open the first time. The build is unsigned and not notarized, so Gatekeeper warns on first launch.
+          - **macOS:** open the `.dmg`, drag Roost into Applications, then right-click the app and choose Open the first time. The build is unsigned and not notarized, so Gatekeeper warns on first launch.
           - **Windows:** SmartScreen may say the publisher is unknown; choose More info, then Run anyway.
-          - **Linux:** extract, then run `./hf2ollama-gui`. It needs a running Ollama (default `http://localhost:11434`).
+          - **Linux:** extract, then run `./roost`. It needs a running Ollama (default `http://localhost:11434`).
 
           Verify downloads against `SHA256SUMS.txt`.
           NOTES

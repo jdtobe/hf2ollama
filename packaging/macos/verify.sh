@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Verify a packaged hf2ollama macOS disk image.
+# Verify a packaged roost macOS disk image.
 #
-#   packaging/macos/verify.sh <path/to/hf2ollama-<version>-macos-universal.dmg> <version>
+#   packaging/macos/verify.sh <path/to/roost-<version>-macos-universal.dmg> <version>
 #
 # Checks the DMG, the .app layout, Info.plist, the universal binary, the icon,
 # the ad-hoc signature and the Applications link. Exits non-zero on the first
@@ -15,11 +15,11 @@ fi
 
 dmg="$1"
 version="$2"
-bundle_id="io.github.jdtobe.hf2ollama"
+bundle_id="io.github.jdtobe.roost"
 
 [ -f "$dmg" ] || { echo "FAIL: no DMG at $dmg" >&2; exit 1; }
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/hf2ollama-verify.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/roost-verify.XXXXXX")"
 mnt="$tmp/mnt"
 mkdir -p "$mnt"
 attached=0
@@ -38,8 +38,8 @@ echo "==> mounting"
 hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
 attached=1
 
-app="$mnt/hf2ollama.app"
-[ -d "$app" ] || { echo "FAIL: hf2ollama.app is missing from the DMG" >&2; exit 1; }
+app="$mnt/Roost.app"
+[ -d "$app" ] || { echo "FAIL: Roost.app is missing from the DMG" >&2; exit 1; }
 [ -L "$mnt/Applications" ] || { echo "FAIL: the Applications link is missing" >&2; exit 1; }
 [ "$(readlink "$mnt/Applications")" = "/Applications" ] || {
   echo "FAIL: the Applications link does not point at /Applications" >&2
@@ -47,7 +47,7 @@ app="$mnt/hf2ollama.app"
 }
 
 plist="$app/Contents/Info.plist"
-exe="$app/Contents/MacOS/hf2ollama"
+exe="$app/Contents/MacOS/roost"
 icon="$app/Contents/Resources/icon.icns"
 
 for f in "$plist" "$exe" "$icon" \
@@ -73,8 +73,8 @@ plutil -lint "$plist" >/dev/null
   echo "FAIL: CFBundleVersion is not $version" >&2
   exit 1
 }
-[ "$(plutil -extract CFBundleExecutable raw -o - "$plist")" = "hf2ollama" ] || {
-  echo "FAIL: CFBundleExecutable is not hf2ollama" >&2
+[ "$(plutil -extract CFBundleExecutable raw -o - "$plist")" = "roost" ] || {
+  echo "FAIL: CFBundleExecutable is not roost" >&2
   exit 1
 }
 [ "$(plutil -extract CFBundleIconFile raw -o - "$plist")" = "icon.icns" ] || {

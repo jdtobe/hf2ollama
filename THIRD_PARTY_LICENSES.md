@@ -1,6 +1,6 @@
 # Third-party licenses
 
-hf2ollama itself is licensed under MIT OR Apache-2.0 (see `LICENSE-MIT` and `LICENSE-APACHE`). This file lists material bundled into the application that has a different license, and explains how to inspect the Rust dependency licenses.
+Roost itself is licensed under MIT OR Apache-2.0 (see `LICENSE-MIT` and `LICENSE-APACHE`). This file lists material bundled into the application that has a different license, and explains how to inspect the Rust dependency licenses.
 
 ## Bundled fonts
 
@@ -8,10 +8,10 @@ The GUI binary embeds these fonts. Both are licensed under the SIL Open Font Lic
 
 | Font | Files embedded | License text |
 |---|---|---|
-| Hanken Grotesk | `Hanken-400.ttf`, `Hanken-600.ttf` | [`OFL-HankenGrotesk.txt`](crates/hf2ollama-gui/assets/OFL-HankenGrotesk.txt) |
-| JetBrains Mono | `JetBrainsMono-400.ttf`, `JetBrainsMono-500.ttf` | [`OFL-JetBrainsMono.txt`](crates/hf2ollama-gui/assets/OFL-JetBrainsMono.txt) |
+| Hanken Grotesk | `Hanken-400.ttf`, `Hanken-600.ttf` | [`OFL-HankenGrotesk.txt`](crates/roost-gui/assets/OFL-HankenGrotesk.txt) |
+| JetBrains Mono | `JetBrainsMono-400.ttf`, `JetBrainsMono-500.ttf` | [`OFL-JetBrainsMono.txt`](crates/roost-gui/assets/OFL-JetBrainsMono.txt) |
 
-The font files are in `crates/hf2ollama-gui/assets/`. egui also bundles its own default fonts through the `epaint_default_fonts` crate (declared license: `(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0`).
+The font files are in `crates/roost-gui/assets/`. egui also bundles its own default fonts through the `epaint_default_fonts` crate (declared license: `(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0`).
 
 ## Rust dependencies
 

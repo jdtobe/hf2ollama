@@ -1,4 +1,4 @@
-<title>hf2ollama Mockup</title>
+<title>Roost Mockup</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
@@ -221,7 +221,7 @@ tr.exp:hover { background: none; }
 
 <div class="app">
   <header class="top">
-    <div class="brand"><i></i>hf2ollama</div>
+    <div class="brand"><i></i>Roost</div>
     <nav class="nav" aria-label="Views">
       <button type="button" data-v="browse" aria-current="page">Browse</button>
       <button type="button" data-v="installed">Installed<span class="ct" id="nav-ct">5</span></button>
@@ -277,7 +277,7 @@ tr.exp:hover { background: none; }
       <div><h2>Installed models</h2><div class="sub" id="inst-sub"></div></div>
       <div class="vtools">
         <input type="search" id="inst-q" placeholder="Filter installed" aria-label="Filter installed models">
-        <select id="inst-src" aria-label="Source"><option value="all">All sources</option><option value="hf">Imported with hf2ollama</option><option value="other">Pulled from Ollama</option></select>
+        <select id="inst-src" aria-label="Source"><option value="all">All sources</option><option value="hf">Imported with Roost</option><option value="other">Pulled from Ollama</option></select>
         <select id="inst-sort" aria-label="Sort"><option value="size">Largest first</option><option value="name">Name</option><option value="date">Recently modified</option></select>
         <button class="sbtn" type="button" id="inst-refresh">Refresh</button>
       </div>
@@ -301,7 +301,7 @@ tr.exp:hover { background: none; }
       </section>
       <section class="card"><h3>Downloads</h3>
         <div class="srow"><div class="l"><b>Staging folder</b><span>Where files are downloaded before they are sent to Ollama. Needs room for one model at a time.</span></div>
-          <div class="c"><input class="field" id="s-stage" type="text" value="D:\hf2ollama-staging" aria-label="Staging folder"><button class="sbtn" type="button">Browse</button></div></div>
+          <div class="c"><input class="field" id="s-stage" type="text" value="D:\Roost-staging" aria-label="Staging folder"><button class="sbtn" type="button">Browse</button></div></div>
         <div class="srow"><div class="l"><b>Delete downloaded files after import</b><span>Removes the staging copy once Ollama has the model. Turn off to keep GGUF and safetensors files for reuse.</span></div>
           <div class="c"><label class="sw"><input type="checkbox" id="s-clean" checked aria-label="Delete downloaded files after import"><i></i></label></div></div>
         <div class="srow"><div class="l"><b>Keep partial downloads for 7 days</b><span>If a transfer fails or you close the app, resume it later instead of starting over. Cancelling always deletes the partial file.</span></div>
@@ -337,7 +337,7 @@ tr.exp:hover { background: none; }
   </section>
 
   <footer class="status">
-    <span>Staging folder <b id="st-dir">D:\hf2ollama-staging</b> <span id="st-note">(files deleted after each import)</span></span>
+    <span>Staging folder <b id="st-dir">D:\Roost-staging</b> <span id="st-note">(files deleted after each import)</span></span>
     <span>Free <b>412 GB</b></span>
     <span>Ollama store <b>E:\ollama\models</b> (reported by server)</span>
   </footer>
@@ -510,7 +510,7 @@ function renderInstalled() {
   $('#nav-ct').textContent = INST.length;
   const span = tot + free;
   $('#inst-stack').innerHTML = `<b style="width:${mine / span * 100}%;background:var(--accent)"></b><b style="width:${(tot - mine) / span * 100}%;background:var(--fg-3)"></b>`;
-  $('#inst-leg').innerHTML = `<span><i style="background:var(--accent)"></i>Imported with hf2ollama ${mine.toFixed(1)} GB</span><span><i style="background:var(--fg-3)"></i>Pulled from Ollama ${(tot - mine).toFixed(1)} GB</span><span><i style="background:var(--line)"></i>Free on E: ${free} GB</span>`;
+  $('#inst-leg').innerHTML = `<span><i style="background:var(--accent)"></i>Imported with Roost ${mine.toFixed(1)} GB</span><span><i style="background:var(--fg-3)"></i>Pulled from Ollama ${(tot - mine).toFixed(1)} GB</span><span><i style="background:var(--line)"></i>Free on E: ${free} GB</span>`;
   $('#inst-table tbody').innerHTML = rows.length ? rows.map(m => {
     const confirm = armed === m.n;
     const main = `<tr data-n="${m.n}" tabindex="0"><td><span class="qname">${m.n}</span></td><td class="mono">${m.p}</td><td class="mono">${m.q}</td><td class="r mono">${m.gb < 1 ? Math.round(m.gb * 1000) + ' MB' : fmt(m.gb)}</td>

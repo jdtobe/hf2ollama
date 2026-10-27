@@ -140,14 +140,14 @@ pub fn append_log(log_dir: &Path, line: &str) {
         writeln!(f, "{line}")
     });
     if let Err(e) = written {
-        eprintln!("hf2ollama: {line} (could not write the startup log: {e})");
+        eprintln!("roost: {line} (could not write the startup log: {e})");
     }
 }
 
 /// Runs [`sweep_staging`] on its own thread so the window never waits for it.
 pub fn spawn_sweep(staging_dir: PathBuf, log_dir: PathBuf) {
     let spawned = std::thread::Builder::new()
-        .name("hf2ollama-sweep".into())
+        .name("roost-sweep".into())
         .spawn(move || {
             sweep_staging(&staging_dir, &log_dir, SystemTime::now());
         });
