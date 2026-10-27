@@ -222,6 +222,25 @@ mod tests {
             icon.rgba.as_chunks::<4>().0.iter().any(|p| p[3] == 255),
             "the icon must have opaque pixels"
         );
+        assert_eq!(
+            icon.rgba[3], 0,
+            "the rounded SVG tile has transparent corners"
+        );
+        assert!(
+            icon.rgba
+                .as_chunks::<4>()
+                .0
+                .contains(&[0x10, 0x20, 0x1d, 255]),
+            "the canonical dark SVG background is present"
+        );
+        assert!(
+            icon.rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p[..3] == [0x3c, 0xc2, 0xb3]),
+            "the canonical teal stroke is present"
+        );
     }
 
     #[test]

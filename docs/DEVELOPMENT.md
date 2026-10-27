@@ -123,19 +123,19 @@ Dependabot proposes cargo and GitHub Actions updates weekly. Dependencies must k
 
 These environment variables only change how the GUI starts, and are always available:
 
-- `HF2O_THEME=light|dark` overrides the saved theme.
-- `HF2O_SIZE=WxH` sets the initial window size (not below 900x640).
-- `HF2O_VIEW=browse|installed|settings` starts on that view.
+- `ROOST_THEME=light|dark` overrides the saved theme.
+- `ROOST_SIZE=WxH` sets the initial window size (not below 900x640).
+- `ROOST_VIEW=browse|installed|settings` starts on that view.
 
 The token hooks exist only when the GUI is built with the `dev-hooks` cargo feature (off by default, so release binaries cannot contain them):
 
 ```
-HF2O_MEMORY_TOKEN_STORE=1 HF2O_MEMORY_TOKEN=hf_example \
+ROOST_MEMORY_TOKEN_STORE=1 ROOST_MEMORY_TOKEN=hf_example \
   cargo run -p roost-gui --release --features dev-hooks
 ```
 
-- `HF2O_MEMORY_TOKEN_STORE=1` (exactly `1`) keeps the Hugging Face token in memory instead of the system keychain. The app prints a warning at startup and Settings shows "dev: token not persisted".
-- `HF2O_MEMORY_TOKEN` is the token the in-memory store starts with.
+- `ROOST_MEMORY_TOKEN_STORE=1` (exactly `1`) keeps the Hugging Face token in memory instead of the system keychain. The app prints a warning at startup and Settings shows "dev: token not persisted".
+- `ROOST_MEMORY_TOKEN` is the token the in-memory store starts with.
 
 ## Releases
 
@@ -159,8 +159,8 @@ To build it locally (the x86_64 target may need `rustup target add x86_64-apple-
 cargo build --release -p roost-gui --target aarch64-apple-darwin
 cargo build --release -p roost-gui --target x86_64-apple-darwin
 packaging/macos/package.sh 26.10.0 \
-  target/aarch64-apple-darwin/release/roost-gui \
-  target/x86_64-apple-darwin/release/roost-gui dist
+  target/aarch64-apple-darwin/release/roost \
+  target/x86_64-apple-darwin/release/roost dist
 ```
 
 The icon source is `crates/roost-gui/assets/icon-1024.png`; regenerate it with `python3 packaging/macos/make_icon.py`. The ad-hoc signature makes the bundle internally valid but is not Developer ID signing or notarization, so Gatekeeper still warns.
