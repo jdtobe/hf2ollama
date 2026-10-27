@@ -15,6 +15,7 @@ mod widgets;
 use eframe::egui;
 use hf2ollama_core::config::ThemeChoice;
 use hf2ollama_core::paths::OsDirs;
+use std::io::Cursor;
 
 /// `HF2O_THEME=light|dark` overrides the saved theme. Only meant for taking
 /// screenshots of both themes; it is not a user-facing setting.
@@ -29,6 +30,13 @@ fn theme_override() -> Option<ThemeChoice> {
 /// Smallest window the layout is designed and tested for (the detail pane
 /// budget in `browse::detail` assumes at least this much room).
 const MIN_WINDOW: [f32; 2] = [900.0, 640.0];
+
+/// The 256 px PNG bundled with the app, for window managers that show a
+/// per-window icon. The macOS bundle icon comes from `icon-1024.png`.
+fn window_icon() -> Option<egui::IconData> {
+    let _ = Cursor::new(include_bytes!("../assets/icon-256.png"));
+    None
+}
 
 /// `HF2O_SIZE=WxH` overrides the initial window size, e.g. `900x640`. Only
 /// meant for taking screenshots at several widths; it cannot go below
@@ -119,11 +127,15 @@ fn main() -> eframe::Result<()> {
         .unwrap_or_else(|| detected.clone());
     let default_staging = paths.default_staging.clone();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(size_override().unwrap_or([1180.0, 820.0]))
+        .with_min_inner_size(MIN_WINDOW)
+        .with_title("hf2ollama");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size(size_override().unwrap_or([1180.0, 820.0]))
-            .with_min_inner_size(MIN_WINDOW)
-            .with_title("hf2ollama"),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -162,6 +174,17 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_icon_loads_the_bundled_png() {
+        let icon = window_icon().expect("bundled icon decodes");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        assert!(
+            icon.rgba.chunks_exact(4).any(|p| p[3] == 255),
+            "the icon must have opaque pixels"
+        );
+    }
 
     #[test]
     fn only_exact_one_enables_the_memory_store() {
