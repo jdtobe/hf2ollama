@@ -118,13 +118,18 @@ fn main() -> eframe::Result<()> {
         .ok()
         .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_default();
-    let started = startup::startup(&exe_dir, OsDirs::detect());
+    let started = startup::startup(&exe_dir, OsDirs::detect(), OsDirs::detect_legacy());
     let startup::Startup {
         paths,
+        migration,
         settings,
         staging_dir,
         notice,
     } = started;
+    debug_assert!(
+        migration.migrated.is_empty() && migration.warnings.is_empty() || notice.is_some(),
+        "migration results must be visible to the UI as a startup notice"
+    );
     if let Some(n) = &notice {
         startup::append_log(&paths.log_dir, n);
     }

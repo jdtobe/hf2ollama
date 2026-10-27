@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use roost_core::config::Settings;
-use roost_core::paths::{OsDirs, Paths};
+use roost_core::migration::{migrate_legacy_files, MigrationReport};
+use roost_core::paths::{LegacyPaths, OsDirs, Paths};
 use roost_core::staging::Staging;
 
 /// How long a paused or failed download keeps its partial files.
@@ -16,6 +17,7 @@ pub const PARTIAL_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 #[derive(Debug, Clone)]
 pub struct Startup {
     pub paths: Paths,
+    pub migration: MigrationReport,
     /// Settings as the rest of the app should see them (an unusable saved
     /// staging folder is already dropped).
     pub settings: Settings,
@@ -68,12 +70,19 @@ fn set_corrupt_settings_aside(config_file: &Path, why: &str) -> String {
     }
 }
 
-/// Resolves paths and settings. Reads files and never creates any, except
+/// Resolves paths, migrates legacy metadata, and loads settings. Reads files and never creates any, except
 /// that an unreadable settings file is renamed to `<name>.bak` and the
 /// reason is appended to `startup.log`.
-pub fn startup(exe_dir: &Path, os: OsDirs) -> Startup {
-    let paths = Paths::resolve(exe_dir, os);
+pub fn startup(exe_dir: &Path, current_os: OsDirs, legacy_os: Option<OsDirs>) -> Startup {
+    let paths = Paths::resolve(exe_dir, current_os);
+    let migration = legacy_os
+        .map(|os| migrate_legacy_files(&paths, &LegacyPaths::resolve(exe_dir, os)))
+        .unwrap_or_default();
     let mut notes = Vec::new();
+    if !migration.migrated.is_empty() {
+        notes.push(format!("migrated legacy {}", migration.migrated.join(", ")));
+    }
+    notes.extend(migration.warnings.iter().cloned());
     let mut settings = Settings::load(&paths.config_file).unwrap_or_else(|e| {
         let line = set_corrupt_settings_aside(&paths.config_file, &e.to_string());
         append_log(&paths.log_dir, &line);
@@ -89,6 +98,7 @@ pub fn startup(exe_dir: &Path, os: OsDirs) -> Startup {
     let notice = (!notes.is_empty()).then(|| notes.join("; "));
     Startup {
         paths,
+        migration,
         settings,
         staging_dir,
         notice,
@@ -218,8 +228,8 @@ mod tests {
         let osd = tempfile::tempdir().unwrap();
         let cfg = os(osd.path()).config;
         std::fs::create_dir_all(&cfg).unwrap();
-        std::fs::write(cfg.join("hf2ollama.toml"), "staging_dir = \"relative/x\"\n").unwrap();
-        let st = startup(exe.path(), os(osd.path()));
+        std::fs::write(cfg.join("roost.toml"), "staging_dir = \"relative/x\"\n").unwrap();
+        let st = startup(exe.path(), os(osd.path()), None);
         assert_eq!(st.settings.staging_dir, None);
         assert_eq!(st.staging_dir, st.paths.default_staging);
         assert!(st.notice.is_some());
@@ -230,10 +240,13 @@ mod tests {
         let exe = tempfile::tempdir().unwrap();
         std::fs::write(exe.path().join("portable"), "").unwrap();
         let osd = tempfile::tempdir().unwrap();
-        let st = startup(exe.path(), os(osd.path()));
+        let st = startup(exe.path(), os(osd.path()), None);
         assert!(st.paths.portable);
-        assert_eq!(st.paths.config_file, exe.path().join("hf2ollama.toml"));
-        assert_eq!(st.paths.history_file, exe.path().join("history.json"));
+        assert_eq!(st.paths.config_file, exe.path().join("roost.toml"));
+        assert_eq!(
+            st.paths.import_history_file,
+            exe.path().join("history.json")
+        );
         assert_eq!(st.paths.log_dir, exe.path().join("logs"));
         assert_eq!(st.staging_dir, exe.path().join("staging"));
         // An orphan job dir exists so the sweep has something to log about.
@@ -250,12 +263,9 @@ mod tests {
     fn startup_without_marker_uses_os_dirs() {
         let exe = tempfile::tempdir().unwrap();
         let osd = tempfile::tempdir().unwrap();
-        let st = startup(exe.path(), os(osd.path()));
+        let st = startup(exe.path(), os(osd.path()), None);
         assert!(!st.paths.portable);
-        assert_eq!(
-            st.paths.config_file,
-            osd.path().join("config/hf2ollama.toml")
-        );
+        assert_eq!(st.paths.config_file, osd.path().join("config/roost.toml"));
         assert_eq!(st.staging_dir, osd.path().join("cache/staging"));
         assert_eq!(st.paths.log_dir, osd.path().join("state/logs"));
         sweep_staging(&st.staging_dir, &st.paths.log_dir, SystemTime::now());
@@ -303,14 +313,14 @@ mod tests {
     fn a_corrupt_settings_file_is_kept_as_bak_before_falling_back_to_defaults() {
         let exe = tempfile::tempdir().unwrap();
         let osd = tempfile::tempdir().unwrap();
-        let cfg = osd.path().join("config/hf2ollama.toml");
+        let cfg = osd.path().join("config/roost.toml");
         std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
         std::fs::write(&cfg, "this is = not [valid toml").unwrap();
         // An older backup is replaced.
-        let bak = osd.path().join("config/hf2ollama.toml.bak");
+        let bak = osd.path().join("config/roost.toml.bak");
         std::fs::write(&bak, "old backup").unwrap();
 
-        let st = startup(exe.path(), os(osd.path()));
+        let st = startup(exe.path(), os(osd.path()), None);
 
         assert_eq!(st.settings, Settings::default());
         assert!(!cfg.exists(), "the unreadable file is moved out of the way");
@@ -319,22 +329,135 @@ mod tests {
             "this is = not [valid toml"
         );
         let notice = st.notice.expect("a startup notice");
-        assert!(notice.contains("hf2ollama.toml.bak"), "{notice}");
+        assert!(notice.contains("roost.toml.bak"), "{notice}");
         let log = std::fs::read_to_string(osd.path().join("state/logs/startup.log")).unwrap();
-        assert!(log.contains("hf2ollama.toml.bak"), "{log}");
+        assert!(log.contains("roost.toml.bak"), "{log}");
     }
 
     #[test]
     fn a_valid_settings_file_is_left_alone() {
         let exe = tempfile::tempdir().unwrap();
         let osd = tempfile::tempdir().unwrap();
-        let cfg = osd.path().join("config/hf2ollama.toml");
+        let cfg = osd.path().join("config/roost.toml");
         std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
         std::fs::write(&cfg, "max_parallel = 3\n").unwrap();
-        let st = startup(exe.path(), os(osd.path()));
+        let st = startup(exe.path(), os(osd.path()), None);
         assert_eq!(st.settings.max_parallel, 3);
         assert!(cfg.exists());
-        assert!(!osd.path().join("config/hf2ollama.toml.bak").exists());
+        assert!(!osd.path().join("config/roost.toml.bak").exists());
         assert!(st.notice.is_none());
+    }
+
+    #[test]
+    fn startup_migrates_legacy_metadata_before_loading_settings() {
+        let exe = tempfile::tempdir().unwrap();
+        let current_os = tempfile::tempdir().unwrap();
+        let legacy_os = tempfile::tempdir().unwrap();
+        let legacy_config = legacy_os.path().join("config/hf2ollama.toml");
+        std::fs::create_dir_all(legacy_config.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_config, "max_parallel = 3\n").unwrap();
+        std::fs::write(
+            legacy_os.path().join("config/history.json"),
+            "{\"imports\":{\"qwen\":\"org/repo\"}}",
+        )
+        .unwrap();
+
+        let st = startup(
+            exe.path(),
+            os(current_os.path()),
+            Some(os(legacy_os.path())),
+        );
+
+        assert_eq!(st.settings.max_parallel, 3);
+        assert_eq!(st.migration.migrated, vec!["settings", "import history"]);
+        assert_eq!(
+            std::fs::read_to_string(&st.paths.import_history_file).unwrap(),
+            "{\"imports\":{\"qwen\":\"org/repo\"}}"
+        );
+        assert!(st
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("migrated legacy settings"));
+    }
+
+    #[test]
+    fn startup_keeps_current_data_and_configured_staging() {
+        let exe = tempfile::tempdir().unwrap();
+        let current_os = tempfile::tempdir().unwrap();
+        let legacy_os = tempfile::tempdir().unwrap();
+        let configured_staging = current_os.path().join("configured-staging");
+        let current_config = current_os.path().join("config/roost.toml");
+        std::fs::create_dir_all(current_config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &current_config,
+            format!(
+                "max_parallel = 2\nstaging_dir = \"{}\"\n",
+                configured_staging.display()
+            ),
+        )
+        .unwrap();
+        let legacy_config = legacy_os.path().join("config/hf2ollama.toml");
+        std::fs::create_dir_all(legacy_config.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_config, "max_parallel = 3\n").unwrap();
+
+        let st = startup(
+            exe.path(),
+            os(current_os.path()),
+            Some(os(legacy_os.path())),
+        );
+
+        assert_eq!(st.settings.max_parallel, 2);
+        assert_eq!(st.staging_dir, configured_staging);
+        assert!(st.migration.migrated.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&current_config)
+                .unwrap()
+                .lines()
+                .next(),
+            Some("max_parallel = 2")
+        );
+    }
+
+    #[test]
+    fn portable_startup_migrates_only_the_distinct_legacy_settings_file() {
+        let exe = tempfile::tempdir().unwrap();
+        std::fs::write(exe.path().join("portable"), "").unwrap();
+        std::fs::write(exe.path().join("hf2ollama.toml"), "max_parallel = 4\n").unwrap();
+        std::fs::write(exe.path().join("history.json"), "{\"imports\":{}}\n").unwrap();
+        let osd = tempfile::tempdir().unwrap();
+
+        let st = startup(exe.path(), os(osd.path()), Some(os(osd.path())));
+
+        assert!(st.paths.portable);
+        assert_eq!(st.paths.sessions_dir, exe.path().join("sessions"));
+        assert_eq!(st.migration.migrated, vec!["settings"]);
+        assert_eq!(
+            std::fs::read_to_string(exe.path().join("history.json")).unwrap(),
+            "{\"imports\":{}}\n"
+        );
+        assert!(std::fs::read_dir(osd.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn startup_surfaces_an_unreadable_legacy_source_as_a_notice() {
+        let exe = tempfile::tempdir().unwrap();
+        let current_os = tempfile::tempdir().unwrap();
+        let legacy_os = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(legacy_os.path().join("config/hf2ollama.toml")).unwrap();
+
+        let st = startup(
+            exe.path(),
+            os(current_os.path()),
+            Some(os(legacy_os.path())),
+        );
+
+        assert!(st.migration.migrated.is_empty());
+        assert_eq!(st.migration.warnings.len(), 1);
+        assert!(st
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("could not read legacy settings"));
     }
 }

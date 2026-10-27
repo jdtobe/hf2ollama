@@ -279,7 +279,7 @@ fn run(
         }
     };
     let out = Emitter { tx: ui_tx, ctx };
-    let history = History::load(&paths.history_file).or_else(|e| {
+    let history = History::load(&paths.import_history_file).or_else(|e| {
         // Never overwrite an unreadable history file: work on a side file.
         eprintln!("history unreadable ({e}); starting empty");
         History::load(&paths.log_dir.join("history-unreadable.json"))
@@ -547,8 +547,9 @@ mod tests {
     ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
-            config_file: dir.path().join("hf2ollama.toml"),
-            history_file: dir.path().join("history.json"),
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
             log_dir: dir.path().join("logs"),
             default_staging: dir.path().join("staging"),
             portable: true,
@@ -577,7 +578,7 @@ mod tests {
     }
 
     fn seed_history(paths: &Paths, entries: &[(&str, &str)]) {
-        let mut h = History::load(&paths.history_file).unwrap();
+        let mut h = History::load(&paths.import_history_file).unwrap();
         for (name, repo) in entries {
             h.record(name, repo);
         }
@@ -761,7 +762,7 @@ mod tests {
         });
         assert_eq!(name, "qwen:q4");
         assert_eq!(res, Ok(()));
-        let after = History::load(&h.paths.history_file).unwrap();
+        let after = History::load(&h.paths.import_history_file).unwrap();
         assert_eq!(after.source_of("qwen:q4"), None);
         assert_eq!(after.source_of("keep:me"), Some("x/y"));
     }
@@ -1021,8 +1022,9 @@ mod tests {
     async fn keychain_failure_is_reported_as_invalid_never_a_panic() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
-            config_file: dir.path().join("hf2ollama.toml"),
-            history_file: dir.path().join("history.json"),
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
             log_dir: dir.path().join("logs"),
             default_staging: dir.path().join("staging"),
             portable: true,
@@ -1120,7 +1122,7 @@ mod tests {
         let blocker = h.paths.config_file.with_file_name("blocker");
         std::fs::write(&blocker, "x").unwrap();
         let bad = Paths {
-            config_file: blocker.join("hf2ollama.toml"),
+            config_file: blocker.join("roost.toml"),
             ..h.paths.clone()
         };
         let (tx, rx) = Backend::spawn_with(

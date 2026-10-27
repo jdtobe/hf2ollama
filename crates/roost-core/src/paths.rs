@@ -9,30 +9,42 @@ pub struct OsDirs {
 }
 
 impl OsDirs {
-    /// Detects the OS directories; falls back to a `hf2ollama-data` folder
+    /// Detects the Roost OS directories; falls back to a `roost-data` folder
     /// beside the executable (or in the current directory) when unavailable.
     pub fn detect() -> OsDirs {
-        match directories::ProjectDirs::from("", "", "hf2ollama") {
-            Some(d) => OsDirs {
-                config: d.config_dir().to_path_buf(),
-                cache: d.cache_dir().to_path_buf(),
-                state: d
-                    .state_dir()
-                    .unwrap_or_else(|| d.data_local_dir())
-                    .to_path_buf(),
-            },
-            None => {
-                let base = std::env::current_exe()
-                    .ok()
-                    .and_then(|e| e.parent().map(Path::to_path_buf))
-                    .unwrap_or_default()
-                    .join("hf2ollama-data");
-                OsDirs {
-                    config: base.clone(),
-                    cache: base.clone(),
-                    state: base,
-                }
-            }
+        match Self::project("roost") {
+            Some(dirs) => dirs,
+            None => Self::fallback("roost-data"),
+        }
+    }
+
+    /// Detects the former hf2ollama OS directories. Absence deliberately does
+    /// not fall back: migration must never invent a legacy location.
+    pub fn detect_legacy() -> Option<OsDirs> {
+        Self::project("hf2ollama")
+    }
+
+    fn project(application: &str) -> Option<OsDirs> {
+        directories::ProjectDirs::from("", "", application).map(|d| OsDirs {
+            config: d.config_dir().to_path_buf(),
+            cache: d.cache_dir().to_path_buf(),
+            state: d
+                .state_dir()
+                .unwrap_or_else(|| d.data_local_dir())
+                .to_path_buf(),
+        })
+    }
+
+    fn fallback(name: &str) -> OsDirs {
+        let base = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(Path::to_path_buf))
+            .unwrap_or_default()
+            .join(name);
+        OsDirs {
+            config: base.clone(),
+            cache: base.clone(),
+            state: base,
         }
     }
 }
@@ -41,7 +53,9 @@ impl OsDirs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
     pub config_file: PathBuf,
-    pub history_file: PathBuf,
+    pub import_history_file: PathBuf,
+    /// Directory reserved for one session file per session.
+    pub sessions_dir: PathBuf,
     pub log_dir: PathBuf,
     pub default_staging: PathBuf,
     pub portable: bool,
@@ -51,16 +65,50 @@ impl Paths {
     pub fn resolve(exe_dir: &Path, os: OsDirs) -> Paths {
         if exe_dir.join("portable").exists() {
             Paths {
-                config_file: exe_dir.join("hf2ollama.toml"),
-                history_file: exe_dir.join("history.json"),
+                config_file: exe_dir.join("roost.toml"),
+                import_history_file: exe_dir.join("history.json"),
+                sessions_dir: exe_dir.join("sessions"),
                 log_dir: exe_dir.join("logs"),
                 default_staging: exe_dir.join("staging"),
                 portable: true,
             }
         } else {
             Paths {
+                config_file: os.config.join("roost.toml"),
+                import_history_file: os.config.join("history.json"),
+                sessions_dir: os.state.join("sessions"),
+                log_dir: os.state.join("logs"),
+                default_staging: os.cache.join("staging"),
+                portable: false,
+            }
+        }
+    }
+}
+
+/// Locations used by the preceding hf2ollama application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyPaths {
+    pub config_file: PathBuf,
+    pub import_history_file: PathBuf,
+    pub log_dir: PathBuf,
+    pub default_staging: PathBuf,
+    pub portable: bool,
+}
+
+impl LegacyPaths {
+    pub fn resolve(exe_dir: &Path, os: OsDirs) -> LegacyPaths {
+        if exe_dir.join("portable").exists() {
+            LegacyPaths {
+                config_file: exe_dir.join("hf2ollama.toml"),
+                import_history_file: exe_dir.join("history.json"),
+                log_dir: exe_dir.join("logs"),
+                default_staging: exe_dir.join("staging"),
+                portable: true,
+            }
+        } else {
+            LegacyPaths {
                 config_file: os.config.join("hf2ollama.toml"),
-                history_file: os.config.join("history.json"),
+                import_history_file: os.config.join("history.json"),
                 log_dir: os.state.join("logs"),
                 default_staging: os.cache.join("staging"),
                 portable: false,
@@ -88,8 +136,9 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let p = Paths::resolve(exe.path(), os(other.path()));
         assert!(p.portable);
-        assert_eq!(p.config_file, exe.path().join("hf2ollama.toml"));
-        assert_eq!(p.history_file, exe.path().join("history.json"));
+        assert_eq!(p.config_file, exe.path().join("roost.toml"));
+        assert_eq!(p.import_history_file, exe.path().join("history.json"));
+        assert_eq!(p.sessions_dir, exe.path().join("sessions"));
         assert_eq!(p.log_dir, exe.path().join("logs"));
         assert_eq!(p.default_staging, exe.path().join("staging"));
     }
@@ -100,8 +149,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let p = Paths::resolve(exe.path(), os(root.path()));
         assert!(!p.portable);
-        assert_eq!(p.config_file, root.path().join("config/hf2ollama.toml"));
-        assert_eq!(p.history_file, root.path().join("config/history.json"));
+        assert_eq!(p.config_file, root.path().join("config/roost.toml"));
+        assert_eq!(
+            p.import_history_file,
+            root.path().join("config/history.json")
+        );
+        assert_eq!(p.sessions_dir, root.path().join("state/sessions"));
         assert_eq!(p.log_dir, root.path().join("state/logs"));
         assert_eq!(p.default_staging, root.path().join("cache/staging"));
     }

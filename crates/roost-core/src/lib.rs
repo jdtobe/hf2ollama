@@ -7,6 +7,7 @@ pub mod fit;
 pub mod hardware;
 pub mod hf;
 pub mod history;
+pub mod migration;
 pub mod model;
 pub mod names;
 pub mod ollama;
