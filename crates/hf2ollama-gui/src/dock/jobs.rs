@@ -2,7 +2,11 @@
 
 use hf2ollama_core::config::AutoDismiss;
 use hf2ollama_core::events::{JobEvent, JobId, Stage};
-use std::time::Instant;
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+/// Speed is averaged over progress reports from the last five seconds.
+pub const RATE_WINDOW: Duration = Duration::from_secs(5);
 
 /// Most log lines kept per row; older lines are dropped first.
 pub const MAX_LOG_LINES: usize = 2000;
@@ -39,6 +43,10 @@ pub struct JobRow {
     pub log: Vec<String>,
     pub settled_at: Option<Instant>,
     pub paused: bool,
+    /// Bytes per second over the rolling window, while downloading.
+    rate: Option<f64>,
+    /// `(when, bytes done)` reports inside the rolling window.
+    samples: VecDeque<(Instant, u64)>,
 }
 
 impl JobRow {
@@ -54,6 +62,8 @@ impl JobRow {
             log: Vec::new(),
             settled_at: None,
             paused: false,
+            rate: None,
+            samples: VecDeque::new(),
         }
     }
 
@@ -79,7 +89,10 @@ impl JobRow {
             RowStatus::Cancelled => "Cancelled".to_string(),
             RowStatus::Running => match self.stage {
                 Stage::Queued => "Queued".to_string(),
-                Stage::Downloading => format!("Downloading {pct}%"),
+                Stage::Downloading => match self.rate {
+                    Some(rate) => format!("Downloading {pct}% · {}", format_rate(rate)),
+                    None => format!("Downloading {pct}%"),
+                },
                 Stage::Verifying => "Verifying".to_string(),
                 Stage::Uploading => "Uploading".to_string(),
                 Stage::Creating => "Creating".to_string(),
@@ -96,6 +109,42 @@ impl JobRow {
         self.status = status;
         self.paused = false;
         self.settled_at = Some(now);
+        self.clear_rate();
+    }
+
+    fn clear_rate(&mut self) {
+        self.rate = None;
+        self.samples.clear();
+    }
+
+    /// Adds one progress report and recomputes the rate over the last
+    /// `RATE_WINDOW`. Reports that do not advance the byte count are ignored
+    /// so a stalled transfer does not average in zero-length samples.
+    fn record_rate(&mut self, now: Instant) {
+        if self
+            .samples
+            .back()
+            .is_some_and(|(_, done)| *done >= self.done)
+        {
+            return;
+        }
+        self.samples.push_back((now, self.done));
+        while let Some((at, _)) = self.samples.front() {
+            if now.saturating_duration_since(*at) > RATE_WINDOW {
+                self.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.rate = match (self.samples.front(), self.samples.back()) {
+            (Some((first_at, first_done)), Some((last_at, last_done)))
+                if self.samples.len() >= 2 =>
+            {
+                let secs = last_at.saturating_duration_since(*first_at).as_secs_f64();
+                (secs > 0.0).then(|| last_done.saturating_sub(*first_done) as f64 / secs)
+            }
+            _ => None,
+        };
     }
 
     fn live_status(&self) -> RowStatus {
@@ -110,9 +159,17 @@ impl JobRow {
 }
 
 /// Formats a transfer rate, e.g. `12.4 MB/s`.
-#[allow(dead_code)]
-pub fn format_rate(_bytes_per_sec: f64) -> String {
-    String::new()
+pub fn format_rate(bytes_per_sec: f64) -> String {
+    let v = bytes_per_sec.max(0.0);
+    if v < 1_000.0 {
+        format!("{v:.0} B/s")
+    } else if v < 1_000_000.0 {
+        format!("{:.1} KB/s", v / 1e3)
+    } else if v < 1_000_000_000.0 {
+        format!("{:.1} MB/s", v / 1e6)
+    } else {
+        format!("{:.2} GB/s", v / 1e9)
+    }
 }
 
 /// `tiny` and `tiny:latest` name the same Ollama model.
@@ -178,6 +235,9 @@ impl JobsState {
                 if row.status.is_settled() {
                     return;
                 }
+                if row.stage != *stage {
+                    row.clear_rate();
+                }
                 row.stage = *stage;
                 row.status = row.live_status();
             }
@@ -188,6 +248,12 @@ impl JobsState {
                 }
                 row.total = row.total.max(*total);
                 row.done = row.done.max(*done);
+                if row.status == RowStatus::Running
+                    && row.stage == Stage::Downloading
+                    && !row.paused
+                {
+                    row.record_rate(now);
+                }
             }
             JobEvent::Log { id, line } => {
                 let row = self.row_mut(*id);
@@ -204,6 +270,7 @@ impl JobsState {
                 }
                 row.paused = true;
                 row.status = RowStatus::Paused;
+                row.clear_rate();
             }
             JobEvent::Resumed { id } => {
                 let row = self.row_mut(*id);
@@ -212,6 +279,7 @@ impl JobsState {
                 }
                 row.paused = false;
                 row.status = row.live_status();
+                row.clear_rate();
             }
             JobEvent::Finished { id } => {
                 let row = self.row_mut(*id);

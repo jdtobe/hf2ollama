@@ -12,7 +12,6 @@ use crate::widgets::fit_text;
 use eframe::egui::{self, vec2, Align, Layout, Margin, RichText, Sense, Stroke};
 use hf2ollama_core::events::JobId;
 use jobs::{JobRow, JobsState, RowStatus};
-use std::collections::HashSet;
 
 /// What the user asked for; the app applies it (backend commands or local).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,12 +37,17 @@ pub struct DockProbe {
     pub clear_button: Option<egui::Rect>,
     /// Row content rectangles painted this frame.
     pub rows: Vec<egui::Rect>,
+    /// The floating log drawer, when open.
+    pub log_panel: Option<egui::Rect>,
+    /// The scrolling log text area inside the drawer.
+    pub log_viewport: Option<egui::Rect>,
 }
 
 /// View state of the dock (which logs are expanded).
 #[derive(Debug, Default)]
 pub struct DockUi {
-    pub open_logs: HashSet<JobId>,
+    /// The one job whose log is open in the drawer.
+    pub open_log: Option<JobId>,
     /// Panel height of the last frame; a change needs one more frame so the
     /// panels above it (laid out from this frame's size) catch up.
     last_height: f32,
@@ -52,7 +56,8 @@ pub struct DockUi {
 }
 
 const ROW_H: f32 = 30.0;
-const STATUS_W: f32 = 150.0;
+/// Room for `Downloading 100% · 123.4 MB/s`.
+const STATUS_W: f32 = 210.0;
 const COL_GAP: f32 = 14.0;
 const LOG_MAX_H: f32 = 120.0;
 const FRAME_V: f32 = 10.0;
@@ -84,6 +89,8 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
         st.probe.clear_button = None;
         st.probe.rows.clear();
         st.probe.viewport = None;
+        st.probe.log_panel = None;
+        st.probe.log_viewport = None;
     }
     let resp = egui::Panel::bottom("dock")
         .frame(crate::app::panel_frame(
@@ -234,7 +241,7 @@ fn row_ui(
     st.probe.rows.push(rect);
 
     // Buttons, rightmost first.
-    let open = st.open_logs.contains(&row.id);
+    let open = st.open_log == Some(row.id);
     let mut bui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -244,11 +251,7 @@ fn row_ui(
     bui.spacing_mut().button_padding = vec2(12.0, 4.0);
     let log_fill = open.then_some(t.accent_soft);
     if row_button(&mut bui, "Log", t.fg2, log_fill, st).clicked() {
-        if open {
-            st.open_logs.remove(&row.id);
-        } else {
-            st.open_logs.insert(row.id);
-        }
+        st.open_log = if open { None } else { Some(row.id) };
     }
     if row.status.is_settled() {
         if row_button(&mut bui, "Dismiss", t.fg2, None, st).clicked() {

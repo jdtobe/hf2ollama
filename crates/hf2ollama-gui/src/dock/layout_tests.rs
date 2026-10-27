@@ -219,9 +219,84 @@ fn many_jobs_on(mut app: App) -> App {
     ];
     for (i, k) in kinds.into_iter().enumerate() {
         add_job(&mut app, i as u64 + 1, k, 40);
-        app.state_mut().dock.open_logs.insert(JobId(i as u64 + 1));
+        app.state_mut().dock.open_log = Some(JobId(i as u64 + 1));
     }
     app
+}
+
+fn one_log_app() -> App {
+    let mut app = browse_app();
+    add_job(&mut app, 1, Kind::Running, 40);
+    app.state_mut().dock.open_log = Some(JobId(1));
+    app
+}
+
+#[test]
+fn log_drawer_shows_five_scrollable_lines_above_the_dock() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let mut app = laid_out(one_log_app(), dark, size);
+            let probe = app.state_mut().dock.probe.clone();
+            let panel = probe.panel.expect("dock panel");
+            let drawer = probe.log_panel.expect("log drawer");
+            let view = probe.log_viewport.expect("log viewport");
+            let window = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+            assert!(
+                inside(drawer, window),
+                "{size:?} dark={dark}: log drawer {drawer:?} outside {window:?}"
+            );
+            assert!(
+                drawer.bottom() <= panel.top() + 0.5,
+                "{size:?} dark={dark}: log drawer {drawer:?} overlaps the dock {panel:?}"
+            );
+            assert!(
+                view.height() >= 5.0 * 12.0,
+                "{size:?} dark={dark}: log viewport only {} px, not five lines",
+                view.height()
+            );
+            assert!(
+                inside(view, drawer),
+                "{size:?} dark={dark}: log text {view:?} outside the drawer {drawer:?}"
+            );
+            assert!(
+                drawer.width() >= panel.width() - 1.0,
+                "{size:?} dark={dark}: drawer {} px is narrower than the dock {} px",
+                drawer.width(),
+                panel.width()
+            );
+        }
+    }
+}
+
+#[test]
+fn opening_a_log_does_not_resize_the_dock() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let mut closed = browse_app();
+            add_job(&mut closed, 1, Kind::Running, 40);
+            let mut closed = laid_out(closed, dark, size);
+            let without = closed.state_mut().dock.probe.panel.expect("dock panel");
+
+            let mut with = laid_out(one_log_app(), dark, size);
+            let with = with.state_mut().dock.probe.panel.expect("dock panel");
+
+            assert!(
+                (with.height() - without.height()).abs() <= 0.5,
+                "{size:?} dark={dark}: dock grew from {} to {} px when the log opened",
+                without.height(),
+                with.height()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_log_for_a_job_that_is_gone_closes_itself() {
+    let mut app = browse_app();
+    add_job(&mut app, 1, Kind::Running, 3);
+    app.state_mut().dock.open_log = Some(JobId(99));
+    let mut app = laid_out(app, false, SIZES[0]);
+    assert_eq!(app.state_mut().dock.open_log, None);
 }
 
 #[test]
@@ -409,7 +484,7 @@ fn dock_buttons_respond_while_a_log_is_open() {
             add_job(&mut app, 1, Kind::Running, 0);
             add_job(&mut app, 2, Kind::Paused, 3);
             add_job(&mut app, 3, Kind::Queued, 0);
-            app.state_mut().dock.open_logs.insert(JobId(2));
+            app.state_mut().dock.open_log = Some(JobId(2));
             let mut harness = Harness::new(dark);
             for _ in 0..10 {
                 harness.frame(vec2(size.0, size.1), vec![], |ui| app.show(ui));
@@ -450,7 +525,7 @@ fn dock_buttons_respond_after_a_log_was_opened_by_click() {
             let log_of_2 = probe.buttons[2].center();
             click_at(&mut app, &sent, &mut harness, size, log_of_2);
             assert!(
-                app.state_mut().dock.open_logs.contains(&JobId(2)),
+                app.state_mut().dock.open_log == Some(JobId(2)),
                 "{size:?} dark={dark}: the Log click did not open the log"
             );
             let probe = app.state_mut().dock.probe.clone();

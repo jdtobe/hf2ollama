@@ -446,7 +446,9 @@ impl App {
             }
             DockAction::Dismiss(id) => {
                 self.state.jobs.dismiss(id);
-                self.state.dock.open_logs.remove(&id);
+                if self.state.dock.open_log == Some(id) {
+                    self.state.dock.open_log = None;
+                }
             }
             DockAction::ClearFinished => self.state.jobs.clear_finished(),
         }
@@ -947,7 +949,7 @@ mod tests {
             },
             now,
         );
-        app.state.dock.open_logs.insert(id);
+        app.state.dock.open_log = Some(id);
         app.apply_dock_action(DockAction::Pause(id));
         app.apply_dock_action(DockAction::Resume(id));
         app.apply_dock_action(DockAction::Cancel(id));
@@ -967,7 +969,7 @@ mod tests {
         );
         app.apply_dock_action(DockAction::Dismiss(id));
         assert!(app.state.jobs.rows().is_empty());
-        assert!(app.state.dock.open_logs.is_empty());
+        assert!(app.state.dock.open_log.is_none());
         assert!(reqs.try_recv().is_err(), "dismiss is local");
     }
 

@@ -177,7 +177,7 @@ fn add_running_jobs(app: &mut App, n: u64) {
             },
             now,
         );
-        st.dock.open_logs.insert(id);
+        st.dock.open_log = Some(id);
     }
 }
 
