@@ -34,8 +34,20 @@ const MIN_WINDOW: [f32; 2] = [900.0, 640.0];
 /// The 256 px PNG bundled with the app, for window managers that show a
 /// per-window icon. The macOS bundle icon comes from `icon-1024.png`.
 fn window_icon() -> Option<egui::IconData> {
-    let _ = Cursor::new(include_bytes!("../assets/icon-256.png"));
-    None
+    let mut decoder = png::Decoder::new(Cursor::new(include_bytes!("../assets/icon-256.png")));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    Some(egui::IconData {
+        rgba: buf,
+        width: info.width,
+        height: info.height,
+    })
 }
 
 /// `HF2O_SIZE=WxH` overrides the initial window size, e.g. `900x640`. Only

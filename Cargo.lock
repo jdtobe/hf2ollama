@@ -1896,6 +1896,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "hf2ollama-core",
+ "png",
  "pulldown-cmark",
  "rfd",
  "serde_json",
