@@ -154,13 +154,74 @@ struct Clients {
     managers: Vec<Arc<JobManager>>,
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+enum TokenOperation {
+    StartupStatus,
+    Save,
+    Check,
+    Import,
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum TokenGateEvent {
+    Contended(TokenOperation),
+    SaveCompleted,
+}
+
+/// Serializes request paths whose token-store reads or writes could race.
+struct TokenOperationGate {
+    lock: AsyncMutex<()>,
+    #[cfg(test)]
+    probe: Option<Sender<TokenGateEvent>>,
+}
+
+impl TokenOperationGate {
+    fn new() -> TokenOperationGate {
+        TokenOperationGate {
+            lock: AsyncMutex::new(()),
+            #[cfg(test)]
+            probe: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_probe(probe: Sender<TokenGateEvent>) -> TokenOperationGate {
+        TokenOperationGate {
+            lock: AsyncMutex::new(()),
+            probe: Some(probe),
+        }
+    }
+
+    async fn acquire(&self, operation: TokenOperation) -> tokio::sync::MutexGuard<'_, ()> {
+        match self.lock.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                #[cfg(not(test))]
+                let _ = operation;
+                #[cfg(test)]
+                if let Some(probe) = &self.probe {
+                    let _ = probe.send(TokenGateEvent::Contended(operation));
+                }
+                self.lock.lock().await
+            }
+        }
+    }
+}
+
+struct TokenStores {
+    store: Arc<dyn TokenStore>,
+    legacy_store: Option<Arc<dyn TokenStore>>,
+    gate: TokenOperationGate,
+}
+
 struct Shared {
     clients: Mutex<Clients>,
     history: Arc<Mutex<History>>,
     paths: Paths,
     store: Arc<dyn TokenStore>,
     legacy_store: Option<Arc<dyn TokenStore>>,
-    token_gate: AsyncMutex<()>,
+    token_gate: TokenOperationGate,
     job_tx: Sender<JobEvent>,
     handle: tokio::runtime::Handle,
     out: Emitter,
@@ -274,11 +335,53 @@ impl Backend {
         store: Arc<dyn TokenStore>,
         legacy_store: Option<Arc<dyn TokenStore>>,
     ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
+        Backend::spawn_with_gate(
+            ctx,
+            settings,
+            paths,
+            store,
+            legacy_store,
+            TokenOperationGate::new(),
+        )
+    }
+
+    #[cfg(test)]
+    fn spawn_with_stores_with_probe(
+        ctx: egui::Context,
+        settings: Settings,
+        paths: Paths,
+        store: Arc<dyn TokenStore>,
+        legacy_store: Option<Arc<dyn TokenStore>>,
+        probe: Sender<TokenGateEvent>,
+    ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
+        Backend::spawn_with_gate(
+            ctx,
+            settings,
+            paths,
+            store,
+            legacy_store,
+            TokenOperationGate::with_probe(probe),
+        )
+    }
+
+    fn spawn_with_gate(
+        ctx: egui::Context,
+        settings: Settings,
+        paths: Paths,
+        store: Arc<dyn TokenStore>,
+        legacy_store: Option<Arc<dyn TokenStore>>,
+        token_gate: TokenOperationGate,
+    ) -> (Sender<BackendRequest>, Receiver<UiEvent>) {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<BackendRequest>();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiEvent>();
+        let stores = TokenStores {
+            store,
+            legacy_store,
+            gate: token_gate,
+        };
         let started = std::thread::Builder::new()
             .name("hf2ollama-backend".into())
-            .spawn(move || run(ctx, settings, paths, store, legacy_store, req_rx, ui_tx));
+            .spawn(move || run(ctx, settings, paths, stores, req_rx, ui_tx));
         if let Err(e) = started {
             eprintln!("could not start the backend thread: {e}");
         }
@@ -290,8 +393,7 @@ fn run(
     ctx: egui::Context,
     settings: Settings,
     paths: Paths,
-    store: Arc<dyn TokenStore>,
-    legacy_store: Option<Arc<dyn TokenStore>>,
+    stores: TokenStores,
     req_rx: Receiver<BackendRequest>,
     ui_tx: Sender<UiEvent>,
 ) {
@@ -329,6 +431,11 @@ fn run(
         eprintln!("could not start the job event forwarder: {e}");
     }
 
+    let TokenStores {
+        store,
+        legacy_store,
+        gate: token_gate,
+    } = stores;
     let token = store.get().ok().flatten();
     let shared = Arc::new(Shared {
         clients: Mutex::new(Clients {
@@ -342,7 +449,7 @@ fn run(
         paths,
         store,
         legacy_store,
-        token_gate: AsyncMutex::new(()),
+        token_gate,
         job_tx,
         handle: runtime.handle().clone(),
         out,
@@ -351,7 +458,10 @@ fn run(
     shared.install_settings(&settings);
     // What the keychain holds, without asking Hugging Face.
     let token_status = runtime.block_on(async {
-        let _guard = shared.token_gate.lock().await;
+        let _guard = shared
+            .token_gate
+            .acquire(TokenOperation::StartupStatus)
+            .await;
         stored_token_status(&*shared.store)
     });
     shared.out.emit(UiEvent::HfTokenStatus(token_status));
@@ -428,7 +538,7 @@ fn stored_token_status(store: &dyn TokenStore) -> HfTokenStatus {
 /// Asks Hugging Face whose token the keychain holds.
 async fn check_token(shared: &Shared) -> HfTokenStatus {
     let stored = {
-        let _guard = shared.token_gate.lock().await;
+        let _guard = shared.token_gate.acquire(TokenOperation::Check).await;
         shared.store.get()
     };
     match stored {
@@ -505,7 +615,7 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         BackendRequest::Core(_) | BackendRequest::ApplySettings(_) => return,
         BackendRequest::SetHfToken(token) => {
             let failure = {
-                let _guard = shared.token_gate.lock().await;
+                let _guard = shared.token_gate.acquire(TokenOperation::Save).await;
                 match token {
                     Some(t) => shared.store.set(t.expose()).err(),
                     None => shared.store.clear().err(),
@@ -526,7 +636,7 @@ async fn serve(shared: &Shared, req: BackendRequest) {
         BackendRequest::CheckHfToken => UiEvent::HfTokenStatus(check_token(shared).await),
         BackendRequest::ImportLegacyToken => {
             if let Some(legacy) = &shared.legacy_store {
-                let _guard = shared.token_gate.lock().await;
+                let _guard = shared.token_gate.acquire(TokenOperation::Import).await;
                 let current = Arc::clone(&shared.store);
                 let legacy = Arc::clone(legacy);
                 let result =
@@ -1046,6 +1156,37 @@ mod tests {
         release_read: Barrier,
     }
 
+    struct SaveSignalStore {
+        token: Mutex<Option<String>>,
+        events: std::sync::mpsc::Sender<TokenGateEvent>,
+    }
+
+    impl SaveSignalStore {
+        fn new(events: std::sync::mpsc::Sender<TokenGateEvent>) -> SaveSignalStore {
+            SaveSignalStore {
+                token: Mutex::new(None),
+                events,
+            }
+        }
+    }
+
+    impl TokenStore for SaveSignalStore {
+        fn get(&self) -> roost_core::error::Result<Option<String>> {
+            Ok(self.token.lock().unwrap().clone())
+        }
+
+        fn set(&self, token: &str) -> roost_core::error::Result<()> {
+            *self.token.lock().unwrap() = Some(token.to_string());
+            let _ = self.events.send(TokenGateEvent::SaveCompleted);
+            Ok(())
+        }
+
+        fn clear(&self) -> roost_core::error::Result<()> {
+            *self.token.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
     impl BlockingLegacyStore {
         fn new(token: &str) -> BlockingLegacyStore {
             BlockingLegacyStore {
@@ -1083,7 +1224,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn import_that_gets_the_token_gate_first_finishes_before_the_later_save() {
-        let current = Arc::new(MemoryStore::default());
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel();
+        let current = Arc::new(SaveSignalStore::new(gate_tx.clone()));
         let legacy = Arc::new(BlockingLegacyStore::new("legacy-token"));
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
@@ -1094,7 +1236,7 @@ mod tests {
             default_staging: dir.path().join("staging"),
             portable: true,
         };
-        let (tx, rx) = Backend::spawn_with_stores(
+        let (tx, rx) = Backend::spawn_with_stores_with_probe(
             egui::Context::default(),
             Settings {
                 hf_endpoint: "http://127.0.0.1:1".into(),
@@ -1103,6 +1245,7 @@ mod tests {
             paths,
             current.clone(),
             Some(legacy.clone()),
+            gate_tx,
         );
         assert_eq!(
             wait_for(&rx, |e| match e {
@@ -1120,6 +1263,10 @@ mod tests {
             "saved-token",
         ))))
         .unwrap();
+        assert_eq!(
+            gate_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            TokenGateEvent::Contended(TokenOperation::Save)
+        );
         legacy.release_read.wait();
         assert!(matches!(
             wait_for(&rx, |e| match e {
