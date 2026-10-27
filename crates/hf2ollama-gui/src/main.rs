@@ -193,7 +193,7 @@ mod tests {
         assert_eq!((icon.width, icon.height), (256, 256));
         assert_eq!(icon.rgba.len(), 256 * 256 * 4);
         assert!(
-            icon.rgba.chunks_exact(4).any(|p| p[3] == 255),
+            icon.rgba.as_chunks::<4>().0.iter().any(|p| p[3] == 255),
             "the icon must have opaque pixels"
         );
     }
