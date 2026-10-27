@@ -1012,7 +1012,10 @@ mod tests {
         };
         let (tx, rx) = Backend::spawn_with_stores(
             egui::Context::default(),
-            Settings::default(),
+            Settings {
+                hf_endpoint: "http://127.0.0.1:1".into(),
+                ..Settings::default()
+            },
             paths,
             current.clone(),
             Some(legacy.clone()),
@@ -1036,34 +1039,38 @@ mod tests {
         assert_eq!(legacy.get().unwrap().as_deref(), Some(SECRET));
     }
 
-    struct BlockingSaveStore {
+    struct BlockingLegacyStore {
         token: Mutex<Option<String>>,
-        block_first_set: std::sync::atomic::AtomicBool,
-        save_started: Barrier,
-        release_save: Barrier,
+        armed: std::sync::atomic::AtomicBool,
+        read_started: Barrier,
+        release_read: Barrier,
     }
 
-    impl BlockingSaveStore {
-        fn new() -> BlockingSaveStore {
-            BlockingSaveStore {
-                token: Mutex::new(None),
-                block_first_set: std::sync::atomic::AtomicBool::new(true),
-                save_started: Barrier::new(2),
-                release_save: Barrier::new(2),
+    impl BlockingLegacyStore {
+        fn new(token: &str) -> BlockingLegacyStore {
+            BlockingLegacyStore {
+                token: Mutex::new(Some(token.into())),
+                armed: std::sync::atomic::AtomicBool::new(false),
+                read_started: Barrier::new(2),
+                release_read: Barrier::new(2),
             }
+        }
+
+        fn arm(&self) {
+            self.armed.store(true, Ordering::SeqCst);
         }
     }
 
-    impl TokenStore for BlockingSaveStore {
+    impl TokenStore for BlockingLegacyStore {
         fn get(&self) -> roost_core::error::Result<Option<String>> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                self.read_started.wait();
+                self.release_read.wait();
+            }
             Ok(self.token.lock().unwrap().clone())
         }
 
         fn set(&self, token: &str) -> roost_core::error::Result<()> {
-            if self.block_first_set.swap(false, Ordering::SeqCst) {
-                self.save_started.wait();
-                self.release_save.wait();
-            }
             *self.token.lock().unwrap() = Some(token.to_string());
             Ok(())
         }
@@ -1075,10 +1082,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_save_that_gets_the_token_gate_first_cannot_be_overwritten_by_import() {
-        let current = Arc::new(BlockingSaveStore::new());
-        let legacy = Arc::new(MemoryStore::default());
-        legacy.set("legacy-token").unwrap();
+    async fn import_that_gets_the_token_gate_first_finishes_before_the_later_save() {
+        let current = Arc::new(MemoryStore::default());
+        let legacy = Arc::new(BlockingLegacyStore::new("legacy-token"));
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             config_file: dir.path().join("roost.toml"),
@@ -1090,30 +1096,45 @@ mod tests {
         };
         let (tx, rx) = Backend::spawn_with_stores(
             egui::Context::default(),
-            Settings::default(),
+            Settings {
+                hf_endpoint: "http://127.0.0.1:1".into(),
+                ..Settings::default()
+            },
             paths,
             current.clone(),
             Some(legacy.clone()),
         );
-        wait_for(&rx, |e| match e {
-            UiEvent::HfTokenStatus(_) => Some(()),
-            _ => None,
-        });
+        assert_eq!(
+            wait_for(&rx, |e| match e {
+                UiEvent::HfTokenStatus(status) => Some(status.clone()),
+                _ => None,
+            }),
+            HfTokenStatus::None
+        );
+        // Startup reads the current store only. Arm after its status event so
+        // the barrier belongs exclusively to the explicit legacy read.
+        legacy.arm();
+        tx.send(BackendRequest::ImportLegacyToken).unwrap();
+        legacy.read_started.wait();
         tx.send(BackendRequest::SetHfToken(Some(HfToken::new(
             "saved-token",
         ))))
         .unwrap();
-        current.save_started.wait();
-        tx.send(BackendRequest::ImportLegacyToken).unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        current.release_save.wait();
+        legacy.release_read.wait();
         assert!(matches!(
             wait_for(&rx, |e| match e {
                 UiEvent::LegacyTokenImported(result) => Some(result.clone()),
                 _ => None,
             }),
-            Ok(LegacyTokenMigration::NotFound)
+            Ok(LegacyTokenMigration::Imported)
         ));
+        // The import owned the gate first. The queued save is therefore the
+        // final writer; without the gate it could finish before the release
+        // above and then be overwritten by legacy promotion.
+        wait_for(&rx, |e| match e {
+            UiEvent::HfTokenStatus(status) => Some(status.clone()),
+            _ => None,
+        });
         assert_eq!(current.get().unwrap().as_deref(), Some("saved-token"));
         assert_eq!(legacy.get().unwrap().as_deref(), Some("legacy-token"));
     }
