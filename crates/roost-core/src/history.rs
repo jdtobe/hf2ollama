@@ -48,25 +48,14 @@ impl History {
         self.entries.remove(ollama_name);
     }
 
-    /// Saves atomically: temp file in the same directory, then rename.
+    /// Saves atomically.
     pub fn save(&self) -> Result<()> {
         let stored = Stored {
             imports: self.entries.clone(),
         };
         let text =
             serde_json::to_string_pretty(&stored).map_err(|e| Error::Parse(e.to_string()))?;
-        let io = |e: std::io::Error| Error::Io(e.to_string());
-        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).map_err(io)?;
-        }
-        let mut tmp = self.path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
-        std::fs::write(&tmp, text).map_err(io)?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            io(e)
-        })
+        crate::persistence::atomic_write(&self.path, text.as_bytes())
     }
 }
 
