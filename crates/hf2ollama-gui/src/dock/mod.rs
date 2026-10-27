@@ -59,9 +59,14 @@ const ROW_H: f32 = 30.0;
 /// Room for `Downloading 100% · 123.4 MB/s`.
 const STATUS_W: f32 = 210.0;
 const COL_GAP: f32 = 14.0;
-const LOG_MAX_H: f32 = 120.0;
 const FRAME_V: f32 = 10.0;
 const HEADER_H: f32 = 24.0;
+/// The log drawer is exactly this many lines tall.
+const LOG_LINES: usize = 5;
+const LOG_HEADER_H: f32 = 22.0;
+const LOG_PAD: f32 = 8.0;
+/// Gap between the drawer and the top of the dock.
+const LOG_GAP: f32 = 6.0;
 /// The dock never takes more than this share of the window height.
 const MAX_SHARE: f32 = 0.35;
 /// Top bar and status bar together.
@@ -120,7 +125,124 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
     {
         st.probe.panel = Some(resp.response.rect);
     }
+    if st
+        .open_log
+        .is_some_and(|id| !jobs.rows().iter().any(|r| r.id == id))
+    {
+        st.open_log = None;
+    }
+    if let Some(id) = st.open_log {
+        if let Some(row) = jobs.rows().iter().find(|r| r.id == id) {
+            log_drawer(ui, resp.response.rect, &t, row, st);
+        }
+    }
     actions
+}
+
+/// A full-width, five-line log viewer floating just above the dock. It is a
+/// drawer rather than part of the row so the minimum window keeps both the
+/// five lines and Browse's protected height.
+fn log_drawer(ui: &egui::Ui, dock: egui::Rect, t: &Tokens, row: &JobRow, st: &mut DockUi) {
+    let line_h = ui
+        .painter()
+        .layout_no_wrap("Ag".into(), mono(11.5), t.fg2)
+        .size()
+        .y;
+    let drawer_h = 2.0 * LOG_PAD + LOG_HEADER_H + 4.0 + LOG_LINES as f32 * line_h;
+    let pos = egui::pos2(dock.left(), (dock.top() - LOG_GAP - drawer_h).max(0.0));
+    let width = dock.width();
+    let inner_w = (width - 2.0 * LOG_PAD - 2.0).max(160.0);
+    let mut close = false;
+    let area = egui::Area::new(egui::Id::unique("dock_log_drawer"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ui.ctx(), |ui| {
+            ui.set_width(width);
+            let frame = egui::Frame::new()
+                .fill(t.surface2)
+                .stroke(Stroke::new(1.0, t.line))
+                .corner_radius(8.0)
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 2],
+                    blur: 8,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(40),
+                })
+                .inner_margin(Margin::symmetric(LOG_PAD as i8, LOG_PAD as i8))
+                .show(ui, |ui| {
+                    ui.set_width(inner_w);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(LOG_HEADER_H);
+                        let name = if row.name.is_empty() {
+                            "Starting…"
+                        } else {
+                            &row.name
+                        };
+                        ui.label(RichText::new(name).font(mono(12.0)).color(t.fg));
+                        ui.label(
+                            RichText::new(row.status_text())
+                                .font(mono(11.0))
+                                .color(t.fg3),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("✕").size(12.0).color(t.fg2))
+                                        .frame(false)
+                                        .min_size(vec2(20.0, 20.0)),
+                                )
+                                .clicked()
+                            {
+                                close = true;
+                            }
+                        });
+                    });
+                    if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                        close = true;
+                    }
+                    let text_h = LOG_LINES as f32 * line_h;
+                    if row.log.is_empty() {
+                        ui.allocate_ui(vec2(inner_w, text_h), |ui| {
+                            ui.label(RichText::new("No log lines yet.").size(11.5).color(t.fg3));
+                        });
+                    } else {
+                        let out = egui::ScrollArea::vertical()
+                            .id_salt(("dock_log", row.id.0))
+                            .max_height(text_h)
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(true)
+                            .show_rows(ui, line_h, row.log.len(), |ui, range| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                for line in &row.log[range] {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(line).font(mono(11.5)).color(t.fg2),
+                                        )
+                                        .selectable(true)
+                                        .truncate(),
+                                    );
+                                }
+                            });
+                        #[cfg(test)]
+                        {
+                            st.probe.log_viewport = Some(out.inner_rect);
+                        }
+                        #[cfg(not(test))]
+                        let _ = out;
+                    }
+                });
+            frame.response.rect
+        });
+    #[cfg(test)]
+    {
+        st.probe.log_panel = Some(area.inner);
+    }
+    #[cfg(not(test))]
+    let _ = area;
+    if close {
+        st.open_log = None;
+    }
 }
 
 /// True when the dock size moved enough that another frame is needed.
@@ -335,44 +457,6 @@ fn row_ui(
                 .wrap_mode(egui::TextWrapMode::Wrap),
         );
     }
-    if open {
-        log_view(ui, t, row);
-    }
-}
-
-fn log_view(ui: &mut egui::Ui, t: &Tokens, row: &JobRow) {
-    egui::Frame::new()
-        .fill(t.bg)
-        .stroke(Stroke::new(1.0, t.line))
-        .corner_radius(6.0)
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if row.log.is_empty() {
-                ui.label(RichText::new("No log lines yet.").size(11.5).color(t.fg3));
-                return;
-            }
-            let line_h = ui
-                .painter()
-                .layout_no_wrap("Ag".into(), mono(11.5), t.fg2)
-                .size()
-                .y;
-            ui.spacing_mut().item_spacing.y = 0.0;
-            egui::ScrollArea::vertical()
-                .id_salt(("dock_log", row.id.0))
-                .max_height(LOG_MAX_H)
-                .auto_shrink([false, true])
-                .stick_to_bottom(true)
-                .show_rows(ui, line_h, row.log.len(), |ui, range| {
-                    for line in &row.log[range] {
-                        ui.add(
-                            egui::Label::new(RichText::new(line).font(mono(11.5)).color(t.fg2))
-                                .selectable(true)
-                                .truncate(),
-                        );
-                    }
-                });
-        });
 }
 
 #[cfg(test)]
