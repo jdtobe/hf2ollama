@@ -4,7 +4,8 @@ use std::time::{Duration, SystemTime};
 use crate::error::{Error, Result};
 use crate::events::JobId;
 
-const JOB_MARKER: &str = ".hf2ollama-job";
+const JOB_MARKER: &str = ".roost-job";
+const LEGACY_JOB_MARKER: &str = ".hf2ollama-job";
 const PARTIAL_MARKER: &str = ".partial";
 const KEPT_MARKER: &str = ".kept";
 
@@ -64,9 +65,11 @@ fn is_our_job_dir(path: &Path) -> bool {
     let is_real_dir = std::fs::symlink_metadata(path)
         .map(|m| m.file_type().is_dir())
         .unwrap_or(false);
-    let marked = std::fs::symlink_metadata(path.join(JOB_MARKER))
-        .map(|m| m.file_type().is_file())
-        .unwrap_or(false);
+    let marked = [JOB_MARKER, LEGACY_JOB_MARKER].into_iter().any(|marker| {
+        std::fs::symlink_metadata(path.join(marker))
+            .map(|m| m.file_type().is_file())
+            .unwrap_or(false)
+    });
     is_real_dir && marked
 }
 
@@ -277,7 +280,56 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let job = staging(&tmp).create_job(JobId(42), 0).unwrap();
         assert_eq!(job.path().file_name().unwrap(), "job-42");
-        assert!(job.path().join(".hf2ollama-job").is_file());
+        assert!(job.path().join(".roost-job").is_file());
+        assert!(!job.path().join(".hf2ollama-job").exists());
+    }
+
+    #[test]
+    fn legacy_marked_jobs_remain_listable_and_clearable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = staging(&tmp);
+        let legacy = tmp.path().join("staging/job-7");
+        fs::create_dir_all(&legacy).unwrap();
+        write(&legacy.join(".hf2ollama-job"), 0);
+        write(&legacy.join(".kept"), 0);
+        write(&legacy.join("cached.bin"), 13);
+
+        assert_eq!(s.list_cached().unwrap()[0].label, "job-7");
+        assert_eq!(s.clear_cached().unwrap(), 13);
+        assert!(!legacy.exists());
+    }
+
+    #[test]
+    fn mixed_ownership_markers_are_counted_and_cleared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = staging(&tmp);
+        let root = tmp.path().join("staging");
+        let roost = root.join("job-1");
+        let legacy = root.join("job-2");
+        let both = root.join("job-3");
+        for (path, marker, bytes) in [
+            (&roost, ".roost-job", 10),
+            (&legacy, ".hf2ollama-job", 20),
+            (&both, ".roost-job", 30),
+        ] {
+            fs::create_dir_all(path).unwrap();
+            write(&path.join(marker), 0);
+            write(&path.join("cached.bin"), bytes);
+            write(&path.join(".partial"), 0);
+        }
+        write(&both.join(".hf2ollama-job"), 0);
+
+        let labels: Vec<_> = s
+            .list_cached()
+            .unwrap()
+            .into_iter()
+            .map(|job| job.label)
+            .collect();
+        assert_eq!(labels, ["job-1", "job-2", "job-3"]);
+        assert_eq!(s.clear_cached().unwrap(), 60);
+        assert!(!roost.exists());
+        assert!(!legacy.exists());
+        assert!(!both.exists());
     }
 
     #[test]

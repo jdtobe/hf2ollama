@@ -109,13 +109,16 @@ pub fn validate_staging_dir(path: &Path) -> Result<(), String> {
 
 /// Creates and removes a uniquely named file to find out whether `dir`
 /// accepts writes; nothing is left behind either way.
+fn writable_probe_name(pid: u32, counter: u32) -> String {
+    format!(".roost-write-test-{pid}-{counter}")
+}
+
 fn writable(dir: &Path) -> Result<(), String> {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
-    let probe = dir.join(format!(
-        ".hf2ollama-write-test-{}-{}",
+    let probe = dir.join(writable_probe_name(
         std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
+        N.fetch_add(1, Ordering::Relaxed),
     ));
     match std::fs::OpenOptions::new()
         .write(true)
@@ -243,6 +246,11 @@ mod tests {
         // Probing leaves nothing behind.
         let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(left.len(), 1, "only file.txt: {left:?}");
+    }
+
+    #[test]
+    fn writable_probe_names_are_roost_owned() {
+        assert_eq!(writable_probe_name(42, 7), ".roost-write-test-42-7");
     }
 
     #[cfg(unix)]
