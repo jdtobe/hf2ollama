@@ -300,6 +300,21 @@ mod tests {
     }
 
     #[test]
+    fn sweep_removes_legacy_marked_orphan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = staging(&tmp);
+        let legacy = tmp.path().join("staging/job-8");
+        fs::create_dir_all(&legacy).unwrap();
+        write(&legacy.join(".hf2ollama-job"), 0);
+        write(&legacy.join("orphan.bin"), 13);
+
+        let report = s.sweep(SystemTime::now(), Duration::ZERO).unwrap();
+
+        assert_eq!(report.removed_orphans, 1);
+        assert!(!legacy.exists());
+    }
+
+    #[test]
     fn mixed_ownership_markers_are_counted_and_cleared() {
         let tmp = tempfile::tempdir().unwrap();
         let s = staging(&tmp);
