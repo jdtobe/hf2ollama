@@ -9,7 +9,7 @@ Stage 2 (streaming chat, per-session storage, incognito, history rail with pinni
 ### UI refinement backlog (from the first hands-on test of chat)
 
 - Done: delete control on every rail row (hover or selected row; click, pause, click to confirm).
-- Idea, not designed: show which models Ollama has loaded (`GET /api/ps`) and unload on demand (`POST /api/generate` with `keep_alive: 0`), possibly with a keep-alive preference; reflect loaded state on the Chat tab.
+- Done: loaded models (`GET /api/ps`) shown in the chat header and an "In memory" list in the rail, with manual Unload (`POST /api/generate` with `keep_alive: 0`). Not done: a keep-alive preference (unload after N minutes or right after each reply) and a Chat-tab indicator beyond the rail.
 - Keep in mind: a real menubar. People look there for themes (and likely settings); the current top bar has no menubar.
 - Also: interim titles instead of "Untitled", markdown/copy/regenerate, rail search, images (see the discussion of a "media" stage and a provider layer).
 

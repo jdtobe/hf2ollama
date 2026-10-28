@@ -49,6 +49,9 @@ pub struct ChatProbe {
     pub send_button: Option<(egui::Rect, &'static str)>,
     /// The delete control of each rail row that shows one, and whether it is armed.
     pub rail_delete: Vec<(SessionId, egui::Rect, bool)>,
+    pub header_unload: Option<egui::Rect>,
+    pub loaded_footer: Option<egui::Rect>,
+    pub footer_unload: Vec<egui::Rect>,
     pub delete_button: Option<(egui::Rect, String)>,
 }
 
@@ -187,6 +190,19 @@ fn rail(
     installed: &[String],
 ) {
     let now = Instant::now();
+    if app.ollama.as_ref().is_some_and(|o| o.is_some()) {
+        egui::Panel::bottom("chat_loaded")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().inner_margin(Margin::symmetric(0, 6)))
+            .show(ui, |ui| {
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.loaded_footer = Some(ui.max_rect());
+                }
+                loaded_footer(ui, app, out, t);
+            });
+    }
     let model = app.chat.default_model(installed);
     ui.horizontal(|ui| {
         let ready = model.is_some();
@@ -654,9 +670,19 @@ fn header(
             }
         }
         _ => {
-            ui.add(
-                egui::Label::new(RichText::new(&title).font(semibold(16.0)).color(t.fg)).truncate(),
-            );
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    loaded_status(ui, app, out, t, &model);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&title).font(semibold(16.0)).color(t.fg),
+                            )
+                            .truncate(),
+                        );
+                    });
+                });
+            });
         }
     }
     #[cfg(test)]
@@ -794,6 +820,118 @@ fn inspect(
     if r.clicked() && app.chat_ui.confirm.click(&key, now) {
         out.push(BackendRequest::Chat(ChatCommand::Delete(id)));
         app.chat_ui.inspect = None;
+    }
+}
+
+// ------------------------------------------------------------ loaded models
+
+/// Ollama lists `llama3` and `llama3:latest` for the same model.
+fn same_model(a: &str, b: &str) -> bool {
+    a.strip_suffix(":latest").unwrap_or(a) == b.strip_suffix(":latest").unwrap_or(b)
+}
+
+/// "unloads in 5 min", "stays loaded" and so on, from Ollama's `expires_at`.
+pub(super) fn unload_note(expires_at: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let at = chrono::DateTime::parse_from_rfc3339(expires_at)
+        .ok()?
+        .to_utc();
+    let left = at - now;
+    Some(if left > chrono::Duration::hours(24) {
+        "stays loaded".to_string()
+    } else if left <= chrono::Duration::zero() {
+        "unloading".to_string()
+    } else if left < chrono::Duration::minutes(1) {
+        "unloads in under a minute".to_string()
+    } else {
+        format!(
+            "unloads in {} min",
+            (left.num_milliseconds() + 59_999) / 60_000
+        )
+    })
+}
+
+/// Right end of the conversation title line: whether this chat's model is in
+/// memory, and a button to unload it.
+fn loaded_status(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    model: &str,
+) {
+    if !app.ollama.as_ref().is_some_and(|o| o.is_some()) {
+        return;
+    }
+    let found = app
+        .running
+        .iter()
+        .find(|m| same_model(&m.name, model))
+        .cloned();
+    match found {
+        Some(m) => {
+            let note = m
+                .expires_at
+                .as_deref()
+                .and_then(|e| unload_note(e, chrono::Utc::now()));
+            let r = secondary(ui, "Unload", true).on_hover_text("Free this model's memory now");
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.header_unload = Some(r.rect);
+            }
+            if r.clicked() {
+                out.push(BackendRequest::UnloadModel(m.name.clone()));
+                app.running.retain(|x| x.name != m.name);
+            }
+            let text = match note {
+                Some(n) => format!("● Loaded · {n}"),
+                None => "● Loaded".to_string(),
+            };
+            ui.label(RichText::new(text).size(12.0).color(t.ok));
+        }
+        None => {
+            ui.label(RichText::new("○ Not loaded").size(12.0).color(t.fg3))
+                .on_hover_text("Ollama loads it when you send a message");
+        }
+    }
+}
+
+/// "In memory" at the bottom of the rail: what Ollama holds, with Unload.
+fn loaded_footer(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>, t: &Tokens) {
+    section_label(ui, t, "In memory");
+    if app.running.is_empty() {
+        ui.label(RichText::new("Nothing loaded").size(12.0).color(t.fg3));
+        return;
+    }
+    let shown: Vec<_> = app.running.iter().take(3).cloned().collect();
+    for m in &shown {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let r = secondary(ui, "Unload", true);
+                #[cfg(test)]
+                app.chat_ui.probe.footer_unload.push(r.rect);
+                if r.clicked() {
+                    out.push(BackendRequest::UnloadModel(m.name.clone()));
+                    app.running.retain(|x| x.name != m.name);
+                }
+                ui.label(
+                    RichText::new(crate::browse::results::format_size(m.size))
+                        .size(11.5)
+                        .color(t.fg3),
+                );
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&m.name).size(12.0).color(t.fg2)).truncate(),
+                    );
+                });
+            });
+        });
+    }
+    if app.running.len() > shown.len() {
+        ui.label(
+            RichText::new(format!("and {} more", app.running.len() - shown.len()))
+                .size(11.5)
+                .color(t.fg3),
+        );
     }
 }
 

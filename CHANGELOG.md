@@ -26,6 +26,11 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Replies continue in other sessions and while you use Browse, Installed or Settings; the Chat tab shows a count of running replies.
 - Fixed: the top bar's logo, tabs, search field and Ollama status pill now share one vertical centre.
 
+### Chat refinements
+
+- A delete control on every rail row: hover or select a row, click the ✕, then click "Delete?" after a short pause.
+- Loaded models: the chat header shows whether its model is in memory (and when Ollama will unload it) with an Unload button, and the rail has an "In memory" list with Unload for each loaded model. Ollama is asked every 10 seconds and whenever a reply starts or ends.
+
 ### Added
 
 - A clear (✕) button in the Browse search field.
