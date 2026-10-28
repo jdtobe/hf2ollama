@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod compat;
 pub mod config;
 pub mod control;
