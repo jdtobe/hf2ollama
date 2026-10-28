@@ -547,6 +547,11 @@ impl BrowseState {
         self.cards.results.insert(id.to_string(), view);
     }
 
+    /// Asks for `id`'s model card once, without selecting the repository.
+    pub fn want_card(&mut self, id: &str) {
+        self.cards.want(id);
+    }
+
     /// The cached answer for `id`; `None` while it is not loaded.
     pub fn card_for(&self, id: &str) -> Option<&CardResult> {
         self.cards.results.get(id)

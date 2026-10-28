@@ -123,7 +123,12 @@ pub fn section(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendReque
         (_, true) => visible.to_string(),
         (_, false) => format!("{visible} of {loaded}"),
     };
-    section_header(ui, "Hugging Face", &count);
+    let title = if app.query.trim().is_empty() {
+        "Popular on Hugging Face"
+    } else {
+        "Hugging Face"
+    };
+    section_header(ui, title, &count);
     match app.browse.search.clone() {
         SearchStatus::Loading if loaded == 0 => {
             message_box(ui, |ui| {
@@ -184,6 +189,14 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
         .map(|s| app.browse.enriched(s))
         .collect();
     let selected = app.browse.selected_id().map(str::to_string);
+    // Repositories an installed model was imported from.
+    let have: std::collections::HashSet<String> = app
+        .installed
+        .rows()
+        .iter()
+        .filter_map(|r| r.linkable_repo())
+        .map(str::to_lowercase)
+        .collect();
     let mut picked = None;
     {
         {
@@ -223,6 +236,9 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
                         });
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
+                            if have.contains(&m.id.to_lowercase()) {
+                                tag(ui, "installed", t.accent, t.accent_soft);
+                            }
                             if m.is_safetensors && !m.is_gguf {
                                 tag(ui, "Safetensors", t.warn, t.warn_soft);
                             } else if m.is_gguf {

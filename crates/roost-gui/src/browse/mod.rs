@@ -8,6 +8,8 @@ use eframe::egui;
 #[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct Probe {
+    /// Top edge of the About card in an installed model's detail pane.
+    pub about_top: Option<f32>,
     /// The painted Hugging Face result rows of the Models list.
     pub result_rows: Vec<egui::Rect>,
     /// The delete/confirmation toast of the Models tab.

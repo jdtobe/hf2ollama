@@ -62,6 +62,8 @@ fn installed(
                     actions(ui, app, out, row, now, dark);
                     ui.add_space(6.0);
                     details(ui, app, row, &t, dark);
+                    ui.add_space(6.0);
+                    about(ui, app, row, &t);
                 });
         });
     #[cfg(test)]
@@ -276,5 +278,44 @@ fn details(ui: &mut egui::Ui, app: &mut AppState, row: &InstalledRow, t: &Tokens
     if let Some(repo) = open_repo {
         app.browse.select_repo(&repo);
         app.models_installed = None;
+    }
+}
+
+/// The source repository's description, or a note that there is none.
+fn about(ui: &mut egui::Ui, app: &mut AppState, row: &InstalledRow, t: &Tokens) {
+    ui.label(RichText::new("About").font(semibold(14.0)));
+    #[cfg(test)]
+    {
+        app.browse.probe.about_top = Some(ui.cursor().top());
+    }
+    let Some(repo) = row.linkable_repo().map(str::to_string) else {
+        let why = if row.source_repo.is_some() {
+            "The source of this model is not a Hugging Face repository Roost can open."
+        } else {
+            "This model was pulled from the Ollama library, so there is no Hugging Face description."
+        };
+        ui.add(egui::Label::new(RichText::new(why).size(12.5).color(t.fg3)).wrap());
+        return;
+    };
+    app.browse.want_info(&repo);
+    app.browse.want_card(&repo);
+    match app.browse.info_for(&repo).cloned() {
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Loading description…").color(t.fg3));
+            });
+        }
+        Some(Err(e)) => {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!("Could not load the description. {e}"))
+                        .size(12.5)
+                        .color(t.fg3),
+                )
+                .wrap(),
+            );
+        }
+        Some(Ok(info)) => crate::browse::about::show(ui, app, &info, &repo),
     }
 }

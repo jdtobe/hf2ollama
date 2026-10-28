@@ -63,7 +63,7 @@ fn models_app() -> (App, Receiver<BackendRequest>) {
     st.installed.on_installed_loaded(&Ok(vec![
         installed(
             "qwen2.5-coder:32b-instruct-q4_K_M-with-a-very-long-name",
-            Some("bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"),
+            Some("o/alpha-GGUF"),
         ),
         installed("llama3.2:3b", None),
         installed("mistral-small3.2:24b", Some("unsloth/Mistral-Small-3.2")),
@@ -117,9 +117,23 @@ fn texts(app: &mut App, h: &mut Harness, size: (f32, f32)) -> String {
         .join("\n")
 }
 
-/// Selects the first installed row and returns its detail pane.
+/// Selects the first installed row.
 fn select_first(app: &mut App, h: &mut Harness, size: (f32, f32)) {
     let row = app.state_mut().browse.probe.installed_rows[0].1;
+    click(app, h, size, row.center());
+}
+
+/// Selects the installed row whose name starts with `prefix`.
+fn select_named(app: &mut App, h: &mut Harness, size: (f32, f32), prefix: &str) {
+    let row = app
+        .state_mut()
+        .browse
+        .probe
+        .installed_rows
+        .iter()
+        .find(|(n, _)| n.starts_with(prefix))
+        .map(|(_, r)| *r)
+        .expect("row");
     click(app, h, size, row.center());
 }
 
@@ -313,4 +327,114 @@ fn deleting_the_selected_model_clears_the_selection() {
         .on_delete_done(&name, &Ok(()), std::time::Instant::now());
     run(&mut app, &mut h, size, 3);
     assert!(app.state_mut().models_installed.is_none());
+}
+
+fn card_info(id: &str) -> roost_core::hf::ModelInfo {
+    roost_core::hf::ModelInfo {
+        id: id.into(),
+        files: Vec::new(),
+        arch: Some("llama".into()),
+        params: Some("7B".into()),
+        context: Some(32768),
+        license: Some("apache-2.0".into()),
+        base_model: None,
+        downloads: 1_000,
+        likes: 10,
+        updated: "2026-01-01T00:00:00.000Z".into(),
+        gated: false,
+        pipeline_tag: None,
+        languages: Vec::new(),
+        tags: Vec::new(),
+    }
+}
+
+#[test]
+fn results_for_an_installed_models_repository_say_so() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let t = texts(&mut app, &mut h, size);
+    let badges = t.lines().filter(|l| *l == "installed").count();
+    assert_eq!(
+        badges, 1,
+        "only alpha-GGUF is installed:
+{t}"
+    );
+}
+
+#[test]
+fn an_empty_search_is_labelled_as_the_popular_models() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    assert!(texts(&mut app, &mut h, size)
+        .to_uppercase()
+        .contains("POPULAR ON HUGGING FACE"));
+    app.state_mut().query = "alpha".into();
+    run(&mut app, &mut h, size, 4);
+    let t = texts(&mut app, &mut h, size).to_uppercase();
+    assert!(!t.contains("POPULAR"), "{t}");
+}
+
+#[test]
+fn an_installed_model_from_a_repository_shows_that_repositorys_about_below_the_actions() {
+    let size = (1180.0, 820.0);
+    let (mut app, rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let _ = sent(&rx);
+    select_named(&mut app, &mut h, size, "qwen2.5-coder");
+    run(&mut app, &mut h, size, 2);
+    let reqs = sent(&rx);
+    assert!(
+        reqs.iter()
+            .any(|r| matches!(r, BackendRequest::ModelCard(id) if id == "o/alpha-GGUF")),
+        "{reqs:?}"
+    );
+    let t = texts(&mut app, &mut h, size);
+    assert!(
+        t.contains("Loading description") || t.contains("About"),
+        "{t}"
+    );
+    {
+        let st = app.state_mut();
+        st.browse
+            .on_model_info("o/alpha-GGUF", Ok(card_info("o/alpha-GGUF")));
+        st.browse.on_model_card(
+            "o/alpha-GGUF",
+            Ok(Some(roost_core::hf::ModelCard {
+                markdown: "A friendly description of alpha.".into(),
+                truncated: false,
+            })),
+        );
+    }
+    run(&mut app, &mut h, size, 3);
+    let t = texts(&mut app, &mut h, size);
+    assert!(t.contains("A friendly description of alpha."), "{t}");
+    // The About card comes after the action buttons.
+    let chat = app.state_mut().browse.probe.chat_button.unwrap();
+    let about = app.state_mut().browse.probe.about_top.expect("About card");
+    assert!(about > chat.bottom(), "about {about} chat {chat:?}");
+}
+
+#[test]
+fn a_library_model_says_it_has_no_hugging_face_description() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let llama = app
+        .state_mut()
+        .browse
+        .probe
+        .installed_rows
+        .iter()
+        .find(|(n, _)| n == "llama3.2:3b")
+        .unwrap()
+        .1;
+    click(&mut app, &mut h, size, llama.center());
+    let t = texts(&mut app, &mut h, size);
+    assert!(t.contains("no Hugging Face description"), "{t}");
 }
