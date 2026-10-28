@@ -75,6 +75,8 @@ impl TokenStore for KeychainStore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyTokenMigration {
     Imported,
+    /// The current store already holds a token, so nothing was changed.
+    AlreadyPresent,
     NotFound,
 }
 
@@ -90,7 +92,7 @@ pub fn promote_legacy_token(
             .map_err(|_| Error::Io("could not access the keychain".into()))
     };
     if read(current)?.is_some() {
-        return Ok(LegacyTokenMigration::NotFound);
+        return Ok(LegacyTokenMigration::AlreadyPresent);
     }
     let Some(token) = read(legacy)? else {
         return Ok(LegacyTokenMigration::NotFound);
@@ -204,7 +206,7 @@ mod tests {
 
         assert_eq!(
             promote_legacy_token(&current, &legacy).unwrap(),
-            LegacyTokenMigration::NotFound
+            LegacyTokenMigration::AlreadyPresent
         );
         assert_eq!(current.get().unwrap().as_deref(), Some("current-token"));
         assert_eq!(legacy.get().unwrap().as_deref(), Some("legacy-token"));

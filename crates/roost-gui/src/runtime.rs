@@ -644,7 +644,10 @@ async fn serve(shared: &Shared, req: BackendRequest) {
                         .await
                         .map_err(|e| format!("the background task failed: {e}"))
                         .and_then(text);
-                if result == Ok(LegacyTokenMigration::Imported) {
+                if matches!(
+                    result,
+                    Ok(LegacyTokenMigration::Imported | LegacyTokenMigration::AlreadyPresent)
+                ) {
                     let settings = shared.clients().settings.clone();
                     shared.install_settings(&settings);
                 }

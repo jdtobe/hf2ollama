@@ -735,6 +735,16 @@ fn hugging_face_card(
                             .wrap(),
                         );
                     }
+                    if state.legacy_import_failed {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("Could not import the old token. You can try again.")
+                                    .size(11.5)
+                                    .color(cx.t.warn),
+                            )
+                            .wrap(),
+                        );
+                    }
                     token_badge_ui(ui, cx, state, w);
                     if let Some(note) = state.token_note() {
                         ui.add(

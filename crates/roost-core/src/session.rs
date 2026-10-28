@@ -370,7 +370,10 @@ impl Session {
         if title.is_empty() || title.chars().count() > MAX_TITLE_CHARS {
             return Err(SessionError::InvalidTitle);
         }
-        self.title_metadata.undo_title = Some(std::mem::replace(&mut self.title, title.into()));
+        // Keep the earlier undo value when the title does not change.
+        if title != self.title {
+            self.title_metadata.undo_title = Some(std::mem::replace(&mut self.title, title.into()));
+        }
         self.title_metadata.auto_title = false;
         self.updated_at_ms = now_ms;
         Ok(())
@@ -392,10 +395,14 @@ impl SessionDocument {
         }
     }
 
-    /// The session, if this document's version is one this build understands.
+    /// The session, if this document's version is one this build understands
+    /// and its stored workspace still satisfies the creation rules.
     pub fn into_current(self) -> Result<Session, SessionError> {
         if self.schema_version == 0 || self.schema_version > SESSION_SCHEMA_VERSION {
             return Err(SessionError::UnsupportedSchema(self.schema_version));
+        }
+        if let Some(workspace) = &self.session.workspace {
+            check_workspace(workspace)?;
         }
         Ok(self.session)
     }
@@ -749,6 +756,31 @@ mod tests {
         // 80 Unicode scalar values (not bytes) are allowed.
         s.rename(&"日".repeat(80), T0 + 2).unwrap();
         assert_eq!(s.title.chars().count(), 80);
+    }
+
+    #[test]
+    fn stored_sessions_are_revalidated_when_loaded() {
+        for bad in [PathBuf::from("relative"), abs("w").join("..").join("x")] {
+            let mut s = Session::new_agent("m", SessionLifetime::Persisted, abs("w"), T0).unwrap();
+            s.workspace = Some(bad.clone());
+            let doc = SessionDocument::new(s);
+            assert!(
+                matches!(doc.into_current(), Err(SessionError::InvalidWorkspace(_))),
+                "{bad:?}"
+            );
+        }
+        let ok = SessionDocument::new(chat());
+        assert!(ok.into_current().is_ok());
+    }
+
+    #[test]
+    fn renaming_to_the_same_title_keeps_the_original_undo() {
+        let mut s = chat();
+        s.title = "Auto title".into();
+        s.rename("My title", T0 + 1).unwrap();
+        s.rename(" My title ", T0 + 2).unwrap();
+        assert_eq!(s.title_metadata.undo_title.as_deref(), Some("Auto title"));
+        assert_eq!(s.title, "My title");
     }
 
     #[test]

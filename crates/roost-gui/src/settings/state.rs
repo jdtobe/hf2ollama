@@ -195,6 +195,8 @@ pub struct SettingsState {
     pub token_input: String,
     pub token_status: HfTokenStatus,
     pub token_busy: bool,
+    /// The last legacy token import failed; shown so the user can retry.
+    pub legacy_import_failed: bool,
     pub connection: ConnectionState,
     pub cached: CachedStatus,
     pub clear: Confirm,
@@ -236,6 +238,7 @@ impl SettingsState {
             token_input: String::new(),
             token_status: HfTokenStatus::Checking,
             token_busy: true,
+            legacy_import_failed: false,
             connection: ConnectionState::Idle,
             cached: CachedStatus::Loading,
             clear: Confirm::default(),
@@ -519,6 +522,7 @@ impl SettingsState {
 
     pub fn import_legacy_token(&mut self) {
         if self.can_import_legacy_token() {
+            self.legacy_import_failed = false;
             self.pending.push(BackendRequest::ImportLegacyToken);
             self.token_busy = true;
         }
@@ -529,11 +533,12 @@ impl SettingsState {
         result: &Result<roost_core::secrets::LegacyTokenMigration, String>,
     ) {
         self.token_busy = false;
-        self.token_status = match result {
-            Ok(roost_core::secrets::LegacyTokenMigration::Imported) => HfTokenStatus::Saved,
-            Ok(roost_core::secrets::LegacyTokenMigration::NotFound) => HfTokenStatus::None,
-            Err(_) => HfTokenStatus::Invalid("Could not import legacy token.".into()),
-        };
+        use roost_core::secrets::LegacyTokenMigration::{AlreadyPresent, Imported, NotFound};
+        self.legacy_import_failed = result.is_err();
+        match result {
+            Ok(Imported | AlreadyPresent) => self.token_status = HfTokenStatus::Saved,
+            Ok(NotFound) | Err(_) => {}
+        }
     }
 
     // ---- connection test ----
@@ -1041,6 +1046,37 @@ mod tests {
         st.import_legacy_token();
         assert_eq!(st.token_input, "hf_typed");
         assert!(st.take_requests().is_empty());
+    }
+
+    #[test]
+    fn a_failed_legacy_import_can_be_retried() {
+        let (_s, mut st) = fresh();
+        st.on_token_status(&HfTokenStatus::None);
+        st.import_legacy_token();
+        st.take_requests();
+        st.on_legacy_token_imported(&Err("hf_event_secret".into()));
+        assert_eq!(st.token_status, HfTokenStatus::None);
+        assert!(st.legacy_import_failed);
+        assert!(st.can_import_legacy_token());
+        assert!(!st.token_busy);
+        st.import_legacy_token();
+        assert!(!st.legacy_import_failed, "a new attempt clears the failure");
+        assert!(matches!(
+            st.take_requests().as_slice(),
+            [BackendRequest::ImportLegacyToken]
+        ));
+    }
+
+    #[test]
+    fn an_already_present_token_shows_as_saved() {
+        let (_s, mut st) = fresh();
+        st.on_token_status(&HfTokenStatus::None);
+        st.import_legacy_token();
+        st.on_legacy_token_imported(&Ok(
+            roost_core::secrets::LegacyTokenMigration::AlreadyPresent,
+        ));
+        assert_eq!(st.token_status, HfTokenStatus::Saved);
+        assert!(!st.legacy_import_failed);
     }
 
     #[test]

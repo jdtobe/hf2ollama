@@ -93,8 +93,16 @@ impl Settings {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
             Err(e) => return Err(Error::Io(e.to_string())),
         };
-        let mut settings: Settings =
-            toml::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+        let mut table: toml::Table = text
+            .parse()
+            .map_err(|e: toml::de::Error| Error::Parse(e.to_string()))?;
+        // The old `theme` key is only an alias; with both present the new one wins.
+        if table.contains_key("theme_mode") {
+            table.remove("theme");
+        }
+        let mut settings: Settings = toml::Value::Table(table)
+            .try_into()
+            .map_err(|e: toml::de::Error| Error::Parse(e.to_string()))?;
         settings.max_parallel = settings.max_parallel.clamp(1, 3);
         Ok(settings)
     }
@@ -266,6 +274,15 @@ mod tests {
         let s = Settings::load(&path).unwrap();
         assert_eq!(s.theme_mode, ThemeMode::Dark);
         assert_eq!(s.theme_family, ThemeFamily::Meadow);
+    }
+
+    #[test]
+    fn a_file_with_both_old_and_new_theme_keys_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.toml");
+        std::fs::write(&path, "theme = \"light\"\ntheme_mode = \"dark\"\n").unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert_eq!(s.theme_mode, ThemeMode::Dark, "the new key wins");
     }
 
     #[test]
