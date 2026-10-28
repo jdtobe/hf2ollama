@@ -125,7 +125,10 @@ These environment variables only change how the GUI starts, and are always avail
 
 - `ROOST_THEME` overrides the saved theme: `light` or `dark` change the mode only; `meadow-light`, `meadow-dark`, `ember-light`, `ember-dark`, `plum-light`, `plum-dark`, `tide-light` or `tide-dark` set family and mode.
 - `ROOST_SIZE=WxH` sets the initial window size (not below 900x640).
+- `ROOST_QUERY=text` and `ROOST_SELECT=owner/name` pre-fill the Browse search and select a result.
 - `ROOST_VIEW=browse|installed|settings` starts on that view.
+
+The old `HF2O_*` variables are no longer read.
 
 The token hooks exist only when the GUI is built with the `dev-hooks` cargo feature (off by default, so release binaries cannot contain them):
 

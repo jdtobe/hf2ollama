@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Pre-release. The core library and the desktop app (Browse, model card, downloads dock, Installed, Settings) are implemented and tested; nothing is published yet. The macOS release is packaged as a universal app inside a DMG.
 
+### Roost foundation
+
+- The project is renamed Roost: crates `roost-core` and `roost-gui`, binary `roost`, settings `roost.toml`, keychain service `roost`, environment variables `ROOST_*` (the `HF2O_*` names are no longer read).
+- One-way, non-destructive migration of hf2ollama settings and import history; legacy staging markers are still recognized; the Hugging Face token is imported only when the user asks in Settings.
+- Metadata writes (settings, history) are atomic and collision-safe.
+- Four theme families (Meadow, Ember, Plum, Tide), each light and dark, chosen in Settings; the old `theme` setting still loads. Palettes meet 4.5:1 text contrast and are layout-tested at the minimum window size.
+- The Roost mark and icon, generated from `docs/design/roost-tail.svg`, and a CI scan for stray old names.
+- Serializable chat and agent session types in `roost-core`. Chat and agents themselves are not implemented yet.
+
 ### Added
 
 - A clear (✕) button in the Browse search field.

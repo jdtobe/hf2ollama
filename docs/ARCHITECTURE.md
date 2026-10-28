@@ -1,8 +1,8 @@
 # Architecture
 
-This is a contributor overview. The approved design is in `docs/superpowers/specs/2026-10-22-Roost-design.md` (sections 3 and 4 are summarized here), and verified API behavior is in `docs/superpowers/notes/api-verification.md`. If this page and the spec disagree, the spec and the code win; please fix this page.
+This is a contributor overview. The approved design is in `docs/superpowers/specs/2026-10-22-hf2ollama-design.md` (sections 3 and 4 are summarized here); the Roost workbench direction is in `docs/superpowers/specs/2026-10-27-roost-workbench-design.md`, and verified API behavior is in `docs/superpowers/notes/api-verification.md`. If this page and the spec disagree, the spec and the code win; please fix this page.
 
-Status: the core crate and the GUI crate are implemented and tested.
+Status: the importer (Browse, Installed, Settings, downloads) is implemented and tested. Chat and agents are planned (see `docs/ROADMAP.md`); only their data types exist so far.
 
 ## Crate layout
 
@@ -12,7 +12,7 @@ The workspace has two crates. The core is a library with no UI dependencies; the
 flowchart TB
     subgraph gui["roost-gui (binary, egui/eframe)"]
         views["Views: Browse, Installed, Settings, downloads dock"]
-        theme["theme: tokens, fonts, custom widgets"]
+        theme["theme + theme_tokens: 4 families x light/dark, fonts, widgets"]
         rt["tokio runtime + channel bridge"]
     end
     subgraph core["roost-core (library)"]
@@ -27,6 +27,8 @@ flowchart TB
         config["config + paths: settings, portable mode"]
         secrets["secrets: HF token in keychain"]
         history["history: import records"]
+        session["session: chat and agent domain types (no I/O yet)"]
+        migration["migration: one-way import of hf2ollama files"]
         events["events + model: shared types"]
     end
     views --> rt
@@ -145,10 +147,19 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 - With "delete downloaded files after import" on, no job leaves files after success, cancel or failure (other than failed-job files kept for 7 days when enabled). With it off, kept files are listed as cached files and can be cleared.
 - A create that has already completed wins over a late cancel, and an in-flight create is not abandoned.
 
+## Roost foundation
+
+- **Names and paths.** The crates are `roost-core` and `roost-gui`, the binary is `roost`, settings are `roost.toml` and the keychain service is `roost`. Portable mode still uses the marker file `portable`.
+- **Migration** (`migration`, `secrets`, `staging`). On startup, settings and import history are copied from the hf2ollama locations only where the Roost file does not exist; legacy files are never changed or removed, and a failed copy leaves both sides as they were. Staging cleanup recognizes both the `.roost-job` and the old `.hf2ollama-job` markers. The Hugging Face token is not read at startup: Settings offers an explicit "import" action, because macOS may show a Keychain prompt. A token already stored for Roost always wins and the old entry is kept.
+- **Atomic writes** (`persistence`). Settings and history are written through one helper that uses a unique temp name, syncs, then renames, so concurrent writers never collide and a failure leaves the old file intact.
+- **Themes.** `theme_tokens` holds the colour table for Meadow, Ember, Plum and Tide in light and dark; tests require 4.5:1 contrast for the main text and button pairs and run layout checks for all eight at the minimum window size.
+- **Sessions** (`session`). Serializable types for chats and agents: IDs, messages (user, assistant, tool), run state, tool configuration snapshot, titles, branch origin and a versioned `SessionDocument`. They contain validation only. The planned store is one file per session plus a small index; it is not implemented yet, and no chat or agent code exists.
+
 ## What is intentionally not done
+
 
 - No writing into Ollama's model store. Everything goes through the HTTP API, so any models directory or a remote Ollama works.
 - No deleting of blobs. Ollama has no blob-delete API, so a failed import after upload can leave an unused blob that Ollama prunes later.
 - No format conversion. There is no Python or llama.cpp step, so architectures Ollama does not support are reported as unsupported.
-- No running or chatting with models, no Modelfile editing beyond the model name, no uploading to Hugging Face, and no management of Ollama library pulls.
+- No running or chatting with models yet (planned, see the roadmap), no Modelfile editing beyond the model name, no uploading to Hugging Face, and no management of Ollama library pulls.
 - No resume of failed jobs and no cross-restart resume of in-progress downloads in v1 (files of a failed job are kept for 7 days, but nothing reuses them and a restart does not pick the job back up).

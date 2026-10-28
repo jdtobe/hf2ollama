@@ -47,6 +47,10 @@ The model card (the repository README) is shown as a restricted subset of Markdo
 
 Delete in Installed (and Clear in Settings) works in two steps: the first click arms the button, the second one confirms. The second click is ignored for the first 0.6 seconds after arming, so a quick double-click can never delete a model, and a held-down Enter or Space never confirms. The armed state expires after 4 seconds. Delete removes the model through the Ollama API.
 
+## I used hf2ollama before. What happens to my settings and token?
+
+On first start Roost copies your hf2ollama settings and import history into its own files, only where Roost has no file yet. The originals are left in place, so nothing is lost if you go back. Logs and temporary staging folders are not copied. Download folders that hf2ollama left behind are still recognized and can be cleared. The Hugging Face token is not touched automatically, because reading the old keychain entry can make macOS show a prompt: use "Import hf2ollama token" in Settings when you want it. If you already saved a token in Roost, that one is kept and the old entry is left alone. If a copy fails, Roost starts with defaults for that file and shows a warning.
+
 ## What is portable mode?
 
 Put an empty file named `portable` next to the executable. Settings, import history and logs are then stored beside the executable, and the default staging folder is there too. Remove the file to go back to the OS config, cache and log directories. This lets you run the app from a USB drive without touching the host profile. The Hugging Face token is still kept in the system keychain, not beside the executable.

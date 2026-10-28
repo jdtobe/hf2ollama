@@ -1,6 +1,15 @@
 # Roadmap
 
-This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-Roost-design.md`): its scope, acceptance criteria, known risks and non-goals. It is a statement of intent, not a schedule. There are no release dates and no releases yet.
+This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-hf2ollama-design.md` (the importer, written before the rename to Roost) and the Roost workbench design `docs/superpowers/specs/2026-10-27-roost-workbench-design.md`): its scope, acceptance criteria, known risks and non-goals. It is a statement of intent, not a schedule. There are no release dates and no releases yet.
+
+## Roost workbench stages
+
+The product is being extended from an importer into a local-model workbench (chat, read-only agents, incognito sessions, branches and history). Only stage 1 exists; the rest is planned, not shipped.
+
+1. **Foundation (implemented):** the rename to Roost, safe migration of hf2ollama settings, import history, staging markers and (on request) the Hugging Face token, four theme families with light and dark variants, and the serializable session domain types in `roost-core`.
+2. Streaming chat, per-session persistence, incognito, the history rail and background runs. Not started.
+3. Read-only agents with a workspace jail and the tool registry. Not started.
+4. `/btw` side threads, branches, automatic titles and the history manager. Not started.
 
 ## Done
 
@@ -47,7 +56,7 @@ Known limitations to address after the first release candidate:
 
 These are deliberately out of scope:
 
-- Running or chatting with models.
+- Running or chatting with models in v1 of the importer. Chat is planned in the Roost workbench stages above.
 - Editing Modelfiles beyond the model name.
 - Converting architectures Ollama does not support (no Python or llama.cpp conversion step).
 - Uploading models to Hugging Face.

@@ -32,6 +32,11 @@ ALLOW_LINE = {
     "crates/roost-gui/src/runtime.rs": (r"legacy hf2ollama keychain",),
     "crates/roost-gui/src/settings/mod.rs": (r'Import hf2ollama token',),
     "crates/roost-gui/src/main.rs": (r'"HF2O_(THEME|SIZE|QUERY|SELECT|VIEW)"',),
+    "README.md": (r"Coming from hf2ollama",),
+    "docs/ARCHITECTURE.md": (r"2026-10-22-hf2ollama-design", r"import of hf2ollama files", r"from the hf2ollama locations"),
+    "docs/DEVELOPMENT.md": (r"HF2O_\*",),
+    "docs/FAQ.md": (r"I used hf2ollama before", r"copies your hf2ollama", r"Import hf2ollama token"),
+    "docs/ROADMAP.md": (r"2026-10-22-hf2ollama-design", r"migration of hf2ollama settings"),
     "scripts/check_roost_identity.py": (r"hf2ollama|hf2o_",),
     "scripts/test_check_roost_identity.py": (r"hf2ollama|HF2O_|hf2o_",),
 }

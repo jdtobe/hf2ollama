@@ -4,7 +4,7 @@ Browse Hugging Face and import GGUF and supported safetensors models into Ollama
 
 ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
-> **Status: pre-release.** The core library and the desktop app are implemented: Browse (search, filters, details, model card, import plan), the downloads dock, Installed and Settings, in light and dark themes. They are covered by automated tests (core and GUI unit and layout tests, plus opt-in end-to-end tests against a real Ollama). There is no published release yet, though macOS is packaged as a universal app and DMG. What has and has not been verified:
+> **Status: pre-release.** The core library and the desktop app are implemented: Browse (search, filters, details, model card, import plan), the downloads dock, Installed and Settings, in four theme families (Meadow, Ember, Plum, Tide) with light and dark variants. They are covered by automated tests (core and GUI unit and layout tests, plus opt-in end-to-end tests against a real Ollama). There is no published release yet (as of 2026-10-27 there are no tags, GitHub releases or release-workflow runs), though macOS is packaged as a universal app and DMG. What has and has not been verified:
 >
 > - Verified: the import pipeline end to end against a throwaway local Ollama 0.40.8 on macOS (GGUF, safetensors with `int8` and with no quantization, delete, cancel, pause and resume, name collision), using the public Hugging Face API. Details in [docs/superpowers/notes/acceptance.md](docs/superpowers/notes/acceptance.md).
 > - Not verified: Linux and Windows were not built or run here (CI is configured for them but has not run); a remote Ollama was not tried; screenshots and the final side-by-side visual check against the mockup are still outstanding because the build machine's display was locked.
@@ -30,11 +30,14 @@ All of these are implemented; see the status banner for what was verified.
 - A model card (About this model) for each repository, rendered as a safe subset of Markdown: no raw HTML, no images, only plain web links.
 - An Installed view backed by the Ollama API, with delete (two-click confirmation with a short pause before the second click counts).
 - Settings: Ollama address, staging folder, cleanup behavior, parallel downloads, Hugging Face token (kept in the system keychain) and endpoint, theme.
-- Light and dark themes, with an app icon.
+- Four theme families (Meadow, Ember, Plum, Tide), each light and dark, with an app icon.
+- Coming from hf2ollama: settings and import history are copied to Roost on first start (the originals are left alone), and the Hugging Face token can be imported from Settings on request.
 - Portable mode.
 - macOS releases are a universal `.app` inside a drag-install `.dmg` (unsigned and not notarized for now).
 
 The window has a minimum size of 900 by 640; the layout is designed and tested down to that size.
+
+Roost is growing into a local-model workbench (chat, read-only agents, incognito sessions, branches). That is **planned, not available**: only the groundwork (the rename, migration, themes and session data types) has landed. The stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for what is done, what is next and what is deliberately out of scope.
 
