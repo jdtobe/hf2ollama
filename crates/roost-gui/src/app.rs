@@ -55,6 +55,7 @@ pub struct AppState {
     pub machine: Machine,
     pub browse: BrowseState,
     pub jobs: JobsState,
+    pub chat: crate::chat::ChatState,
     pub dock: DockUi,
     /// Where the window-close confirmation stands.
     pub quit: crate::quit::QuitState,
@@ -112,6 +113,7 @@ impl AppState {
                 vram_gb: None,
             }),
             jobs: JobsState::new(),
+            chat: crate::chat::ChatState::default(),
             dock: DockUi::default(),
             quit: crate::quit::QuitState::Idle,
             #[cfg(test)]
@@ -258,7 +260,14 @@ impl AppState {
                 self.settings_view.state.on_cached_loaded(r);
                 None
             }
-            UiEvent::Chat(_) | UiEvent::ChatUnavailable(_) => None,
+            UiEvent::Chat(ev) => {
+                self.chat.fold(ev.clone());
+                None
+            }
+            UiEvent::ChatUnavailable(why) => {
+                self.chat.recorded_unavailable(why.clone());
+                None
+            }
             UiEvent::CachedCleared(r) => {
                 self.settings_view
                     .state

@@ -1,5 +1,6 @@
 mod app;
 mod browse;
+mod chat;
 mod confirm;
 mod dock;
 mod identity;
