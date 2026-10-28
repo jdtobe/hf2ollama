@@ -36,3 +36,10 @@ A real menu bar: native on macOS and Windows, in-window on Linux, all rendered f
 - Tested headlessly: the model (contents, shortcuts unique, checked and enabled states), every action's effect, the in-window bar's layout in all themes at the minimum size, and shortcut dispatch.
 - Not testable here: the native menus themselves. macOS needs a manual look; Windows is compile-checked by CI. Linux has no native menu on purpose (`muda` needs GTK, which the app does not use).
 - New dependency: `muda` (MIT or Apache-2.0), only for macOS and Windows targets.
+
+## Findings while building (kept so they are not rediscovered)
+
+- Attaching the macOS menu inside eframe's window creator aborts the process (`panic in a function that cannot unwind` from winit's launch callback). It is attached on the first frame instead.
+- `muda::MenuEvent::set_event_handler` can be set once per process and silently does nothing otherwise; menu events were never delivered. A thread reading `MenuEvent::receiver()` works.
+- `App::new` keeps Browse as the view in tests and the window bar is off for the test platform, so existing layout tests measure content only; the Linux window instead grows by the bar's height.
+- Checked by hand on macOS in an isolated portable folder: the menu bar reads Apple, app, File, Edit, View, Models, Window, Help; a Help link action and Quit were exercised through System Events and both worked end to end.
