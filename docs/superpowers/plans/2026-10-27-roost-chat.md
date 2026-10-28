@@ -264,6 +264,8 @@ Rules: `Send` while the session has an active run → `SendRejected{Busy}` (noth
 
 Content per the spec's GUI section: rail with New chat and New incognito, Pinned/Today/Yesterday/Earlier groups, a live Incognito group with a memory-only note and Clear, row actions (open, rename, pin, delete with `confirm.rs`), errored and newer-schema rows delete-only; conversation pane with message cards, collapsed thinking, terminal labels, Retry on the last failed/stopped/interrupted turn, the `N earlier messages omitted` note, model picker, composer (Enter sends, Shift+Enter newline; during a run Send becomes Stop, Enter does nothing, draft kept), incognito banner, banner with Retry when Ollama is down, and a pointer to Browse when no models are installed; "Another Roost is using this history" notice when unavailable.
 
+**Also in this task (user request):** the top bar's logo, tabs, search input and Ollama status tag are not vertically aligned. Fix them to share one vertically centered row, with a layout test `top_bar_items_share_one_vertical_center` (every theme, 900x640) asserting their rect centers agree within 1 px.
+
 - [ ] **Step 1: Write failing tests**: `every_theme_family_and_mode_keeps_chat_usable_at_minimum_size` (long titles, model names, messages, many rows); `chat_is_the_first_tab_and_default_view_when_history_is_available`; `the_nav_shows_activity_while_a_background_run_is_active`; `send_button_becomes_stop_during_a_run`; `enter_does_not_send_during_a_run`; `delete_needs_the_confirm_pause`; `incognito_banner_and_clear_are_shown`; `errored_rows_offer_delete_only`.
 - [ ] **Step 2:** `cargo test -p roost-gui chat` — Expected: FAIL.
 - [ ] **Step 3:** Implement following the existing views' structure (`installed/mod.rs`).
