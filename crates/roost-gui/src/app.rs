@@ -18,16 +18,18 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    Chat,
     Browse,
     Installed,
     Settings,
 }
 
 impl View {
-    const ALL: [View; 3] = [View::Browse, View::Installed, View::Settings];
+    pub(crate) const ALL: [View; 4] = [View::Chat, View::Browse, View::Installed, View::Settings];
 
     fn label(self) -> &'static str {
         match self {
+            View::Chat => "Chat",
             View::Browse => "Browse",
             View::Installed => "Installed",
             View::Settings => "Settings",
@@ -56,6 +58,7 @@ pub struct AppState {
     pub browse: BrowseState,
     pub jobs: JobsState,
     pub chat: crate::chat::ChatState,
+    pub chat_ui: crate::chat::view::ChatUi,
     pub dock: DockUi,
     /// Where the window-close confirmation stands.
     pub quit: crate::quit::QuitState,
@@ -117,6 +120,7 @@ impl AppState {
             }),
             jobs: JobsState::new(),
             chat: crate::chat::ChatState::default(),
+            chat_ui: crate::chat::view::ChatUi::default(),
             dock: DockUi::default(),
             quit: crate::quit::QuitState::Idle,
             #[cfg(test)]
@@ -271,6 +275,9 @@ impl AppState {
             }
             UiEvent::ChatUnavailable(why) => {
                 self.chat.recorded_unavailable(why.clone());
+                if self.view == View::Chat {
+                    self.select(View::Browse);
+                }
                 None
             }
             UiEvent::CachedCleared(r) => {
@@ -527,6 +534,8 @@ impl App {
                         .map(|v| match v {
                             View::Installed => (self.state.installed.status == ListStatus::Loaded)
                                 .then(|| self.state.installed.rows().len().to_string()),
+                            View::Chat => (self.state.chat.active_runs() > 0)
+                                .then(|| self.state.chat.active_runs().to_string()),
                             _ => None,
                         })
                         .collect();
@@ -701,7 +710,13 @@ impl App {
             self.apply_dock_action(action);
         }
 
-        if self.state.view == View::Browse {
+        if self.state.view == View::Chat {
+            let mut requests = Vec::new();
+            crate::chat::view::show(ui, &mut self.state, &mut requests);
+            for r in requests {
+                let _ = self.tx.send(r);
+            }
+        } else if self.state.view == View::Browse {
             let mut requests = Vec::new();
             crate::browse::show(ui, &mut self.state, &mut requests);
             for r in requests {

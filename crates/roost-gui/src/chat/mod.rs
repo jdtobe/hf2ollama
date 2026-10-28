@@ -2,5 +2,9 @@
 //! view-model (events folded into plain data); rendering lives in `view`.
 
 pub mod state;
+pub mod view;
+
+#[cfg(test)]
+mod layout_tests;
 
 pub use state::ChatState;

@@ -94,6 +94,20 @@ impl ChatState {
     pub fn fold(&mut self, ev: ChatEvent) {
         match ev {
             ChatEvent::Rows(rows) => {
+                // Sessions that left the list (deleted, incognito closed or
+                // cleared) take their draft and open transcript with them.
+                let present: HashSet<SessionId> = rows.iter().map(|r| r.id).collect();
+                let gone: Vec<SessionId> = self
+                    .drafts
+                    .keys()
+                    .copied()
+                    .chain(self.open.as_ref().map(|s| s.id))
+                    .chain(self.runs.keys().copied())
+                    .filter(|id| !present.contains(id))
+                    .collect();
+                for id in gone {
+                    self.forget(id);
+                }
                 self.rows = rows;
                 self.loaded = true;
             }
@@ -225,6 +239,8 @@ impl ChatState {
     pub fn forget(&mut self, id: SessionId) {
         self.drafts.remove(&id);
         self.omitted.remove(&id);
+        self.runs.remove(&id);
+        self.sending.remove(&id);
         if self.open.as_ref().is_some_and(|s| s.id == id) {
             self.open = None;
         }
@@ -575,6 +591,16 @@ mod tests {
         let mut st = ChatState::default();
         st.recorded_unavailable("Another Roost is using this history".into());
         assert!(st.unavailable.as_deref().unwrap().contains("Another Roost"));
+    }
+
+    #[test]
+    fn rows_without_a_session_drop_its_draft_open_transcript_and_run() {
+        let (mut st, s, _turn) = started();
+        *st.draft_mut(s.id) = "secret".into();
+        st.fold(ChatEvent::Rows(vec![]));
+        assert_eq!(st.draft(s.id), "");
+        assert!(st.open.is_none());
+        assert_eq!(st.active_runs(), 0);
     }
 
     #[test]
