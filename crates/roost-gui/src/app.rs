@@ -258,6 +258,7 @@ impl AppState {
                 self.settings_view.state.on_cached_loaded(r);
                 None
             }
+            UiEvent::Chat(_) | UiEvent::ChatUnavailable(_) => None,
             UiEvent::CachedCleared(r) => {
                 self.settings_view
                     .state
@@ -386,6 +387,14 @@ pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui:
 }
 
 impl eframe::App for App {
+    /// Lets chat runs write their partial replies before the process ends.
+    fn on_exit(&mut self) {
+        let (ack, done) = std::sync::mpsc::channel();
+        if self.tx.send(BackendRequest::ShutdownChat(ack)).is_ok() {
+            let _ = done.recv_timeout(std::time::Duration::from_millis(3500));
+        }
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events();
         let close_requested = ctx.input(|i| i.viewport().close_requested());
