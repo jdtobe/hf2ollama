@@ -18,12 +18,19 @@ pub struct ChatRequestBody {
     pub temperature: Option<f32>,
     pub seed: Option<i64>,
     pub think: Option<bool>,
+    /// Tool definitions (`ollama_definitions`); `None` for plain chat.
+    pub tools: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     Content(String),
     Thinking(String),
+    /// The model asked for a tool.
+    ToolCall {
+        name: String,
+        arguments: serde_json::Value,
+    },
     Done {
         prompt_eval_count: Option<u64>,
         eval_count: Option<u64>,
@@ -48,6 +55,8 @@ struct Wire<'a> {
     options: Options,
     #[serde(skip_serializing_if = "Option::is_none")]
     think: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +77,20 @@ struct LineMessage {
     content: String,
     #[serde(default)]
     thinking: String,
+    #[serde(default)]
+    tool_calls: Vec<RawToolCall>,
+}
+
+#[derive(Deserialize)]
+struct RawToolCall {
+    function: RawFunction,
+}
+
+#[derive(Deserialize)]
+struct RawFunction {
+    name: String,
+    #[serde(default)]
+    arguments: serde_json::Value,
 }
 
 /// Events from one chat request. `Done` is last, then `next` returns `None`.
@@ -172,6 +195,19 @@ impl ChatStream {
             if !m.content.is_empty() {
                 self.pending.push_back(Ok(StreamEvent::Content(m.content)));
             }
+            for call in m.tool_calls {
+                // Some models send the arguments as a JSON string.
+                let arguments = match call.function.arguments {
+                    serde_json::Value::String(s) => {
+                        serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
+                    }
+                    other => other,
+                };
+                self.pending.push_back(Ok(StreamEvent::ToolCall {
+                    name: call.function.name,
+                    arguments,
+                }));
+            }
         }
         if parsed.done {
             self.pending.push_back(Ok(StreamEvent::Done {
@@ -197,6 +233,7 @@ impl OllamaClient {
                 seed: body.seed,
             },
             think: body.think,
+            tools: body.tools.as_ref(),
         };
         let url = self.url("/api/chat")?;
         let resp = tokio::time::timeout(self.first_event, self.http.post(url).json(&wire).send())
@@ -260,14 +297,12 @@ mod tests {
     fn body() -> ChatRequestBody {
         ChatRequestBody {
             model: "llama3:8b".into(),
-            messages: vec![WireMessage {
-                role: "user".into(),
-                content: "hi".into(),
-            }],
+            messages: vec![WireMessage::text("user", "hi")],
             num_ctx: 4096,
             temperature: None,
             seed: None,
             think: None,
+            tools: None,
         }
     }
 
@@ -483,5 +518,110 @@ mod tests {
         assert!(err.is_none(), "{err:?}");
         assert_eq!(ev.len(), 1);
         assert!(matches!(ev[0], StreamEvent::Done { .. }));
+    }
+
+    fn tool_line(calls: serde_json::Value) -> Vec<u8> {
+        format!(
+            "{}\n",
+            json!({"message": {"role": "assistant", "content": "", "tool_calls": calls}, "done": false})
+        )
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn tool_calls_in_the_stream_become_events() {
+        let calls = json!([
+            {"function": {"name": "read_file", "arguments": {"path": "a.txt", "offset": 2}}},
+            {"function": {"name": "list_dir", "arguments": {}}}
+        ]);
+        let (ev, err) = run(vec![
+            Step::Write(line("Let me look. ", "")),
+            Step::Write(tool_line(calls)),
+            Step::Write(done_line()),
+            Step::Close,
+        ])
+        .await;
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(ev[0], StreamEvent::Content("Let me look. ".into()));
+        assert_eq!(
+            ev[1],
+            StreamEvent::ToolCall {
+                name: "read_file".into(),
+                arguments: json!({"path": "a.txt", "offset": 2})
+            }
+        );
+        assert_eq!(
+            ev[2],
+            StreamEvent::ToolCall {
+                name: "list_dir".into(),
+                arguments: json!({})
+            }
+        );
+        assert!(matches!(ev[3], StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn arguments_sent_as_a_json_string_are_parsed() {
+        let calls =
+            json!([{"function": {"name": "find_files", "arguments": "{\"pattern\":\"*.rs\"}"}}]);
+        let (ev, _) = run(vec![
+            Step::Write(tool_line(calls)),
+            Step::Write(done_line()),
+            Step::Close,
+        ])
+        .await;
+        assert_eq!(
+            ev[0],
+            StreamEvent::ToolCall {
+                name: "find_files".into(),
+                arguments: json!({"pattern": "*.rs"})
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_and_tool_messages_are_sent_in_the_request() {
+        let srv = TcpScript::start("200 OK", "", vec![Step::Write(done_line()), Step::Close]).await;
+        let mut b = body();
+        b.tools = Some(json!([{"type": "function", "function": {"name": "list_dir"}}]));
+        b.messages = vec![
+            WireMessage::text("user", "what is here?"),
+            WireMessage {
+                tool_calls: Some(vec![crate::chat::context::WireToolCall::new(
+                    "list_dir",
+                    json!({"path": "."}),
+                )]),
+                ..WireMessage::text("assistant", "")
+            },
+            WireMessage {
+                tool_name: Some("list_dir".into()),
+                ..WireMessage::text("tool", "a.txt")
+            },
+        ];
+        let s = fast(&srv.base_url()).chat_stream(&b).await.unwrap();
+        let _ = drain(s).await;
+        let sent: serde_json::Value = serde_json::from_str(&srv.request_body().await).unwrap();
+        assert_eq!(sent["tools"][0]["function"]["name"], "list_dir");
+        assert_eq!(
+            sent["messages"][1]["tool_calls"][0]["function"]["name"],
+            "list_dir"
+        );
+        assert_eq!(
+            sent["messages"][1]["tool_calls"][0]["function"]["arguments"]["path"],
+            "."
+        );
+        assert_eq!(sent["messages"][2]["role"], "tool");
+        assert_eq!(sent["messages"][2]["tool_name"], "list_dir");
+        assert!(sent["messages"][0].get("tool_calls").is_none());
+        assert!(sent["messages"][0].get("tool_name").is_none());
+    }
+
+    #[tokio::test]
+    async fn no_tools_key_is_sent_for_plain_chat() {
+        let srv = TcpScript::start("200 OK", "", vec![Step::Write(done_line()), Step::Close]).await;
+        let s = fast(&srv.base_url()).chat_stream(&body()).await.unwrap();
+        let _ = drain(s).await;
+        let sent: serde_json::Value = serde_json::from_str(&srv.request_body().await).unwrap();
+        assert!(sent.get("tools").is_none());
     }
 }

@@ -15,6 +15,45 @@ pub const OMITTED_MARKER: &str = "Earlier messages omitted for context";
 pub struct WireMessage {
     pub role: String,
     pub content: String,
+    /// Set on an assistant message that asked for tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<WireToolCall>>,
+    /// Set on a `tool` message: which tool produced the content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+}
+
+impl WireMessage {
+    pub fn text(role: &str, content: &str) -> WireMessage {
+        WireMessage {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_name: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WireToolCall {
+    pub function: WireFunction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WireFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl WireToolCall {
+    pub fn new(name: &str, arguments: serde_json::Value) -> WireToolCall {
+        WireToolCall {
+            function: WireFunction {
+                name: name.into(),
+                arguments,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,10 +113,7 @@ fn exchanges(transcript: &[Message]) -> Vec<Exchange<'_>> {
 }
 
 fn wire(role: &str, content: &str) -> WireMessage {
-    WireMessage {
-        role: role.into(),
-        content: content.into(),
-    }
+    WireMessage::text(role, content)
 }
 
 /// Builds the messages for one request. Exchanges whose reply did not

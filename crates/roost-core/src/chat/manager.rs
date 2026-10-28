@@ -561,6 +561,7 @@ impl Manager {
             temperature: live.s.model_options.temperature,
             seed: live.s.model_options.seed,
             think: live.s.model_options.think,
+            tools: None,
         };
         let (stop_tx, stop_rx) = watch::channel(false);
         let join = tokio::spawn(drive(
@@ -687,6 +688,8 @@ impl Manager {
                         live.s.append_assistant(run.assistant, "", &t);
                         run.thinking.push_str(&t);
                     }
+                    // Chat sessions offer no tools; agents handle these below.
+                    StreamEvent::ToolCall { .. } => {}
                     StreamEvent::Done {
                         prompt_eval_count,
                         done_reason,

@@ -427,6 +427,88 @@ impl Session {
         )
     }
 
+    /// A message the user sent while an agent was running; it is applied at
+    /// the agent's next safe step.
+    pub fn push_steering(&mut self, text: &str, now_ms: u64) -> MessageId {
+        self.push(
+            MessageContent::User {
+                text: text.into(),
+                delivery: UserDelivery::Steering,
+            },
+            now_ms,
+        )
+    }
+
+    /// Records a tool call the model asked for, waiting to run.
+    pub fn push_tool_call(
+        &mut self,
+        run: RunId,
+        call_id: &str,
+        name: &str,
+        arguments: serde_json::Value,
+        now_ms: u64,
+    ) -> MessageId {
+        self.push(
+            MessageContent::Tool {
+                call_id: call_id.into(),
+                name: name.into(),
+                arguments,
+                output: None,
+                status: ToolStatus::Pending,
+                run_id: Some(run),
+            },
+            now_ms,
+        )
+    }
+
+    pub fn finish_tool(
+        &mut self,
+        id: MessageId,
+        result: &str,
+        new_status: ToolStatus,
+        now_ms: u64,
+    ) {
+        if let Some(Message {
+            content: MessageContent::Tool { output, status, .. },
+            ..
+        }) = self.messages.iter_mut().find(|m| m.id == id)
+        {
+            *output = Some(result.to_string());
+            *status = new_status;
+        }
+        self.updated_at_ms = now_ms;
+    }
+
+    /// Changes an agent's workspace (the caller makes sure no run is active).
+    pub fn set_workspace(&mut self, path: PathBuf) -> Result<(), SessionError> {
+        if self.mode != SessionMode::Agent {
+            return Err(SessionError::InvalidWorkspace(
+                "only an agent has a workspace".into(),
+            ));
+        }
+        check_workspace(&path)?;
+        self.workspace = Some(path);
+        Ok(())
+    }
+
+    /// Turns one tool on or off for this session.
+    pub fn set_tool_enabled(&mut self, name: &str, enabled: bool) {
+        if self.effective_tools.tools.get(name) != Some(&enabled) {
+            self.effective_tools.tools.insert(name.to_string(), enabled);
+            self.effective_tools.revision += 1;
+        }
+    }
+
+    /// Sets a capability's permission (`files.read` and so on) for this session.
+    pub fn set_capability(&mut self, key: &str, permission: Permission) {
+        if self.effective_tools.capabilities.get(key) != Some(&permission) {
+            self.effective_tools
+                .capabilities
+                .insert(key.to_string(), permission);
+            self.effective_tools.revision += 1;
+        }
+    }
+
     pub fn append_assistant(&mut self, id: MessageId, content: &str, thinking: &str) {
         let Some(m) = self.messages.iter_mut().find(|m| m.id == id) else {
             return;
@@ -930,5 +1012,84 @@ mod tests {
             MessageContent::Assistant { thinking: None, .. }
         ));
         assert!(!serde_json::to_string(&c).unwrap().contains("thinking"));
+    }
+
+    #[test]
+    fn steering_messages_are_user_messages_marked_as_steering() {
+        let mut s = chat();
+        let id = s.push_steering("use the other folder", T0 + 3);
+        assert_eq!(s.updated_at_ms, T0 + 3);
+        assert!(matches!(
+            &s.messages.iter().find(|m| m.id == id).unwrap().content,
+            MessageContent::User { text, delivery: UserDelivery::Steering } if text == "use the other folder"
+        ));
+    }
+
+    #[test]
+    fn a_tool_call_is_recorded_pending_then_finished_with_its_output() {
+        let mut s = chat();
+        let run = RunId::new();
+        let id = s.push_tool_call(
+            run,
+            "c1",
+            "read_file",
+            serde_json::json!({"path": "a"}),
+            T0 + 1,
+        );
+        assert!(!s.is_idle(), "a pending tool call keeps the session busy");
+        s.finish_tool(id, "1| hi", ToolStatus::Complete, T0 + 2);
+        assert!(s.is_idle());
+        let MessageContent::Tool {
+            call_id,
+            name,
+            arguments,
+            output,
+            status,
+            run_id,
+        } = &s.messages[0].content
+        else {
+            panic!("not a tool message")
+        };
+        assert_eq!((call_id.as_str(), name.as_str()), ("c1", "read_file"));
+        assert_eq!(arguments["path"], "a");
+        assert_eq!(output.as_deref(), Some("1| hi"));
+        assert_eq!((*status, *run_id), (ToolStatus::Complete, Some(run)));
+        assert_eq!(s.updated_at_ms, T0 + 2);
+    }
+
+    #[test]
+    fn only_an_agent_can_change_its_workspace_and_only_to_a_valid_path() {
+        let mut agent = Session::new_agent("m", SessionLifetime::Persisted, abs("ws"), T0).unwrap();
+        agent.set_workspace(abs("other")).unwrap();
+        assert_eq!(agent.workspace, Some(abs("other")));
+        assert!(agent.set_workspace(PathBuf::from("relative")).is_err());
+        assert!(agent.set_workspace(abs("a").join("..").join("b")).is_err());
+        assert_eq!(
+            agent.workspace,
+            Some(abs("other")),
+            "a refused change changes nothing"
+        );
+        let mut c = chat();
+        assert!(
+            c.set_workspace(abs("ws")).is_err(),
+            "a chat has no workspace"
+        );
+    }
+
+    #[test]
+    fn tool_settings_bump_the_revision_only_when_something_changes() {
+        let mut s = chat();
+        let r0 = s.effective_tools.revision;
+        s.set_tool_enabled("search_text", false);
+        assert_eq!(s.effective_tools.tools.get("search_text"), Some(&false));
+        assert_eq!(s.effective_tools.revision, r0 + 1);
+        s.set_tool_enabled("search_text", false);
+        assert_eq!(s.effective_tools.revision, r0 + 1);
+        s.set_capability("files.read", Permission::Off);
+        assert_eq!(
+            s.effective_tools.capabilities.get("files.read"),
+            Some(&Permission::Off)
+        );
+        assert_eq!(s.effective_tools.revision, r0 + 2);
     }
 }
