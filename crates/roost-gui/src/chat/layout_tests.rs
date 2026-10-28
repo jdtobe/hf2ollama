@@ -1110,7 +1110,7 @@ fn assistant_replies_are_drawn_as_markdown_and_user_text_is_not() {
 }
 
 #[test]
-fn every_message_has_a_copy_button_inside_the_pane() {
+fn the_row_is_always_on_the_latest_message_and_on_hover_for_older_ones() {
     for size in SIZES {
         let mut f = fixture_with(1);
         let mut h = Harness::new(false);
@@ -1118,11 +1118,80 @@ fn every_message_has_a_copy_button_inside_the_pane() {
         run(&mut f.app, &mut h, size, 3);
         let probe = f.app.state_mut().chat_ui.probe.clone();
         let pane = probe.pane.expect("pane");
-        assert_eq!(probe.copy_buttons.len(), 2, "{size:?}: one per message");
-        for b in &probe.copy_buttons {
-            assert!(inside(*b, pane), "{size:?}: {b:?} outside {pane:?}");
-        }
+        assert_eq!(probe.copy_buttons.len(), 1, "{size:?}: latest only at rest");
+        assert!(inside(probe.copy_buttons[0], pane), "{size:?}");
+        let first = probe.cards[0];
+        let latest = probe.cards[1];
+        assert!(probe.copy_buttons[0].top() >= latest.bottom() - 0.5);
+        // Pointer over the older bubble: its row appears too, below it.
+        h.frame(
+            vec2(size.0, size.1),
+            vec![egui::Event::PointerMoved(first.center())],
+            |ui| f.app.show(ui),
+        );
+        let probe = f.app.state_mut().chat_ui.probe.clone();
+        assert_eq!(probe.copy_buttons.len(), 2, "{size:?}: hovered row shown");
+        assert!(probe
+            .copy_buttons
+            .iter()
+            .any(|b| b.top() >= first.bottom() - 0.5 && b.top() < latest.top()));
     }
+}
+
+#[test]
+fn details_shows_tokens_and_speed_when_they_were_recorded() {
+    use roost_core::session::ReplyStats;
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "A short answer.");
+    {
+        let st = f.app.state_mut();
+        let open = st.chat.open.as_mut().expect("open");
+        let id = open.messages.last().unwrap().id;
+        open.set_reply_stats(
+            id,
+            ReplyStats {
+                prompt_tokens: Some(12),
+                reply_tokens: Some(40),
+                total_ms: Some(2_500),
+                load_ms: Some(300),
+                eval_ms: Some(2_000),
+            },
+        );
+    }
+    run(&mut f.app, &mut h, size, 3);
+    let details = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .details
+        .expect("Details icon");
+    click(&mut f.app, &mut h, size, details.center());
+    let texts = texts_of(&mut f.app, &mut h, size);
+    for want in ["12 tokens", "40 tokens", "20.0 tokens/s", "2.5 s"] {
+        assert!(texts.contains(want), "{want:?} missing in:\n{texts}");
+    }
+}
+
+#[test]
+fn details_admits_when_nothing_was_recorded() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "An old reply.");
+    run(&mut f.app, &mut h, size, 3);
+    let details = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .details
+        .expect("Details icon");
+    click(&mut f.app, &mut h, size, details.center());
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("No timing was recorded"), "{texts}");
 }
 
 #[test]

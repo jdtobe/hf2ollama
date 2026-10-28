@@ -67,6 +67,10 @@ pub struct ChatProbe {
     pub copy_buttons: Vec<egui::Rect>,
     /// The Regenerate button under the last reply, when shown.
     pub regenerate: Option<egui::Rect>,
+    /// The Details button of the last reply, when shown.
+    pub details: Option<egui::Rect>,
+    /// The bubble of every message painted this frame.
+    pub cards: Vec<egui::Rect>,
     pub pane: Option<egui::Rect>,
     pub composer: Option<egui::Rect>,
     pub header: Option<egui::Rect>,
@@ -710,7 +714,10 @@ fn pane(
                     i = end;
                     continue;
                 }
-                message_card(ui, t, m, &model, badge, &mut app.chat_ui);
+                let card = message_card(ui, t, m, &model, badge, &mut app.chat_ui);
+                #[cfg(test)]
+                app.chat_ui.probe.cards.push(card);
+                message_actions(ui, t, app, out, s, m, &model, i == last, card);
                 if i == last && s.mode == SessionMode::Chat {
                     retry_row(ui, app, out, s, m);
                 }
@@ -954,26 +961,6 @@ fn retry_row(
             out.push(BackendRequest::Chat(cmd));
         }
     }
-    let finished = matches!(
-        &last.content,
-        MessageContent::Assistant {
-            status: AssistantStatus::Complete,
-            ..
-        }
-    );
-    if finished && s.messages.len() >= 2 && !app.chat.is_running(s.id) {
-        let r = crate::widgets::small_button_response(ui, "Regenerate")
-            .on_hover_text("Replace this reply with a new one");
-        #[cfg(test)]
-        {
-            app.chat_ui.probe.regenerate = Some(r.rect);
-        }
-        if r.clicked() {
-            if let SendAttempt::Sent(cmd) = app.chat.try_regenerate(s.id) {
-                out.push(BackendRequest::Chat(cmd));
-            }
-        }
-    }
 }
 
 pub(super) fn truncate_chars(text: &str, max: usize) -> String {
@@ -991,7 +978,7 @@ fn message_card(
     model: &str,
     badge: RunBadge,
     cx: &mut ChatUi,
-) {
+) -> egui::Rect {
     let is_assistant = matches!(m.content, MessageContent::Assistant { .. });
     let (who, fill, body, status, error, thinking) = match &m.content {
         MessageContent::User { text, .. } => ("You", t.accent_soft, text.clone(), None, None, None),
@@ -1018,7 +1005,7 @@ fn message_card(
             None,
         ),
     };
-    egui::Frame::new()
+    let card = egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, t.line))
         .corner_radius(10.0)
@@ -1033,21 +1020,6 @@ fn message_card(
                         _ => (t.warn, t.warn_soft),
                     };
                     tag(ui, label, fg, bg);
-                }
-                if !body.is_empty() {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let copy = ui
-                            .add(
-                                egui::Button::new(RichText::new("Copy").size(11.5).color(t.fg3))
-                                    .frame(false),
-                            )
-                            .on_hover_text("Copy this message");
-                        #[cfg(test)]
-                        cx.probe.copy_buttons.push(copy.rect);
-                        if copy.clicked() {
-                            ui.ctx().copy_text(body.clone());
-                        }
-                    });
                 }
             });
             if let Some(th) = thinking.filter(|x| !x.is_empty()) {
@@ -1089,7 +1061,157 @@ fn message_card(
                 ui.add(egui::Label::new(RichText::new(e).size(12.5).color(t.bad)).wrap());
             }
         });
-    ui.add_space(8.0);
+    card.response.rect
+}
+
+const ACTION_H: f32 = 28.0;
+
+/// One icon button in the row under a bubble.
+fn action_icon(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    rect: egui::Rect,
+    id: egui::Id,
+    icon: crate::icons::Icon,
+    tip: &str,
+) -> egui::Response {
+    let resp = ui
+        .interact(rect, id, Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tip);
+    if resp.hovered() {
+        ui.painter().rect_filled(rect.shrink(1.0), 6.0, t.line);
+    }
+    let color = if resp.hovered() { t.fg } else { t.fg3 };
+    crate::icons::paint(ui.painter(), rect, icon, color);
+    resp
+}
+
+/// The row of icons under a bubble: always on the latest message, on hover
+/// for older ones. Its height is reserved either way so nothing moves.
+#[allow(clippy::too_many_arguments)]
+fn message_actions(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+    m: &Message,
+    model: &str,
+    is_latest: bool,
+    card: egui::Rect,
+) {
+    use crate::icons::{slot, Icon};
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ACTION_H), Sense::hover());
+    let (text, status, stats) = match &m.content {
+        MessageContent::User { text, .. } => (text, None, None),
+        MessageContent::Assistant {
+            text,
+            status,
+            stats,
+            ..
+        } => (text, Some(*status), *stats),
+        MessageContent::Tool { .. } => return,
+    };
+    if text.is_empty() || status == Some(AssistantStatus::Streaming) {
+        return;
+    }
+    let details_id = egui::Id::unique("details").with(m.id);
+    let popup_open = egui::Popup::is_id_open(ui.ctx(), details_id.with("popup"));
+    if !(is_latest || popup_open || ui.rect_contains_pointer(card.union(row))) {
+        return;
+    }
+    let mut n = 0;
+    let mut next = || {
+        n += 1;
+        slot(row, n - 1)
+    };
+    let copy = action_icon(
+        ui,
+        t,
+        next(),
+        egui::Id::unique("copy").with(m.id),
+        Icon::Copy,
+        "Copy this message",
+    );
+    #[cfg(test)]
+    app.chat_ui.probe.copy_buttons.push(copy.rect);
+    if copy.clicked() {
+        ui.ctx().copy_text(text.clone());
+    }
+    let complete = status == Some(AssistantStatus::Complete);
+    if complete
+        && is_latest
+        && s.mode == SessionMode::Chat
+        && s.messages.len() >= 2
+        && !app.chat.is_running(s.id)
+    {
+        let r = action_icon(
+            ui,
+            t,
+            next(),
+            egui::Id::unique("regen").with(m.id),
+            Icon::Regenerate,
+            "Replace this reply with a new one",
+        );
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.regenerate = Some(r.rect);
+        }
+        if r.clicked() {
+            if let SendAttempt::Sent(cmd) = app.chat.try_regenerate(s.id) {
+                out.push(BackendRequest::Chat(cmd));
+            }
+        }
+    }
+    if complete {
+        let r = action_icon(ui, t, next(), details_id, Icon::Details, "Details");
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.details = Some(r.rect);
+        }
+        egui::Popup::from_toggle_button_response(&r)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| details_card(ui, t, model, stats));
+    }
+}
+
+fn details_card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    model: &str,
+    stats: Option<roost_core::session::ReplyStats>,
+) {
+    ui.set_min_width(230.0);
+    let line = |ui: &mut egui::Ui, label: &str, value: String| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(label).size(12.0).color(t.fg3));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(value).size(12.0).color(t.fg));
+            });
+        });
+    };
+    line(ui, "Model", model.to_string());
+    let Some(s) = stats else {
+        ui.label(
+            RichText::new("No timing was recorded for this reply.")
+                .size(12.0)
+                .color(t.fg3),
+        );
+        return;
+    };
+    let count = |n: Option<u64>| n.map_or("unknown".to_string(), |n| format!("{n} tokens"));
+    line(ui, "Prompt", count(s.prompt_tokens));
+    line(ui, "Reply", count(s.reply_tokens));
+    if let Some(tps) = s.tokens_per_second() {
+        line(ui, "Speed", format!("{tps:.1} tokens/s"));
+    }
+    if let Some(ms) = s.total_ms {
+        line(ui, "Time", format!("{:.1} s", ms as f64 / 1000.0));
+    }
+    if let Some(ms) = s.load_ms.filter(|ms| *ms >= 100) {
+        line(ui, "Model load", format!("{:.1} s", ms as f64 / 1000.0));
+    }
 }
 
 fn inspect(

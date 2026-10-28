@@ -1643,3 +1643,37 @@ async fn regenerate_does_nothing_when_the_last_reply_did_not_complete() {
     assert_eq!(chat_bodies(&srv).len(), 1, "no second request");
     assert_eq!(texts(&h.read(id)).len(), 2, "the failed reply is kept");
 }
+
+#[tokio::test]
+async fn a_finished_reply_keeps_the_numbers_ollama_reported() {
+    let done_with_stats = format!(
+        "{}\n",
+        serde_json::json!({
+            "message": {"role": "assistant", "content": ""},
+            "done": true, "done_reason": "stop",
+            "prompt_eval_count": 12, "eval_count": 40,
+            "total_duration": 2_500_000_000u64,
+            "load_duration": 300_000_000u64,
+            "eval_duration": 2_000_000_000u64
+        })
+    )
+    .into_bytes();
+    let srv = fake(vec![chat_route(vec![
+        Step::Write(line("hi")),
+        Step::Write(done_with_stats),
+        Step::Close,
+    ])])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    h.wait("saved", |_| {
+        h.read(id).messages.iter().any(|m| {
+            matches!(&m.content, MessageContent::Assistant { stats: Some(s), .. }
+                if s.prompt_tokens == Some(12) && s.reply_tokens == Some(40)
+                && s.total_ms == Some(2_500) && s.load_ms == Some(300) && s.eval_ms == Some(2_000))
+        })
+    })
+    .await;
+}

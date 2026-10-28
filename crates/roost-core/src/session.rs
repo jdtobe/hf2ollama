@@ -207,6 +207,9 @@ pub enum MessageContent {
         /// Reasoning text some models return; shown collapsed, never resent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thinking: Option<String>,
+        /// What Ollama reported when the reply finished (tokens and timing).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stats: Option<ReplyStats>,
     },
     Tool {
         call_id: String,
@@ -216,6 +219,25 @@ pub enum MessageContent {
         status: ToolStatus,
         run_id: Option<RunId>,
     },
+}
+
+/// Numbers Ollama reports with the last message of a reply. Durations are
+/// whole milliseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyStats {
+    pub prompt_tokens: Option<u64>,
+    pub reply_tokens: Option<u64>,
+    pub total_ms: Option<u64>,
+    pub load_ms: Option<u64>,
+    pub eval_ms: Option<u64>,
+}
+
+impl ReplyStats {
+    /// Reply tokens per second of generation time, when both are known.
+    pub fn tokens_per_second(&self) -> Option<f64> {
+        let (tokens, ms) = (self.reply_tokens?, self.eval_ms?);
+        (ms > 0).then(|| tokens as f64 * 1000.0 / ms as f64)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -422,6 +444,7 @@ impl Session {
                 turn_id: Some(turn),
                 error: None,
                 thinking: None,
+                stats: None,
             },
             now_ms,
         )
@@ -554,6 +577,17 @@ impl Session {
         }
     }
 
+    /// Records what Ollama reported for a reply.
+    pub fn set_reply_stats(&mut self, id: MessageId, new: ReplyStats) {
+        if let Some(Message {
+            content: MessageContent::Assistant { stats, .. },
+            ..
+        }) = self.messages.iter_mut().find(|m| m.id == id)
+        {
+            *stats = Some(new);
+        }
+    }
+
     pub fn finish_assistant(
         &mut self,
         id: MessageId,
@@ -640,6 +674,7 @@ mod tests {
             turn_id: None,
             error: None,
             thinking: None,
+            stats: None,
         })
     }
 
@@ -765,6 +800,13 @@ mod tests {
                 turn_id: Some(turn_id),
                 error: None,
                 thinking: Some("hm".into()),
+                stats: Some(ReplyStats {
+                    prompt_tokens: Some(3),
+                    reply_tokens: Some(4),
+                    total_ms: Some(5),
+                    load_ms: None,
+                    eval_ms: Some(2),
+                }),
             }),
             msg(MessageContent::Tool {
                 call_id: "c1".into(),
@@ -995,6 +1037,23 @@ mod tests {
         s.set_pinned(true);
         assert!(s.pinned);
         assert_eq!(s.updated_at_ms, T0);
+    }
+
+    #[test]
+    fn reply_stats_give_a_speed_only_with_a_generation_time() {
+        let s = ReplyStats {
+            reply_tokens: Some(40),
+            eval_ms: Some(2_000),
+            ..ReplyStats::default()
+        };
+        assert_eq!(s.tokens_per_second(), Some(20.0));
+        assert_eq!(ReplyStats::default().tokens_per_second(), None);
+        let zero = ReplyStats {
+            reply_tokens: Some(1),
+            eval_ms: Some(0),
+            ..ReplyStats::default()
+        };
+        assert_eq!(zero.tokens_per_second(), None);
     }
 
     #[test]

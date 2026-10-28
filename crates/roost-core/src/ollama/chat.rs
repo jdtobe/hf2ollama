@@ -3,6 +3,7 @@
 use super::{map_send, map_send_mid_stream, OllamaClient};
 use crate::chat::context::WireMessage;
 use crate::error::{Error, Result};
+use crate::session::ReplyStats;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -35,6 +36,7 @@ pub enum StreamEvent {
         prompt_eval_count: Option<u64>,
         eval_count: Option<u64>,
         done_reason: Option<String>,
+        stats: ReplyStats,
     },
 }
 
@@ -70,6 +72,9 @@ struct Line {
     done_reason: Option<String>,
     prompt_eval_count: Option<u64>,
     eval_count: Option<u64>,
+    total_duration: Option<u64>,
+    load_duration: Option<u64>,
+    eval_duration: Option<u64>,
     error: Option<String>,
 }
 
@@ -216,6 +221,13 @@ impl ChatStream {
                 prompt_eval_count: parsed.prompt_eval_count,
                 eval_count: parsed.eval_count,
                 done_reason: parsed.done_reason,
+                stats: ReplyStats {
+                    prompt_tokens: parsed.prompt_eval_count,
+                    reply_tokens: parsed.eval_count,
+                    total_ms: parsed.total_duration.map(|n| n / 1_000_000),
+                    load_ms: parsed.load_duration.map(|n| n / 1_000_000),
+                    eval_ms: parsed.eval_duration.map(|n| n / 1_000_000),
+                },
             }));
             self.finished = true;
         }
@@ -401,7 +413,12 @@ mod tests {
             StreamEvent::Done {
                 prompt_eval_count: Some(42),
                 eval_count: Some(7),
-                done_reason: Some("stop".into())
+                done_reason: Some("stop".into()),
+                stats: ReplyStats {
+                    prompt_tokens: Some(42),
+                    reply_tokens: Some(7),
+                    ..ReplyStats::default()
+                }
             }
         );
     }

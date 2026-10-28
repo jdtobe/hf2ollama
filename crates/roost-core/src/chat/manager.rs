@@ -815,8 +815,10 @@ impl Manager {
                     StreamEvent::Done {
                         prompt_eval_count,
                         done_reason,
+                        stats,
                         ..
                     } => {
+                        live.s.set_reply_stats(run.assistant, stats);
                         // A reply that hit the window or output limit is cut
                         // off, not finished: keep the text, offer Retry.
                         let (outcome, message) = if done_reason.as_deref() == Some("length") {

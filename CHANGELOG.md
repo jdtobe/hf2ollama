@@ -52,7 +52,7 @@ Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mock
 - The import plan card shows its steps as one line (`Download › Verify › Upload › Create`) that never wraps.
 - A search field in the Chat and Work sidebars (matches the title, first message and model).
 - Assistant replies are drawn as Markdown (bold, lists, code blocks, tables, safe links) and every message has a Copy button.
-- **Regenerate** under the last finished chat reply replaces it with a new one (the old reply is not kept; branches are planned).
+- **Message actions:** a row of icons under a message (always on the latest, on hover for older ones): Copy, Regenerate (latest finished reply; replaces it, the old one is not kept for now) and Details (model, tokens in and out, speed and time, for replies finished from now on).
 - **Settings ▸ Ollama ▸ Keep models in memory:** Ollama's default, 15 minutes, 1 hour, or until Ollama quits. Sent as `keep_alive` with chat requests only when you choose something other than the default.
 - **Downloads panel:** each job is two lines. The name (cut in the middle so the tag stays visible), size, a stage pill and the buttons; then a progress bar of the same width for every job with percent, bytes, speed and an estimate of the time left. The estimate uses a smoothed speed, waits for five seconds of data, is rounded, and does not jump about. The log drawer gained a Copy button.
 
