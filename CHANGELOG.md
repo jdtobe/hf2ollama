@@ -50,6 +50,8 @@ Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mock
 - Shift+Enter adds a line in the message box; Enter sends.
 - On narrow windows the status pill shows only the Ollama version (the address is in its hover text), so the Browse search field keeps its room.
 - The import plan card shows its steps as one line (`Download › Verify › Upload › Create`) that never wraps.
+- A search field in the Chat and Work sidebars (matches the title, first message and model).
+- Assistant replies are drawn as Markdown (bold, lists, code blocks, tables, safe links) and every message has a Copy button.
 - **Downloads panel:** each job is two lines. The name (cut in the middle so the tag stays visible), size, a stage pill and the buttons; then a progress bar of the same width for every job with percent, bytes, speed and an estimate of the time left. The estimate uses a smoothed speed, waits for five seconds of data, is rounded, and does not jump about. The log drawer gained a Copy button.
 
 ### Agents (Work tab)
