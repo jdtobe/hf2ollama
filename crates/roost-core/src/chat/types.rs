@@ -1,7 +1,7 @@
 //! The vocabulary between the GUI and the chat manager: intent commands in,
 //! ordered events out.
 
-use crate::session::{Message, Permission, SessionId, SessionLifetime, TurnId};
+use crate::session::{Message, MessageId, Permission, SessionId, SessionLifetime, TurnId};
 use crate::store::IndexRow;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,8 +40,21 @@ pub enum ChatCommand {
     },
     Stop(SessionId),
     Retry(SessionId),
-    /// Drop the last complete reply and ask again (chats only).
+    /// Park the last complete reply as a version and ask again (chats only).
     Regenerate(SessionId),
+    /// Replace one of your messages with new text as a new version, and ask
+    /// again from there (chats only).
+    Edit {
+        session: SessionId,
+        message: MessageId,
+        text: String,
+    },
+    /// Show another version of a fork (`after` is the message before it).
+    SwitchVersion {
+        session: SessionId,
+        after: Option<MessageId>,
+        to: usize,
+    },
     ListSessions,
     /// The installed models changed: forget cached context lengths.
     InstalledChanged,

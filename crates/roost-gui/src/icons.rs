@@ -1,0 +1,110 @@
+//! Small line icons, painted as shapes so they look the same on every
+//! platform and in every theme (no icon font).
+
+use eframe::egui::{self, pos2, vec2, Color32, Pos2, Rect, Stroke};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    Copy,
+    Regenerate,
+    Details,
+    Edit,
+    Prev,
+    Next,
+}
+
+/// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
+pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
+    let origin = rect.center() - vec2(8.0, 8.0);
+    let p = |x: f32, y: f32| origin + vec2(x, y);
+    let stroke = Stroke::new(1.5, color);
+    match icon {
+        Icon::Copy => {
+            painter.rect_stroke(
+                Rect::from_min_max(p(5.5, 5.5), p(13.5, 13.5)),
+                1.5,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.add(egui::Shape::line(
+                vec![
+                    p(10.5, 5.5),
+                    p(10.5, 3.5),
+                    p(9.0, 2.0),
+                    p(4.0, 2.0),
+                    p(2.5, 3.5),
+                    p(2.5, 8.5),
+                    p(4.0, 10.0),
+                    p(5.5, 10.0),
+                ],
+                stroke,
+            ));
+        }
+        Icon::Regenerate => {
+            let c = p(8.0, 8.0);
+            let arc: Vec<Pos2> = (0..=26)
+                .map(|i| {
+                    let a = (i as f32 * 12.0).to_radians();
+                    c + vec2(a.cos(), a.sin()) * 5.5
+                })
+                .collect();
+            painter.add(egui::Shape::line(arc, stroke));
+            painter.add(egui::Shape::line(
+                vec![p(13.5, 2.5), p(13.5, 5.5), p(10.5, 5.5)],
+                stroke,
+            ));
+        }
+        Icon::Edit => {
+            painter.add(egui::Shape::line(
+                vec![
+                    p(10.5, 2.5),
+                    p(13.5, 5.5),
+                    p(6.0, 13.0),
+                    p(2.5, 13.5),
+                    p(3.0, 10.0),
+                    p(10.5, 2.5),
+                ],
+                stroke,
+            ));
+        }
+        Icon::Prev => {
+            painter.add(egui::Shape::line(
+                vec![p(10.0, 3.5), p(5.5, 8.0), p(10.0, 12.5)],
+                stroke,
+            ));
+        }
+        Icon::Next => {
+            painter.add(egui::Shape::line(
+                vec![p(6.0, 3.5), p(10.5, 8.0), p(6.0, 12.5)],
+                stroke,
+            ));
+        }
+        Icon::Details => {
+            painter.circle_stroke(p(8.0, 8.0), 5.8, stroke);
+            painter.line_segment([p(8.0, 7.3), p(8.0, 10.8)], stroke);
+            painter.circle_filled(p(8.0, 5.3), 0.9, color);
+        }
+    }
+}
+
+/// Where the `n`th 28 px icon slot of a row starts, `gap` apart.
+pub fn slot(row: Rect, n: usize) -> Rect {
+    Rect::from_min_size(
+        pos2(row.left() + 2.0 + n as f32 * 30.0, row.top()),
+        vec2(28.0, row.height()),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slots_do_not_overlap_and_stay_in_the_row() {
+        let row = Rect::from_min_size(pos2(10.0, 20.0), vec2(300.0, 28.0));
+        let a = slot(row, 0);
+        let b = slot(row, 1);
+        assert!(a.right() < b.left());
+        assert!(a.min.x >= row.min.x && a.height() == row.height());
+    }
+}

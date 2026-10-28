@@ -66,6 +66,20 @@ Regenerate is offered on the latest reply only.
 
 ## Branch
 
+Decision: versions (Regenerate and Edit as forks, below) were tabled, then
+built before Branch (stage 2) because Regenerate otherwise discards a reply.
+
+A branched chat shows a strip at the top: `↳ Branched from "A" › "B"`, each
+name a link that opens that chat at the message where the branch began. Long
+chains collapse to `… ›` and the last two. The branch stores the whole chain
+of ancestors (chat id, message id, title at the time), so a branch of a branch
+needs no lookups and survives an ancestor being deleted. It also stores a
+fingerprint of the original's messages up to the branch point. On opening, the
+strip reports one of: unchanged; "The original changed after this branch was
+made" (with View original); or "The original chat was deleted". The copied
+history in the branch is the history as it was, and a divider marks where the
+inherited part ends.
+
 Branch copies the active path up to and including the chosen message into a
 new chat (new id, `Persisted`, title from the original plus "(branch)"). The
 original is untouched. "Branch and switch model…" does the same with another

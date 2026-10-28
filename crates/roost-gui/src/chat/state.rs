@@ -470,6 +470,11 @@ impl ChatState {
         SendAttempt::Sent(ChatCommand::Retry(id))
     }
 
+    /// Marks an edit as in flight so a second press does nothing.
+    pub fn sending_started(&mut self, id: SessionId) {
+        self.sending.insert(id);
+    }
+
     /// Marks a regenerate as in flight, like `try_retry`.
     pub fn try_regenerate(&mut self, id: SessionId) -> SendAttempt {
         if self.is_running(id) {

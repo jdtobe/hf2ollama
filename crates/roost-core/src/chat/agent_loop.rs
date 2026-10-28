@@ -211,7 +211,7 @@ impl Manager {
                 let uid = live.s.push_user(text, now_ms());
                 live.s.messages.iter().find(|m| m.id == uid).cloned()
             }
-            Intent::Retry | Intent::Regenerate => None,
+            Intent::Retry | Intent::Regenerate | Intent::Edit(..) => None,
         };
         live.agent = Some(AgentRun {
             run: RunId::new(),

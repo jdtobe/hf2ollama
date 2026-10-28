@@ -3,6 +3,7 @@ mod browse;
 mod chat;
 mod confirm;
 mod dock;
+mod icons;
 mod identity;
 mod installed;
 mod menu;
