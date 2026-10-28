@@ -2,6 +2,16 @@
 
 Written 2026-10-22, refreshed 2026-10-23 after PRs #1-#4 were merged, so a new session (or a person) can continue without the earlier conversation. Read this first, then `follow-ups.md` and `acceptance.md` in this folder.
 
+## Update 2026-10-27 (read this first)
+
+- The repository was renamed `hf2ollama` -> `roost` on GitHub (`origin` is `https://github.com/jdtobe/roost.git`). Everything below this section was written before the rename and still uses the hf2ollama names; the identity scan allows that for this file.
+- The Roost foundation (`docs/superpowers/plans/2026-10-27-roost-foundation.md`, tasks 1-9) is implemented on branch `feat/roost` and submitted as a PR to `main`. It is a fast-forward of `main`. Spec: `docs/superpowers/specs/2026-10-27-roost-workbench-design.md`.
+- A code review of the branch found nine issues; 1-5 are fixed (`5802022`). Deferred, none needs rework: (6) the token UI stays on "Checking keychain" if the backend never starts; (7) a corrupt-settings message is written to `startup.log` twice; (8) legacy migration is skipped in portable mode when `ProjectDirs` cannot be resolved; (9) `atomic_write_if_absent` uses `hard_link`, which fails on FAT/exFAT, so a portable install there would not migrate (fall back to `create_new` plus write).
+- Decision: the startup sweep also deletes job folders with the old `.hf2ollama-job` marker, even if an old app were running. Accepted, since hf2ollama was never distributed.
+- Next stages (not started): streaming chat and per-session persistence, then agents and tools, then `/btw`, branches, auto-titles and the history manager.
+- The release workflow is manual only (`workflow_dispatch`). It has never run; no tags or releases exist.
+- The old stash on `feat/hf2ollama` is already contained in `main` and can be dropped. The merged remote branches (`ci/release-workflow`, `fix/windows-staging-test`, two Dependabot branches) can be deleted.
+
 ## What exists
 
 hf2ollama: a portable Rust GUI (egui) to search Hugging Face and import models into Ollama through its HTTP API only. Workspace: `hf2ollama-core` (UI-free library) and `hf2ollama-gui` (egui app). The design spec and plan are in `docs/superpowers/specs/` and `docs/superpowers/plans/`; the architecture is in `docs/ARCHITECTURE.md`; the build ledger with every ruling is `build-ledger.md` in this folder.
