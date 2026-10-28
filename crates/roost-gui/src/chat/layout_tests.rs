@@ -1655,3 +1655,110 @@ fn a_failed_side_question_shows_why() {
     assert!(texts.contains("Ollama is not reachable."), "{texts}");
     assert!(!texts.contains("Thinking"), "{texts}");
 }
+
+/// A speech engine that records what it is asked to do.
+#[derive(Default)]
+struct SpeechLog {
+    spoken: Vec<String>,
+    stops: usize,
+    speaking: bool,
+}
+
+struct FakeSpeaker {
+    available: Result<(), String>,
+    log: std::sync::Arc<std::sync::Mutex<SpeechLog>>,
+}
+
+impl crate::speech::Speaker for FakeSpeaker {
+    fn available(&self) -> Result<(), String> {
+        self.available.clone()
+    }
+    fn speak(&mut self, text: &str) {
+        let mut l = self.log.lock().unwrap();
+        l.spoken.push(text.to_string());
+        l.speaking = true;
+    }
+    fn stop(&mut self) {
+        let mut l = self.log.lock().unwrap();
+        l.stops += 1;
+        l.speaking = false;
+    }
+    fn is_speaking(&mut self) -> bool {
+        self.log.lock().unwrap().speaking
+    }
+}
+
+fn with_speaker(
+    f: &mut Fixture,
+    available: Result<(), String>,
+) -> std::sync::Arc<std::sync::Mutex<SpeechLog>> {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(SpeechLog::default()));
+    f.app.state_mut().speaker = Box::new(FakeSpeaker {
+        available,
+        log: log.clone(),
+    });
+    log
+}
+
+#[test]
+fn the_read_icon_speaks_the_plain_text_and_a_second_click_stops() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    let log = with_speaker(&mut f, Ok(()));
+    open_markdown_reply(&mut f, "A **short** answer.");
+    run(&mut f.app, &mut h, size, 3);
+    let icon = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .read_icon
+        .expect("Read icon");
+    assert!(!f.app.state_mut().chat_ui.probe.read_disabled);
+    click(&mut f.app, &mut h, size, icon.center());
+    assert_eq!(log.lock().unwrap().spoken, ["A short answer."]);
+    assert!(f.app.state_mut().chat_ui.reading.is_some());
+    let icon = f.app.state_mut().chat_ui.probe.read_icon.unwrap();
+    click(&mut f.app, &mut h, size, icon.center());
+    assert_eq!(log.lock().unwrap().spoken.len(), 1, "no second speech");
+    assert!(log.lock().unwrap().stops >= 1);
+    assert!(f.app.state_mut().chat_ui.reading.is_none());
+}
+
+#[test]
+fn when_the_speech_ends_by_itself_the_icon_goes_back() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    let log = with_speaker(&mut f, Ok(()));
+    open_markdown_reply(&mut f, "Hello.");
+    run(&mut f.app, &mut h, size, 3);
+    let icon = f.app.state_mut().chat_ui.probe.read_icon.unwrap();
+    click(&mut f.app, &mut h, size, icon.center());
+    assert!(f.app.state_mut().chat_ui.reading.is_some());
+    log.lock().unwrap().speaking = false;
+    run(&mut f.app, &mut h, size, 2);
+    assert!(f.app.state_mut().chat_ui.reading.is_none());
+}
+
+#[test]
+fn without_a_speech_engine_the_icon_is_disabled_and_does_nothing() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    let log = with_speaker(&mut f, Err("No engine here.".into()));
+    open_markdown_reply(&mut f, "Hello.");
+    run(&mut f.app, &mut h, size, 3);
+    let icon = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .read_icon
+        .expect("still shown");
+    assert!(f.app.state_mut().chat_ui.probe.read_disabled);
+    click(&mut f.app, &mut h, size, icon.center());
+    assert!(log.lock().unwrap().spoken.is_empty());
+    assert!(f.app.state_mut().chat_ui.reading.is_none());
+}

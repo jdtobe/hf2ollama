@@ -110,10 +110,16 @@ saved before this change show the model and "no timing recorded".
 
 ## Read aloud
 
-Uses the operating system's speech engine (macOS and Windows; Linux only when
-speech-dispatcher is present). Reads the reply as plain text (markdown marks
-removed), with Stop on the same icon while speaking. It is disabled elsewhere.
-The dependency must pass `cargo deny` and must not add OpenSSL.
+Ruling: no speech crate. Roost runs the operating system's own tool and
+writes the text to its standard input (never on a command line): `say` on
+macOS, the .NET speech synthesizer through PowerShell on Windows, and
+`spd-say`, `espeak-ng` or `espeak` on Linux when one is on the PATH. This adds
+no dependency (nothing for `cargo deny` to vet, no OpenSSL) and makes
+availability a runtime check: with no tool the icon is greyed and its tooltip
+says what to install. Reads the reply as plain text (Markdown marks removed,
+code blocks skipped); the icon turns into Stop while speaking. The Windows and
+Linux commands are checked by unit tests of the command choice only, not
+run in CI. The engine sits behind a `Speaker` trait so tests use a fake.
 
 ## Stages
 

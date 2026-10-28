@@ -39,6 +39,8 @@ pub struct ChatUi {
     pub new_agent: NewAgent,
     /// What the rail's search field holds.
     pub rail_query: String,
+    /// The reply being read aloud.
+    pub reading: Option<roost_core::session::MessageId>,
     /// What the side-question field holds.
     pub btw_input: String,
     /// The "Branch with another model" dialog, while open.
@@ -89,6 +91,8 @@ pub struct ChatProbe {
     pub edit_icon: Option<egui::Rect>,
     pub branch_icon: Option<egui::Rect>,
     pub btw_icon: Option<egui::Rect>,
+    pub read_icon: Option<egui::Rect>,
+    pub read_disabled: bool,
     pub btw_ask: Option<egui::Rect>,
     pub btw_add: Option<egui::Rect>,
     pub branch_plain: Option<egui::Rect>,
@@ -191,6 +195,14 @@ fn show_mode(
     for id in app.chat.take_forgotten() {
         ui.ctx()
             .data_mut(|d| d.remove::<egui::text_edit::TextEditState>(composer_id(id)));
+    }
+    if app.chat_ui.reading.is_some() {
+        if app.speaker.is_speaking() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(300));
+        } else {
+            app.chat_ui.reading = None;
+        }
     }
     let installed: Vec<String> = app
         .installed
@@ -1313,6 +1325,7 @@ fn message_actions(
         egui::Popup::from_toggle_button_response(&btw_r)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| btw_panel(ui, t, app, out, s, m));
+        read_icon(ui, t, app, next(), m, text);
         let r = action_icon(ui, t, next(), details_id, Icon::Details, "Details");
         #[cfg(test)]
         {
@@ -1321,6 +1334,50 @@ fn message_actions(
         egui::Popup::from_toggle_button_response(&r)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| details_card(ui, t, model, stats));
+    }
+}
+
+/// Read aloud / Stop under a finished reply. Disabled, with the reason, when
+/// this computer has no speech tool.
+fn read_icon(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    rect: egui::Rect,
+    m: &Message,
+    text: &str,
+) {
+    use crate::icons::Icon;
+    let id = egui::Id::unique("read").with(m.id);
+    if let Err(why) = app.speaker.available() {
+        let r = ui.interact(rect, id, Sense::hover()).on_hover_text(why);
+        crate::icons::paint(ui.painter(), r.rect, Icon::Read, t.line);
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.read_icon = Some(rect);
+            app.chat_ui.probe.read_disabled = true;
+        }
+        return;
+    }
+    let reading = app.chat_ui.reading == Some(m.id);
+    let (icon, tip) = if reading {
+        (Icon::Stop, "Stop reading")
+    } else {
+        (Icon::Read, "Read aloud")
+    };
+    let r = action_icon(ui, t, rect, id, icon, tip);
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.read_icon = Some(rect);
+    }
+    if r.clicked() {
+        if reading {
+            app.speaker.stop();
+            app.chat_ui.reading = None;
+        } else {
+            app.speaker.speak(&crate::speech::plain_text(text));
+            app.chat_ui.reading = Some(m.id);
+        }
     }
 }
 
