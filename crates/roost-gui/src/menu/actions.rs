@@ -15,6 +15,7 @@ pub fn handle(app: &mut AppState, ctx: &egui::Context, action: MenuAction) -> Ve
         MenuAction::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
         MenuAction::NewChat => return new_chat(app, SessionLifetime::Persisted),
         MenuAction::NewIncognito => return new_chat(app, SessionLifetime::Incognito),
+        MenuAction::NewAgent => return new_agent(app),
         MenuAction::ShowView(v) => app.select(v),
         MenuAction::Cut => ctx.send_viewport_cmd(ViewportCommand::RequestCut),
         MenuAction::Copy => ctx.send_viewport_cmd(ViewportCommand::RequestCopy),
@@ -66,6 +67,22 @@ fn new_chat(app: &mut AppState, lifetime: SessionLifetime) -> Vec<BackendRequest
         lifetime,
         model,
     })]
+}
+
+fn new_agent(app: &mut AppState) -> Vec<BackendRequest> {
+    let installed: Vec<String> = app
+        .installed
+        .rows()
+        .iter()
+        .map(|r| r.name().to_string())
+        .collect();
+    let Some(model) = app.chat.default_model(&installed) else {
+        return Vec::new();
+    };
+    app.select(View::Work);
+    let mut requests = Vec::new();
+    crate::chat::view::open_new_agent(app, Some(model), false, &mut requests);
+    requests
 }
 
 /// egui has no "select all" command, so this is the key press it would see.
@@ -185,6 +202,26 @@ mod tests {
                 ..
             })]
         ));
+    }
+
+    #[test]
+    fn new_agent_opens_the_work_tab_form_and_asks_about_tool_support() {
+        let ctx = egui::Context::default();
+        let mut app = with_model();
+        app.view = View::Chat;
+        let (reqs, _) = pass(&ctx, |c| handle(&mut app, c, MenuAction::NewAgent));
+        assert_eq!(app.view, View::Work);
+        assert!(app.chat_ui.new_agent.open);
+        assert_eq!(app.chat_ui.new_agent.model.as_deref(), Some("llama3:8b"));
+        assert!(matches!(
+            reqs.as_slice(),
+            [BackendRequest::Chat(ChatCommand::CheckModel(m))] if m == "llama3:8b"
+        ));
+        // Without a model there is nothing to start.
+        let mut none = AppState::new();
+        let (reqs, _) = pass(&ctx, |c| handle(&mut none, c, MenuAction::NewAgent));
+        assert!(reqs.is_empty());
+        assert!(!none.chat_ui.new_agent.open);
     }
 
     #[test]

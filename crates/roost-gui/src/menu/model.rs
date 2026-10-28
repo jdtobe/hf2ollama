@@ -59,6 +59,7 @@ impl Shortcut {
             Key::Num1 => "1".to_string(),
             Key::Num2 => "2".to_string(),
             Key::Num3 => "3".to_string(),
+            Key::Num4 => "4".to_string(),
             other => format!("{other:?}"),
         }
     }
@@ -94,6 +95,7 @@ pub enum MenuAction {
     Quit,
     NewChat,
     NewIncognito,
+    NewAgent,
     ShowView(View),
     Cut,
     Copy,
@@ -233,6 +235,12 @@ pub fn build(app: &AppState, platform: Platform) -> MenuModel {
             Some(Shortcut::primary_shift(Key::N)),
             can_chat,
         ),
+        gated(
+            "New Agent…",
+            MenuAction::NewAgent,
+            Some(Shortcut::primary_shift(Key::A)),
+            can_chat,
+        ),
     ];
     if !mac {
         file.push(Item::Separator);
@@ -294,14 +302,19 @@ pub fn build(app: &AppState, platform: Platform) -> MenuModel {
                 Some(Shortcut::primary(Key::Num1)),
             ),
             action(
+                "Work",
+                MenuAction::ShowView(View::Work),
+                Some(Shortcut::primary(Key::Num2)),
+            ),
+            action(
                 "Browse",
                 MenuAction::ShowView(View::Browse),
-                Some(Shortcut::primary(Key::Num2)),
+                Some(Shortcut::primary(Key::Num3)),
             ),
             action(
                 "Installed",
                 MenuAction::ShowView(View::Installed),
-                Some(Shortcut::primary(Key::Num3)),
+                Some(Shortcut::primary(Key::Num4)),
             ),
             action("Settings", MenuAction::ShowView(View::Settings), None),
             Item::Separator,

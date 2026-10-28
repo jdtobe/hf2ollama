@@ -33,6 +33,15 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### Agents (Work tab)
+
+- A **Work** tab (between Chat and Browse) for read-only agents. An agent works inside a folder you choose and can list, find, search and read files there; it cannot change anything. Start one with New agent: pick a folder and a model that supports tools (Roost checks with Ollama first).
+- The agent's steps are shown as tool cards (name, arguments, status, expandable result) between its replies. Tool failures are given back to the model as results.
+- **Steering:** send a message while an agent works. It waits for the next safe step; a reply that is streaming is interrupted and kept (marked Interrupted) and the same run continues. Stop ends the run. A step budget (default 20, 1 to 100) ends a run that keeps calling tools.
+- The agent's folder, step budget and tools can be changed while it is idle (Tools menu; the folder button). Incognito agents are kept in memory only.
+- The workspace jail: tool paths cannot leave the folder through absolute paths, `..`, NUL, or symlinks, and `.env`, `.env.*`, `*.pem`, `*.key`, `.ssh`, `.aws`, `.config/gcloud` and files named `credentials*` or `secrets*` are never readable.
+- Menu: View ▸ Work (⌘2; Browse and Installed move to ⌘3 and ⌘4) and File ▸ New Agent….
+
 ### Menu bar
 
 - A real menu bar: native on macOS (app menu with About, Settings…, Quit; File, Edit, View, Models, Window, Help) and Windows, and an in-window bar on Linux. File: New Chat and New Incognito Chat. View: Chat, Browse, Installed, Settings and a Theme submenu (four colour families and System/Light/Dark). Models: Unload for each loaded model, or Unload All. Edit: Cut, Copy, Paste, Select All. Help: GitHub and issue links. An About window shows the version.

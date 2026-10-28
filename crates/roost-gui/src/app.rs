@@ -12,6 +12,7 @@ use eframe::egui::{self, vec2, Color32, Margin, RichText, Sense, Stroke};
 use roost_core::config::{AutoDismiss, Settings};
 use roost_core::events::{Command, JobEvent};
 use roost_core::fit::Machine;
+use roost_core::session::SessionMode;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
@@ -19,17 +20,25 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum View {
     Chat,
+    Work,
     Browse,
     Installed,
     Settings,
 }
 
 impl View {
-    pub(crate) const ALL: [View; 4] = [View::Chat, View::Browse, View::Installed, View::Settings];
+    pub(crate) const ALL: [View; 5] = [
+        View::Chat,
+        View::Work,
+        View::Browse,
+        View::Installed,
+        View::Settings,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             View::Chat => "Chat",
+            View::Work => "Work",
             View::Browse => "Browse",
             View::Installed => "Installed",
             View::Settings => "Settings",
@@ -638,8 +647,14 @@ impl App {
                         .map(|v| match v {
                             View::Installed => (self.state.installed.status == ListStatus::Loaded)
                                 .then(|| self.state.installed.rows().len().to_string()),
-                            View::Chat => (self.state.chat.active_runs() > 0)
-                                .then(|| self.state.chat.active_runs().to_string()),
+                            View::Chat => {
+                                let n = self.state.chat.active_runs_for(SessionMode::Chat);
+                                (n > 0).then(|| n.to_string())
+                            }
+                            View::Work => {
+                                let n = self.state.chat.active_runs_for(SessionMode::Agent);
+                                (n > 0).then(|| n.to_string())
+                            }
                             _ => None,
                         })
                         .collect();
@@ -814,9 +829,13 @@ impl App {
             self.apply_dock_action(action);
         }
 
-        if self.state.view == View::Chat {
+        if self.state.view == View::Chat || self.state.view == View::Work {
             let mut requests = Vec::new();
-            crate::chat::view::show(ui, &mut self.state, &mut requests);
+            if self.state.view == View::Work {
+                crate::chat::view::show_work(ui, &mut self.state, &mut requests);
+            } else {
+                crate::chat::view::show(ui, &mut self.state, &mut requests);
+            }
             for r in requests {
                 let _ = self.tx.send(r);
             }
@@ -1833,7 +1852,7 @@ mod tests {
         for platform in [crate::menu::Platform::Linux, crate::menu::Platform::Windows] {
             let mut app = menu_app(platform);
             let ctx = egui::Context::default();
-            let input = shortcut_event(egui::Key::Num2, egui::Modifiers::COMMAND);
+            let input = shortcut_event(egui::Key::Num3, egui::Modifiers::COMMAND);
             ctx.run_ui(input, |ui| app.pump_menu(ui.ctx()))
                 .drop_without_applying_deltas();
             assert_eq!(app.state.view, View::Browse, "{platform:?}");
@@ -1844,7 +1863,7 @@ mod tests {
     fn macos_leaves_shortcuts_to_its_native_menu() {
         let mut app = menu_app(crate::menu::Platform::Mac);
         let ctx = egui::Context::default();
-        let input = shortcut_event(egui::Key::Num2, egui::Modifiers::COMMAND);
+        let input = shortcut_event(egui::Key::Num3, egui::Modifiers::COMMAND);
         ctx.run_ui(input, |ui| app.pump_menu(ui.ctx()))
             .drop_without_applying_deltas();
         assert_eq!(app.state.view, View::Chat, "egui must not also act on it");

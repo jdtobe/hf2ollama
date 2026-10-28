@@ -1,9 +1,11 @@
 //! The task that talks to Ollama for one turn. It owns no session state: it
 //! only reports what the stream did, and the manager decides what that means.
 
+use super::manager::ModelInfo;
+use crate::agent::ToolError;
 use crate::error::Error;
 use crate::ollama::{ChatRequestBody, OllamaClient, StreamEvent};
-use crate::session::{SessionId, TurnId};
+use crate::session::{RunId, SessionId, TurnId};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
 pub(super) enum RunMsg {
@@ -11,7 +13,19 @@ pub(super) enum RunMsg {
     Shown {
         session: SessionId,
         token: u64,
-        context: Result<Option<u64>, Error>,
+        info: Result<ModelInfo, Error>,
+    },
+    /// The answer to `CheckModel`.
+    Capabilities {
+        model: String,
+        info: Result<ModelInfo, Error>,
+    },
+    /// A tool call finished on the blocking pool.
+    ToolDone {
+        session: SessionId,
+        run: RunId,
+        call_id: String,
+        result: Result<String, ToolError>,
     },
     Event {
         session: SessionId,

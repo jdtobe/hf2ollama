@@ -1,8 +1,9 @@
 //! The vocabulary between the GUI and the chat manager: intent commands in,
 //! ordered events out.
 
-use crate::session::{Message, SessionId, SessionLifetime, TurnId};
+use crate::session::{Message, Permission, SessionId, SessionLifetime, TurnId};
 use crate::store::IndexRow;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,20 @@ pub enum ChatCommand {
     /// View-level for saved sessions; destroys an incognito one.
     Close(SessionId),
     ClearIncognito,
+    /// An agent: a chat with a workspace folder and read-only tools.
+    CreateAgent {
+        lifetime: SessionLifetime,
+        model: String,
+        workspace: PathBuf,
+    },
+    /// Ask whether a model advertises tool support (answered by `ModelCapabilities`).
+    CheckModel(String),
+    /// Change an idle agent's workspace folder.
+    SetWorkspace(SessionId, PathBuf),
+    /// How many model steps an agent run may use (1 to 100).
+    SetStepBudget(SessionId, u32),
+    SetToolEnabled(SessionId, String, bool),
+    SetCapability(SessionId, String, Permission),
     Rename(SessionId, String),
     SetPinned(SessionId, bool),
     Delete(SessionId),
@@ -40,6 +55,10 @@ pub enum SendRejection {
     EmptyMessage,
     /// Stopped while preparing, before anything was sent.
     Cancelled,
+    /// The model does not advertise tool support, so it cannot run an agent.
+    NoToolSupport(String),
+    /// The agent's workspace folder is missing or cannot be opened.
+    NoWorkspace(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +66,18 @@ pub enum TurnOutcome {
     Completed,
     Failed,
     Cancelled,
+    /// The user steered an agent: the partial reply is kept.
+    Interrupted,
+}
+
+/// How a whole run (one chat reply, or an agent's loop of steps) ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+    /// An agent used all its steps.
+    BudgetExhausted,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +121,41 @@ pub enum ChatEvent {
     SendRejected {
         session: SessionId,
         reason: SendRejection,
+    },
+    /// An agent started a tool call.
+    ToolStarted {
+        session: SessionId,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolFinished {
+        session: SessionId,
+        call_id: String,
+        ok: bool,
+        output: String,
+    },
+    /// A message sent to a running agent, waiting for its next safe step.
+    SteeringQueued {
+        session: SessionId,
+        text: String,
+    },
+    /// Exactly one per run, after its last `TurnEnded`.
+    RunEnded {
+        session: SessionId,
+        outcome: RunOutcome,
+        message: Option<String>,
+    },
+    ModelCapabilities {
+        model: String,
+        tools: bool,
+    },
+    /// An idle agent's folder, step budget or tool settings changed.
+    AgentSettings {
+        session: SessionId,
+        workspace: Option<PathBuf>,
+        step_budget: u32,
+        tools: crate::session::EffectiveToolConfig,
     },
     /// The model is not installed; the user should pick another.
     ModelMissing {

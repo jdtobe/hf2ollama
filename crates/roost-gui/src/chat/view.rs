@@ -11,9 +11,11 @@ use crate::widgets::{primary_button, small_button, tag};
 use eframe::egui::{
     self, vec2, Align, Color32, FontId, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke,
 };
+use roost_core::agent::registry;
 use roost_core::chat::ChatCommand;
 use roost_core::session::{
-    AssistantStatus, Message, MessageContent, Session, SessionId, SessionLifetime,
+    AssistantStatus, Message, MessageContent, Session, SessionId, SessionLifetime, SessionMode,
+    ToolStatus,
 };
 use roost_core::store::RowStatus;
 use std::sync::Arc;
@@ -33,8 +35,21 @@ pub struct ChatUi {
     pub inspect: Option<SessionId>,
     /// Put the cursor in the composer on the next frame.
     pub focus_composer: bool,
+    /// The New agent form on the Work tab.
+    pub new_agent: NewAgent,
     #[cfg(test)]
     pub probe: ChatProbe,
+}
+
+/// The form for starting an agent: a folder, a model that supports tools.
+#[derive(Default)]
+pub struct NewAgent {
+    pub open: bool,
+    pub folder: Option<std::path::PathBuf>,
+    pub model: Option<String>,
+    pub incognito: bool,
+    /// The model whose tool support was last asked about.
+    pub checked: Option<String>,
 }
 
 /// Painted rectangles recorded for the headless layout tests.
@@ -50,6 +65,10 @@ pub struct ChatProbe {
     /// The delete control of each rail row that shows one, and whether it is armed.
     pub rail_delete: Vec<(SessionId, egui::Rect, bool)>,
     pub header_unload: Option<egui::Rect>,
+    pub start_agent: Option<egui::Rect>,
+    pub agent_bar: Option<egui::Rect>,
+    pub tool_cards: Vec<egui::Rect>,
+    pub queued_chips: Vec<egui::Rect>,
     pub loaded_footer: Option<egui::Rect>,
     pub footer_unload: Vec<egui::Rect>,
     pub delete_button: Option<(egui::Rect, String)>,
@@ -88,6 +107,20 @@ fn secondary(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+    show_mode(ui, app, out, SessionMode::Chat);
+}
+
+/// The Work tab: the same layout, listing and opening agents.
+pub fn show_work(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+    show_mode(ui, app, out, SessionMode::Agent);
+}
+
+fn show_mode(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    mode: SessionMode,
+) {
     let t = tokens(ui);
     let now = Instant::now();
     #[cfg(test)]
@@ -134,12 +167,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
             {
                 app.chat_ui.probe.rail = Some(ui.max_rect());
             }
-            rail(ui, app, out, &t, &installed);
+            rail(ui, app, out, &t, &installed, mode);
         });
 
     // The open session is taken out for the frame so the composer can edit
     // the draft while the transcript borrows the session.
-    let open = app.chat.open.take();
+    // A session of the other kind stays loaded but is not shown on this tab.
+    let (open, other) = match app.chat.open.take() {
+        Some(s) if s.mode == mode => (Some(s), None),
+        other => (None, other),
+    };
     if let Some(s) = &open {
         egui::Panel::bottom("chat_composer")
             .resizable(false)
@@ -168,9 +205,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
             {
                 app.chat_ui.probe.pane = Some(ui.max_rect());
             }
-            pane(ui, app, out, &t, open.as_ref(), &installed, now);
+            pane(ui, app, out, &t, open.as_ref(), &installed, now, mode);
         });
-    app.chat.open = open;
+    app.chat.open = open.or(other);
 }
 
 impl ChatUi {
@@ -188,8 +225,8 @@ fn rail(
     out: &mut Vec<BackendRequest>,
     t: &Tokens,
     installed: &[String],
+    mode: SessionMode,
 ) {
-    let now = Instant::now();
     if app.ollama.as_ref().is_some_and(|o| o.is_some()) {
         egui::Panel::bottom("chat_loaded")
             .resizable(false)
@@ -204,6 +241,31 @@ fn rail(
             });
     }
     let model = app.chat.default_model(installed);
+    if mode == SessionMode::Agent {
+        ui.horizontal(|ui| {
+            let ready = model.is_some();
+            let hint = "Install a model first (Browse), then start an agent.";
+            let new_agent = primary_button(ui, "New agent", ready).on_disabled_hover_text(hint);
+            let incognito = secondary(ui, "Incognito agent", ready).on_disabled_hover_text(hint);
+            for (clicked, incog) in [(new_agent.clicked(), false), (incognito.clicked(), true)] {
+                if clicked {
+                    open_new_agent(app, model.clone(), incog, out);
+                }
+            }
+        });
+    } else {
+        rail_chat_buttons(ui, app, out, &model);
+    }
+    ui.add_space(8.0);
+    rail_list(ui, app, out, t, mode);
+}
+
+fn rail_chat_buttons(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    model: &Option<String>,
+) {
     ui.horizontal(|ui| {
         let ready = model.is_some();
         let new_chat = primary_button(ui, "New chat", ready)
@@ -224,8 +286,38 @@ fn rail(
             }
         }
     });
-    ui.add_space(8.0);
-    let rail = app.chat.rail(now_ms(), local_day);
+}
+
+/// Opens the New agent form with a default model, and asks whether it can use tools.
+pub(crate) fn open_new_agent(
+    app: &mut AppState,
+    model: Option<String>,
+    incognito: bool,
+    out: &mut Vec<BackendRequest>,
+) {
+    app.chat_ui.inspect = None;
+    app.chat_ui.new_agent.open = true;
+    app.chat_ui.new_agent.incognito = incognito;
+    if app.chat_ui.new_agent.model.is_none() {
+        app.chat_ui.new_agent.model = model;
+    }
+    if let Some(m) = app.chat_ui.new_agent.model.clone() {
+        if app.chat_ui.new_agent.checked.as_ref() != Some(&m) {
+            app.chat_ui.new_agent.checked = Some(m.clone());
+            out.push(BackendRequest::Chat(ChatCommand::CheckModel(m)));
+        }
+    }
+}
+
+fn rail_list(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    mode: SessionMode,
+) {
+    let now = Instant::now();
+    let rail = app.chat.rail_for(mode, now_ms(), local_day);
     let selected = app.chat.open.as_ref().map(|s| s.id).or(app.chat_ui.inspect);
     let mut open_id = None;
     egui::ScrollArea::vertical()
@@ -271,9 +363,14 @@ fn rail(
                     }
                 }
             }
-            if app.chat.loaded && app.chat.rows().is_empty() {
+            if app.chat.loaded && !app.chat.rows().iter().any(|r| r.mode == mode) {
                 ui.add_space(8.0);
-                ui.add(egui::Label::new(RichText::new("No chats yet.").color(t.fg3)).wrap());
+                let none = if mode == SessionMode::Agent {
+                    "No agents yet."
+                } else {
+                    "No chats yet."
+                };
+                ui.add(egui::Label::new(RichText::new(none).color(t.fg3)).wrap());
             }
         });
     if let Some(id) = open_id {
@@ -296,6 +393,7 @@ fn rail(
             .find(|r| r.id == id)
             .is_some_and(|r| r.status != RowStatus::Ok);
         app.chat_ui.renaming = None;
+        app.chat_ui.new_agent.open = false;
         app.chat_ui.focus_composer = !bad_row;
         if bad_row {
             app.chat_ui.inspect = Some(id);
@@ -452,6 +550,7 @@ fn banner(ui: &mut egui::Ui, fg: Color32, bg: Color32, text: &str) {
     ui.add_space(8.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pane(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -460,6 +559,7 @@ fn pane(
     open: Option<&Session>,
     installed: &[String],
     now: Instant,
+    mode: SessionMode,
 ) {
     if !app.chat.warnings.is_empty() {
         banner(ui, t.warn, t.warn_soft, &app.chat.warnings.join("  "));
@@ -488,26 +588,36 @@ fn pane(
             app.select(View::Browse);
         }
     }
+    if mode == SessionMode::Agent && app.chat_ui.new_agent.open && open.is_none() {
+        new_agent_panel(ui, app, out, t, installed);
+        return;
+    }
     let Some(s) = open else {
         if let Some(id) = app.chat_ui.inspect {
             inspect(ui, app, out, t, id, now);
         } else {
-            ui.add_space(24.0);
-            ui.label(RichText::new("Start a chat").font(semibold(18.0)));
-            ui.add_space(4.0);
-            ui.add(
-                egui::Label::new(
-                    RichText::new(
-                        "Choose a conversation on the left, or start a new one. Incognito chats are never saved.",
-                    )
-                    .color(t.fg2),
+            let (title, text) = if mode == SessionMode::Agent {
+                (
+                    "Start an agent",
+                    "An agent works inside a folder you choose. It can list, find, search and read files there to answer questions, and it cannot change anything. Send it a message while it works to steer it.",
                 )
-                .wrap(),
-            );
+            } else {
+                (
+                    "Start a chat",
+                    "Choose a conversation on the left, or start a new one. Incognito chats are never saved.",
+                )
+            };
+            ui.add_space(24.0);
+            ui.label(RichText::new(title).font(semibold(18.0)));
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(text).color(t.fg2)).wrap());
         }
         return;
     };
     header(ui, app, out, t, s, installed, now);
+    if s.mode == SessionMode::Agent {
+        agent_bar(ui, app, out, t, s);
+    }
     if s.lifetime == SessionLifetime::Incognito {
         banner(
             ui,
@@ -544,12 +654,336 @@ fn pane(
         .show(ui, |ui| {
             let last = s.messages.len().saturating_sub(1);
             for (i, m) in s.messages.iter().enumerate() {
-                message_card(ui, t, m, &model, badge);
-                if i == last {
+                if matches!(m.content, MessageContent::Tool { .. }) {
+                    tool_card(ui, t, m, app);
+                } else {
+                    message_card(ui, t, m, &model, badge);
+                }
+                if i == last && s.mode == SessionMode::Chat {
                     retry_row(ui, app, out, s, m);
                 }
             }
+            for text in app.chat.queued(s.id) {
+                #[cfg(test)]
+                let before = ui.cursor().min.y;
+                egui::Frame::new()
+                    .fill(t.accent_soft)
+                    .corner_radius(10.0)
+                    .inner_margin(Margin::symmetric(14, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("Waiting for the agent's next step: {text}"))
+                                    .size(13.0)
+                                    .color(t.fg2),
+                            )
+                            .wrap(),
+                        );
+                    });
+                #[cfg(test)]
+                app.chat_ui
+                    .probe
+                    .queued_chips
+                    .push(egui::Rect::from_min_max(
+                        egui::pos2(ui.min_rect().left(), before),
+                        egui::pos2(ui.min_rect().right(), ui.cursor().min.y),
+                    ));
+                ui.add_space(8.0);
+            }
         });
+}
+
+// ---------------------------------------------------------------- agents
+
+/// The form for starting an agent: a folder and a model that can use tools.
+fn new_agent_panel(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    installed: &[String],
+) {
+    ui.add_space(8.0);
+    ui.label(RichText::new("New agent").font(semibold(18.0)));
+    ui.add_space(4.0);
+    ui.add(
+        egui::Label::new(
+            RichText::new(
+                "The agent can only read inside the folder you choose. It never sees your keys or .env files.",
+            )
+            .color(t.fg2),
+        )
+        .wrap(),
+    );
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Folder").font(semibold(13.0)));
+        let shown = app
+            .chat_ui
+            .new_agent
+            .folder
+            .as_ref()
+            .map_or("No folder chosen".to_string(), |p| p.display().to_string());
+        ui.add(egui::Label::new(RichText::new(shown).color(t.fg2)).truncate());
+    });
+    if secondary(ui, "Choose folder…", true).clicked() {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose the agent's folder")
+            .pick_folder()
+        {
+            app.chat_ui.new_agent.folder = Some(path);
+        }
+    }
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Model").font(semibold(13.0)));
+        let current = app.chat_ui.new_agent.model.clone().unwrap_or_default();
+        let mut choice = None;
+        egui::ComboBox::from_id_salt("new-agent-model")
+            .width(220.0)
+            .selected_text(truncate_chars(&current, 30))
+            .show_ui(ui, |ui| {
+                for name in installed {
+                    if ui.selectable_label(*name == current, name).clicked() {
+                        choice = Some(name.clone());
+                    }
+                }
+            });
+        if let Some(m) = choice.filter(|m| *m != current) {
+            app.chat_ui.new_agent.model = Some(m.clone());
+            app.chat_ui.new_agent.checked = Some(m.clone());
+            out.push(BackendRequest::Chat(ChatCommand::CheckModel(m)));
+        }
+    });
+    let support = app
+        .chat_ui
+        .new_agent
+        .model
+        .as_deref()
+        .and_then(|m| app.chat.supports_tools(m));
+    match (&app.chat_ui.new_agent.model, support) {
+        (None, _) => {}
+        (Some(_), Some(true)) => {
+            ui.label(
+                RichText::new("✓ This model supports tools.")
+                    .size(12.5)
+                    .color(t.ok),
+            );
+        }
+        (Some(_), Some(false)) => {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "This model does not support tools, so it cannot run an agent. Choose another.",
+                    )
+                    .size(12.5)
+                    .color(t.warn),
+                )
+                .wrap(),
+            );
+        }
+        (Some(_), None) => {
+            ui.label(
+                RichText::new("Checking whether this model supports tools…")
+                    .size(12.5)
+                    .color(t.fg3),
+            );
+        }
+    }
+    ui.add_space(8.0);
+    ui.checkbox(
+        &mut app.chat_ui.new_agent.incognito,
+        "Incognito (kept in memory only)",
+    );
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        let ready = app.chat_ui.new_agent.folder.is_some() && support == Some(true);
+        let start = primary_button(ui, "Start", ready)
+            .on_disabled_hover_text("Choose a folder and a model that supports tools.");
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.start_agent = Some(start.rect);
+        }
+        if start.clicked() {
+            if let (Some(folder), Some(model)) = (
+                app.chat_ui.new_agent.folder.clone(),
+                app.chat_ui.new_agent.model.clone(),
+            ) {
+                let lifetime = if app.chat_ui.new_agent.incognito {
+                    SessionLifetime::Incognito
+                } else {
+                    SessionLifetime::Persisted
+                };
+                out.push(BackendRequest::Chat(ChatCommand::CreateAgent {
+                    lifetime,
+                    model,
+                    workspace: folder,
+                }));
+                app.chat_ui.new_agent.open = false;
+                app.chat_ui.focus_composer = true;
+            }
+        }
+        if secondary(ui, "Cancel", true).clicked() {
+            app.chat_ui.new_agent.open = false;
+        }
+    });
+}
+
+/// Under the title of an agent: its folder, step budget and tools.
+fn agent_bar(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    s: &Session,
+) {
+    let running = app.chat.is_running(s.id);
+    let id = s.id;
+    #[cfg(test)]
+    let top = ui.cursor().min.y;
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.menu_button(RichText::new("Tools").size(12.0), |ui| {
+                ui.add_enabled_ui(!running, |ui| {
+                    let mut allowed = !matches!(
+                        s.effective_tools.capabilities.get("files.read"),
+                        Some(roost_core::session::Permission::Off)
+                    );
+                    if ui.checkbox(&mut allowed, "Files · Read").changed() {
+                        let permission = if allowed {
+                            roost_core::session::Permission::Auto
+                        } else {
+                            roost_core::session::Permission::Off
+                        };
+                        out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                            id,
+                            "files.read".into(),
+                            permission,
+                        )));
+                    }
+                    ui.separator();
+                    for spec in registry::specs() {
+                        let mut on = registry::tool_enabled(&s.effective_tools, &spec);
+                        if ui
+                            .checkbox(&mut on, spec.name)
+                            .on_hover_text(spec.description)
+                            .changed()
+                        {
+                            out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
+                                id,
+                                spec.name.into(),
+                                on,
+                            )));
+                        }
+                    }
+                });
+            });
+            let mut steps = s.step_budget;
+            let drag = ui.add_enabled(
+                !running,
+                egui::DragValue::new(&mut steps)
+                    .range(1..=100)
+                    .prefix("Steps "),
+            );
+            if drag.changed() {
+                out.push(BackendRequest::Chat(ChatCommand::SetStepBudget(id, steps)));
+            }
+            if secondary(ui, "Change folder…", !running).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Choose the agent's folder")
+                    .pick_folder()
+                {
+                    out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
+                }
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(RichText::new("Folder").size(12.0).color(t.fg3));
+                let path = s
+                    .workspace
+                    .as_ref()
+                    .map_or(String::new(), |p| p.display().to_string());
+                ui.add(egui::Label::new(RichText::new(path).size(12.0).color(t.fg2)).truncate());
+            });
+        });
+    });
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.agent_bar = Some(egui::Rect::from_min_max(
+            egui::pos2(ui.max_rect().left(), top),
+            egui::pos2(ui.max_rect().right(), ui.cursor().min.y),
+        ));
+    }
+    ui.add_space(6.0);
+}
+
+/// One tool step of an agent: what it called, how it went, and the result.
+fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut AppState) {
+    let MessageContent::Tool {
+        name,
+        arguments,
+        output,
+        status,
+        ..
+    } = &m.content
+    else {
+        return;
+    };
+    let _ = &app;
+    let args = {
+        let s = arguments.to_string();
+        truncate_chars(&s, 90)
+    };
+    #[cfg(test)]
+    let top = ui.cursor().min.y;
+    egui::Frame::new()
+        .fill(t.surface2)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(8.0)
+        .inner_margin(Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Tool").font(semibold(11.0)).color(t.fg3));
+                ui.label(RichText::new(name).font(semibold(13.0)).color(t.fg));
+                match status {
+                    ToolStatus::Pending => tag(ui, "Waiting", t.fg2, t.line),
+                    ToolStatus::Running => tag(ui, "Running…", t.accent, t.accent_soft),
+                    ToolStatus::Failed => tag(ui, "Failed", t.bad, t.bad_soft),
+                    ToolStatus::Cancelled => tag(ui, "Stopped", t.warn, t.warn_soft),
+                    ToolStatus::Complete => {}
+                }
+            });
+            ui.add(
+                egui::Label::new(
+                    RichText::new(args)
+                        .font(crate::theme::mono(11.5))
+                        .color(t.fg3),
+                )
+                .truncate(),
+            );
+            if let Some(result) = output.as_deref().filter(|o| !o.is_empty()) {
+                egui::CollapsingHeader::new(RichText::new("Result").size(12.0).color(t.fg2))
+                    .id_salt(("tool-result", m.id))
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(truncate_chars(result, 4000))
+                                    .font(crate::theme::mono(11.5))
+                                    .color(t.fg2),
+                            )
+                            .selectable(true)
+                            .wrap(),
+                        );
+                    });
+            }
+        });
+    #[cfg(test)]
+    app.chat_ui.probe.tool_cards.push(egui::Rect::from_min_max(
+        egui::pos2(ui.min_rect().left(), top),
+        egui::pos2(ui.min_rect().right(), ui.cursor().min.y),
+    ));
+    ui.add_space(8.0);
 }
 
 /// The model shown for a session: the rail row is the live source.
@@ -963,6 +1397,11 @@ fn composer(
     let enter = focused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let mut send = enter;
     let mut stop = false;
+    let hint = if app.chat.is_agent(id) {
+        "Message the agent. While it works, Enter sends a steering message."
+    } else {
+        "Message (Enter to send, Shift+Enter for a new line)"
+    };
     ui.horizontal(|ui| {
         let button_w = 76.0;
         let edit_w = (ui.available_width() - button_w - 10.0).max(80.0);
@@ -971,7 +1410,7 @@ fn composer(
                 .id(eid)
                 .desired_rows(COMPOSER_ROWS)
                 .desired_width(edit_w)
-                .hint_text("Message (Enter to send, Shift+Enter for a new line)"),
+                .hint_text(hint),
         );
         ui.vertical(|ui| {
             ui.set_width(button_w);

@@ -15,6 +15,45 @@ pub const OMITTED_MARKER: &str = "Earlier messages omitted for context";
 pub struct WireMessage {
     pub role: String,
     pub content: String,
+    /// Set on an assistant message that asked for tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<WireToolCall>>,
+    /// Set on a `tool` message: which tool produced the content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+}
+
+impl WireMessage {
+    pub fn text(role: &str, content: &str) -> WireMessage {
+        WireMessage {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_name: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WireToolCall {
+    pub function: WireFunction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WireFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl WireToolCall {
+    pub fn new(name: &str, arguments: serde_json::Value) -> WireToolCall {
+        WireToolCall {
+            function: WireFunction {
+                name: name.into(),
+                arguments,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,10 +113,7 @@ fn exchanges(transcript: &[Message]) -> Vec<Exchange<'_>> {
 }
 
 fn wire(role: &str, content: &str) -> WireMessage {
-    WireMessage {
-        role: role.into(),
-        content: content.into(),
-    }
+    WireMessage::text(role, content)
 }
 
 /// Builds the messages for one request. Exchanges whose reply did not
@@ -136,6 +172,149 @@ pub fn build_request(
     Ok(Trimmed {
         messages,
         omitted: (history.len() - kept) * 2,
+    })
+}
+
+/// One unit of an agent transcript that is kept or dropped as a whole: a user
+/// message, or an assistant message together with the tool results that
+/// answer its calls.
+struct Group {
+    wires: Vec<WireMessage>,
+    is_user: bool,
+    cost: usize,
+    messages: usize,
+}
+
+fn wire_cost(m: &WireMessage) -> usize {
+    let calls: usize = m
+        .tool_calls
+        .iter()
+        .flatten()
+        .map(|c| tokens(&c.function.name) + tokens(&c.function.arguments.to_string()))
+        .sum();
+    tokens(&m.content) + calls
+}
+
+fn agent_groups(transcript: &[Message]) -> Vec<Group> {
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < transcript.len() {
+        match &transcript[i].content {
+            MessageContent::User { text, .. } => {
+                let w = wire("user", text);
+                groups.push(Group {
+                    cost: wire_cost(&w),
+                    wires: vec![w],
+                    is_user: true,
+                    messages: 1,
+                });
+                i += 1;
+            }
+            MessageContent::Assistant { text, .. } => {
+                let mut j = i + 1;
+                let mut calls = Vec::new();
+                let mut results = Vec::new();
+                while let Some(MessageContent::Tool {
+                    name,
+                    arguments,
+                    output,
+                    ..
+                }) = transcript.get(j).map(|m| &m.content)
+                {
+                    calls.push(WireToolCall::new(name, arguments.clone()));
+                    results.push(WireMessage {
+                        tool_name: Some(name.clone()),
+                        ..wire("tool", output.as_deref().unwrap_or("cancelled"))
+                    });
+                    j += 1;
+                }
+                if !text.is_empty() || !calls.is_empty() {
+                    let mut a = wire("assistant", text);
+                    if !calls.is_empty() {
+                        a.tool_calls = Some(calls);
+                    }
+                    let mut wires = vec![a];
+                    wires.extend(results);
+                    groups.push(Group {
+                        cost: wires.iter().map(wire_cost).sum(),
+                        wires,
+                        is_user: false,
+                        messages: j - i,
+                    });
+                }
+                i = j;
+            }
+            // A tool result with no assistant message before it cannot be replayed.
+            MessageContent::Tool { .. } => i += 1,
+        }
+    }
+    groups
+}
+
+/// Like `build_request`, for agent transcripts: user, assistant and tool
+/// messages in order. Tool calls and their results are never separated, the
+/// request always starts with a user message, and the newest message and the
+/// newest user message are always kept. Interrupted and cancelled replies stay
+/// as the text they had.
+pub fn build_agent_request(
+    system: &str,
+    transcript: &[Message],
+    window: u32,
+) -> Result<Trimmed, ContextError> {
+    let groups = agent_groups(transcript);
+    let budget = (u64::from(window) * 70 / 100) as usize;
+    let newest = groups.len().checked_sub(1);
+    let newest_user = groups.iter().rposition(|g| g.is_user);
+    let mut required: Vec<usize> = newest.into_iter().chain(newest_user).collect();
+    required.sort_unstable();
+    required.dedup();
+    let fixed = tokens(system) + required.iter().map(|&i| groups[i].cost).sum::<usize>();
+    if fixed > budget {
+        return Err(ContextError::TooLarge {
+            needed: fixed,
+            budget,
+        });
+    }
+    let others: Vec<usize> = (0..groups.len())
+        .filter(|i| !required.contains(i))
+        .collect();
+    let pick = |room: usize| -> Vec<usize> {
+        let mut used = 0;
+        let mut chosen = Vec::new();
+        for &i in others.iter().rev() {
+            used += groups[i].cost;
+            if used > room {
+                break;
+            }
+            chosen.push(i);
+        }
+        chosen
+    };
+    let room = budget - fixed;
+    let mut chosen = pick(room);
+    let mut marker = false;
+    if chosen.len() < others.len() {
+        marker = true;
+        chosen = pick(room.saturating_sub(tokens(OMITTED_MARKER)));
+    }
+    let mut keep: Vec<usize> = required.into_iter().chain(chosen).collect();
+    keep.sort_unstable();
+    // Never start in the middle of an exchange.
+    while keep.len() > 1 && !groups[keep[0]].is_user {
+        keep.remove(0);
+    }
+    let kept_messages: usize = keep.iter().map(|&i| groups[i].messages).sum();
+    let total_messages: usize = groups.iter().map(|g| g.messages).sum();
+    let mut messages = vec![wire("system", system)];
+    if marker {
+        messages.push(wire("system", OMITTED_MARKER));
+    }
+    for &i in &keep {
+        messages.extend(groups[i].wires.iter().cloned());
+    }
+    Ok(Trimmed {
+        messages,
+        omitted: total_messages - kept_messages,
     })
 }
 
@@ -279,5 +458,190 @@ mod tests {
         let before = s.messages.clone();
         let _ = build_request(sys, &s.messages, 51).unwrap();
         assert_eq!(s.messages, before);
+    }
+
+    // ---- agent requests
+
+    use crate::session::ToolStatus;
+    use serde_json::json;
+
+    /// user, assistant asking for tools, their results, a closing reply.
+    fn agent_session() -> Session {
+        let mut s =
+            Session::new_agent("m", SessionLifetime::Persisted, std::env::temp_dir(), 0).unwrap();
+        s.push_user("find the bug", 1);
+        let run = RunId::new();
+        let a = s.begin_assistant(run, TurnId::new(), 2);
+        s.append_assistant(a, "Looking.", "private reasoning");
+        s.finish_assistant(a, St::Complete, None, 2);
+        let t1 = s.push_tool_call(run, "c1", "list_dir", json!({}), 3);
+        s.finish_tool(t1, "a.rs", ToolStatus::Complete, 3);
+        let t2 = s.push_tool_call(run, "c2", "read_file", json!({"path": "a.rs"}), 3);
+        s.finish_tool(t2, "1| fn main() {}", ToolStatus::Complete, 3);
+        let b = s.begin_assistant(run, TurnId::new(), 4);
+        s.append_assistant(b, "It is in a.rs.", "");
+        s.finish_assistant(b, St::Complete, None, 4);
+        s
+    }
+
+    fn shapes(t: &Trimmed) -> Vec<String> {
+        t.messages
+            .iter()
+            .map(|m| {
+                let calls = m.tool_calls.as_ref().map_or(0, Vec::len);
+                format!(
+                    "{}{}",
+                    m.role,
+                    if calls > 0 {
+                        format!("+{calls}")
+                    } else {
+                        String::new()
+                    }
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agent_requests_replay_tool_calls_and_results_in_order() {
+        let mut s = agent_session();
+        s.push_steering("only look at src", 5);
+        let t = build_agent_request("sys", &s.messages, 8192).unwrap();
+        assert_eq!(
+            shapes(&t),
+            [
+                "system",
+                "user",
+                "assistant+2",
+                "tool",
+                "tool",
+                "assistant",
+                "user"
+            ]
+        );
+        let calls = t.messages[2].tool_calls.as_ref().unwrap();
+        assert_eq!(calls[0].function.name, "list_dir");
+        assert_eq!(calls[1].function.arguments["path"], "a.rs");
+        assert_eq!(t.messages[3].tool_name.as_deref(), Some("list_dir"));
+        assert_eq!(t.messages[3].content, "a.rs");
+        assert_eq!(t.messages[4].tool_name.as_deref(), Some("read_file"));
+        assert_eq!(t.messages[6].content, "only look at src");
+        assert_eq!(t.omitted, 0);
+        assert!(t.messages.iter().all(|m| !m.content.contains("private")));
+    }
+
+    #[test]
+    fn an_interrupted_reply_stays_as_text_and_empty_replies_are_skipped() {
+        let mut s =
+            Session::new_agent("m", SessionLifetime::Persisted, std::env::temp_dir(), 0).unwrap();
+        s.push_user("task", 1);
+        let a = s.begin_assistant(RunId::new(), TurnId::new(), 2);
+        s.append_assistant(a, "I was about to", "");
+        s.finish_assistant(a, St::Interrupted, None, 2);
+        let empty = s.begin_assistant(RunId::new(), TurnId::new(), 3);
+        s.finish_assistant(empty, St::Failed, Some("boom".into()), 3);
+        s.push_steering("do this instead", 4);
+        let t = build_agent_request("sys", &s.messages, 8192).unwrap();
+        assert_eq!(shapes(&t), ["system", "user", "assistant", "user"]);
+        assert_eq!(t.messages[2].content, "I was about to");
+    }
+
+    #[test]
+    fn a_tool_call_with_no_output_is_reported_as_cancelled() {
+        let mut s = agent_session();
+        let pending =
+            s.push_tool_call(RunId::new(), "c9", "find_files", json!({"pattern": "*"}), 6);
+        s.finish_tool(pending, "", ToolStatus::Cancelled, 6);
+        if let MessageContent::Tool { output, .. } = &mut s
+            .messages
+            .iter_mut()
+            .find(|m| m.id == pending)
+            .unwrap()
+            .content
+        {
+            *output = None;
+        }
+        s.push_steering("next", 7);
+        let t = build_agent_request("sys", &s.messages, 8192).unwrap();
+        // The orphan call (no assistant before it in its group) is not replayed.
+        assert!(t
+            .messages
+            .iter()
+            .all(|m| m.content != "cancelled" || m.role == "tool"));
+    }
+
+    #[test]
+    fn trimming_keeps_tool_groups_whole_and_starts_with_a_user_message() {
+        let mut s =
+            Session::new_agent("m", SessionLifetime::Persisted, std::env::temp_dir(), 0).unwrap();
+        for i in 0..12 {
+            s.push_user(&format!("task {i} {}", "x".repeat(200)), 1);
+            let run = RunId::new();
+            let a = s.begin_assistant(run, TurnId::new(), 2);
+            s.append_assistant(a, &"y".repeat(200), "");
+            s.finish_assistant(a, St::Complete, None, 2);
+            let t = s.push_tool_call(run, &format!("c{i}"), "read_file", json!({"path": "a"}), 3);
+            s.finish_tool(t, &"z".repeat(300), ToolStatus::Complete, 3);
+        }
+        for w in 200..4000 {
+            let Ok(t) = build_agent_request("s", &s.messages, w) else {
+                continue;
+            };
+            let first = t.messages.iter().find(|m| m.role != "system").unwrap();
+            assert_eq!(first.role, "user", "window {w}");
+            for (i, m) in t.messages.iter().enumerate() {
+                if m.role == "tool" {
+                    let before = &t.messages[..i];
+                    let owner = before.iter().rev().find(|p| p.role == "assistant");
+                    assert!(
+                        owner.is_some_and(|o| o.tool_calls.is_some()),
+                        "window {w}: orphan tool result"
+                    );
+                }
+            }
+            let last_user = s.messages.iter().rev().find_map(|m| match &m.content {
+                MessageContent::User { text, .. } => Some(text.clone()),
+                _ => None,
+            });
+            assert!(
+                t.messages
+                    .iter()
+                    .any(|m| Some(&m.content) == last_user.as_ref()),
+                "window {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn dropped_agent_groups_leave_the_marker_and_a_count() {
+        let mut s =
+            Session::new_agent("m", SessionLifetime::Persisted, std::env::temp_dir(), 0).unwrap();
+        for i in 0..20 {
+            s.push_user(&format!("step {i} {}", "x".repeat(400)), 1);
+        }
+        let t = build_agent_request("sys", &s.messages, 1000).unwrap();
+        assert_eq!(t.messages[1].content, OMITTED_MARKER);
+        assert!(t.omitted > 0 && t.omitted < 20, "{}", t.omitted);
+        assert_eq!(
+            t.messages.last().unwrap().content,
+            s.messages
+                .last()
+                .and_then(|m| match &m.content {
+                    MessageContent::User { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn an_agent_request_too_large_for_the_window_is_an_error() {
+        let mut s =
+            Session::new_agent("m", SessionLifetime::Persisted, std::env::temp_dir(), 0).unwrap();
+        s.push_user(&"x".repeat(30_000), 1);
+        assert!(matches!(
+            build_agent_request("sys", &s.messages, 100),
+            Err(ContextError::TooLarge { .. })
+        ));
     }
 }
