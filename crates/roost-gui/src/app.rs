@@ -7,7 +7,7 @@ use crate::installed::state::{InstalledState, ListStatus};
 use crate::runtime::{BackendRequest, UiEvent};
 use crate::settings::{self, SettingsView};
 use crate::theme::{mono, semibold, tokens};
-use crate::widgets::{ellipsize_middle, segmented_nav};
+use crate::widgets::{ellipsize_middle, segmented_nav_rect};
 use eframe::egui::{self, vec2, Color32, Margin, RichText, Sense, Stroke};
 use roost_core::config::{AutoDismiss, Settings};
 use roost_core::events::{Command, JobEvent};
@@ -73,6 +73,9 @@ pub struct AppState {
     pub status_rect: Option<egui::Rect>,
     /// One-line startup message (e.g. an ignored saved setting).
     pub startup_notice: Option<String>,
+    /// Where each top bar item was last painted (for layout tests).
+    #[cfg(test)]
+    pub top_bar: Vec<(&'static str, egui::Rect)>,
 }
 
 impl AppState {
@@ -124,6 +127,8 @@ impl AppState {
             search_clear_rect: None,
             status_rect: None,
             startup_notice: None,
+            #[cfg(test)]
+            top_bar: Vec::new(),
         }
     }
 
@@ -288,6 +293,11 @@ pub fn host_of(url: &str) -> String {
 pub fn pill_size(text_width: f32) -> egui::Vec2 {
     vec2(2.0 * PILL_PAD_X + PILL_DOT + PILL_GAP + text_width, 24.0)
 }
+
+/// Height of the top bar's single row; the tallest item (the nav) fits.
+const TOP_ROW_H: f32 = 36.0;
+/// Height of the segmented nav: 28 px segments, 2 px padding, 1 px border.
+const NAV_H: f32 = 34.0;
 
 /// Space kept between the search field and the status pill.
 const SEARCH_PILL_GAP: f32 = 16.0;
@@ -494,10 +504,21 @@ impl App {
         egui::Panel::top("top")
             .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
             .show(ui, |ui| {
+                // A fixed-height row: items are centred on one line instead
+                // of on the height of whatever was added before them.
                 let row = egui::Layout::left_to_right(egui::Align::Center);
-                ui.with_layout(row, |ui| {
-                    crate::identity::paint_tail(ui, 22.0);
-                    ui.label(RichText::new(crate::identity::PRODUCT_NAME).font(semibold(16.0)));
+                let size = vec2(ui.available_width(), TOP_ROW_H);
+                ui.allocate_ui_with_layout(size, row, |ui| {
+                    #[cfg(test)]
+                    self.state.top_bar.clear();
+                    let _logo = crate::identity::paint_tail(ui, 22.0);
+                    let _word =
+                        ui.label(RichText::new(crate::identity::PRODUCT_NAME).font(semibold(16.0)));
+                    #[cfg(test)]
+                    {
+                        self.state.top_bar.push(("logo", _logo));
+                        self.state.top_bar.push(("wordmark", _word.rect));
+                    }
                     ui.add_space(8.0);
 
                     let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
@@ -513,7 +534,24 @@ impl App {
                         .iter()
                         .position(|v| *v == self.state.view)
                         .unwrap_or(0);
-                    if let Some(i) = segmented_nav(ui, &labels, &badges, current) {
+                    // A frame ignores the row's centring and sits at its top, so place it
+                    // explicitly in the middle.
+                    let left = ui.cursor().min.x;
+                    let nav_area = egui::Rect::from_min_size(
+                        egui::pos2(left, ui.max_rect().min.y + (TOP_ROW_H - NAV_H) / 2.0),
+                        vec2(ui.available_width(), NAV_H),
+                    );
+                    let mut nav_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(nav_area)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    let (picked, _nav_rect) =
+                        segmented_nav_rect(&mut nav_ui, &labels, &badges, current);
+                    ui.advance_cursor_after_rect(_nav_rect);
+                    #[cfg(test)]
+                    self.state.top_bar.push(("nav", _nav_rect));
+                    if let Some(i) = picked {
                         self.state.select(View::ALL[i]);
                     }
 
@@ -1597,5 +1635,45 @@ mod tests {
             Some(32.0)
         );
         assert_eq!(app.state.settings_view.state.staging_text, "/tmp/default");
+    }
+
+    #[test]
+    fn top_bar_items_share_one_vertical_center() {
+        use roost_core::config::ThemeFamily::*;
+        for family in [Meadow, Ember, Plum, Tide] {
+            for dark in [false, true] {
+                let mut h = crate::browse::test_util::Harness::themed(family, dark);
+                let (tx, _) = std::sync::mpsc::channel();
+                let (_, rx) = std::sync::mpsc::channel();
+                let mut app = App::new(
+                    &Settings::default(),
+                    PathBuf::from("/tmp/staging"),
+                    Machine {
+                        ram_gb: 16.0,
+                        vram_gb: None,
+                    },
+                    tx,
+                    rx,
+                );
+                app.state.ollama = Some(Some("0.9.2".to_string()));
+                app.state.view = View::Browse;
+                app.state.query = "qwen".into();
+                for _ in 0..4 {
+                    h.frame(vec2(900.0, 640.0), vec![], |ui| app.show(ui));
+                }
+                let mut items = app.state.top_bar.clone();
+                items.push(("search", app.state.search_rect.expect("search shown")));
+                items.push(("pill", app.state.pill_rect.expect("pill shown")));
+                let centers: Vec<(&str, f32)> =
+                    items.iter().map(|(n, r)| (*n, r.center().y)).collect();
+                let lo = centers.iter().map(|c| c.1).fold(f32::MAX, f32::min);
+                let hi = centers.iter().map(|c| c.1).fold(f32::MIN, f32::max);
+                assert!(
+                    hi - lo <= 1.0,
+                    "{family:?} dark={dark}: top bar centers differ by {}: {centers:?} rects {items:?}",
+                    hi - lo
+                );
+            }
+        }
     }
 }

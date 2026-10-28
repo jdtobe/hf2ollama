@@ -181,9 +181,19 @@ pub fn segmented_nav(
     badges: &[Option<String>],
     selected: usize,
 ) -> Option<usize> {
+    segmented_nav_rect(ui, labels, badges, selected).0
+}
+
+/// Like `segmented_nav`, also returning the rectangle it occupies.
+pub fn segmented_nav_rect(
+    ui: &mut egui::Ui,
+    labels: &[&str],
+    badges: &[Option<String>],
+    selected: usize,
+) -> (Option<usize>, egui::Rect) {
     let t = tokens(ui);
     let mut clicked = None;
-    egui::Frame::new()
+    let frame = egui::Frame::new()
         .fill(t.surface2)
         .stroke(Stroke::new(1.0, t.line))
         .corner_radius(8.0)
@@ -246,7 +256,7 @@ pub fn segmented_nav(
                 }
             });
         });
-    clicked
+    (clicked, frame.response.rect)
 }
 
 #[cfg(test)]
