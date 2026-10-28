@@ -50,6 +50,11 @@ pub struct ChatProbe {
     pub delete_button: Option<(egui::Rect, String)>,
 }
 
+/// The composer text field of a session; also used to drop its editor state.
+pub(super) fn composer_id(id: SessionId) -> egui::Id {
+    egui::Id::unique("chat-composer").with(id)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -97,6 +102,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     if app.chat_ui.confirm.is_armed("", now) || app.chat_ui.confirm_pending() {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    // A destroyed session takes its text-editor state (undo history) too.
+    for id in app.chat.take_forgotten() {
+        ui.ctx()
+            .data_mut(|d| d.remove::<egui::text_edit::TextEditState>(composer_id(id)));
     }
     let installed: Vec<String> = app
         .installed
@@ -709,7 +719,7 @@ fn composer(
         ui.label(RichText::new(n).size(12.5).color(t.warn));
         ui.add_space(4.0);
     }
-    let eid = egui::Id::unique("chat-composer").with(id);
+    let eid = composer_id(id);
     if std::mem::take(&mut app.chat_ui.focus_composer) {
         ui.memory_mut(|m| m.request_focus(eid));
     }

@@ -74,6 +74,8 @@ pub struct ChatState {
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
     drafts: HashMap<SessionId, String>,
     sending: HashSet<SessionId>,
+    /// Sessions dropped since the view last looked; it clears their editors.
+    forgotten: Vec<SessionId>,
     omitted: HashMap<SessionId, usize>,
     /// Set when the history cannot be used at all.
     pub unavailable: Option<String>,
@@ -241,9 +243,15 @@ impl ChatState {
         self.omitted.remove(&id);
         self.runs.remove(&id);
         self.sending.remove(&id);
+        self.forgotten.push(id);
         if self.open.as_ref().is_some_and(|s| s.id == id) {
             self.open = None;
         }
+    }
+
+    /// Sessions forgotten since the last call (to drop their editor state).
+    pub fn take_forgotten(&mut self) -> Vec<SessionId> {
+        std::mem::take(&mut self.forgotten)
     }
 
     /// Enter / Send. The draft stays until the manager confirms the message.

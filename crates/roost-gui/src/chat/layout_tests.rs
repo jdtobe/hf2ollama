@@ -43,8 +43,8 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-struct Fixture {
-    app: App,
+pub(super) struct Fixture {
+    pub(super) app: App,
     sent: Receiver<BackendRequest>,
     open: Session,
     bad: IndexRow,
@@ -56,7 +56,7 @@ fn fixture() -> Fixture {
 
 /// `chats` ordinary saved chats besides the open one, the incognito one and
 /// the damaged one; a short list keeps every group inside the viewport.
-fn fixture_with(chats: usize) -> Fixture {
+pub(super) fn fixture_with(chats: usize) -> Fixture {
     let (tx, sent) = std::sync::mpsc::channel();
     let (_, rx) = std::sync::mpsc::channel();
     let mut app = App::new(
@@ -120,7 +120,7 @@ fn fixture_with(chats: usize) -> Fixture {
     }
 }
 
-fn run(app: &mut App, h: &mut Harness, (w, hh): (f32, f32), frames: usize) {
+pub(super) fn run(app: &mut App, h: &mut Harness, (w, hh): (f32, f32), frames: usize) {
     for _ in 0..frames {
         h.frame(vec2(w, hh), vec![], |ui| app.show(ui));
     }

@@ -6,5 +6,7 @@ pub mod view;
 
 #[cfg(test)]
 mod layout_tests;
+#[cfg(test)]
+mod leak_tests;
 
 pub use state::ChatState;
