@@ -392,7 +392,8 @@ mod tests {
         std::fs::write(
             &current_config,
             format!(
-                "max_parallel = 2\nstaging_dir = \"{}\"\n",
+                // A TOML literal string: Windows paths contain backslashes.
+                "max_parallel = 1\nstaging_dir = '{}'\n",
                 configured_staging.display()
             ),
         )
@@ -407,7 +408,7 @@ mod tests {
             Some(os(legacy_os.path())),
         );
 
-        assert_eq!(st.settings.max_parallel, 2);
+        assert_eq!(st.settings.max_parallel, 1);
         assert_eq!(st.staging_dir, configured_staging);
         assert!(st.migration.migrated.is_empty());
         assert_eq!(
@@ -415,7 +416,7 @@ mod tests {
                 .unwrap()
                 .lines()
                 .next(),
-            Some("max_parallel = 2")
+            Some("max_parallel = 1")
         );
     }
 
