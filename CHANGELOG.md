@@ -44,6 +44,14 @@ Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mock
 - **Tool steps** of an agent fold into one line (“Used 3 tools: search_text ×2, read_file”) with live “running…” and failure counts; open it for the cards.
 - **Sidebar:** one “+ New” menu replaces the two buttons; the “In memory” footer moved into the Ollama status pill's popover, which lists loaded models with Unload.
 
+### Fixes and polish after first use
+
+- **+ New** is a split button: the main half starts a chat (or agent), the arrow offers the incognito variant.
+- Shift+Enter adds a line in the message box; Enter sends.
+- On narrow windows the status pill shows only the Ollama version (the address is in its hover text), so the Browse search field keeps its room.
+- The import plan card shows its steps as one line (`Download › Verify › Upload › Create`) that never wraps.
+- **Downloads panel:** each job is two lines. The name (cut in the middle so the tag stays visible), size, a stage pill and the buttons; then a progress bar of the same width for every job with percent, bytes, speed and an estimate of the time left. The estimate uses a smoothed speed, waits for five seconds of data, is rounded, and does not jump about. The log drawer gained a Copy button.
+
 ### Agents (Work tab)
 
 - A **Work** tab (between Chat and Browse) for read-only agents. An agent works inside a folder you choose and can list, find, search and read files there; it cannot change anything. Start one with New agent: pick a folder and a model that supports tools (Roost checks with Ollama first).

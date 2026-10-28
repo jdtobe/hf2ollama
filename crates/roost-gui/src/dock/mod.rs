@@ -8,10 +8,10 @@ mod layout_tests;
 use crate::app::bad;
 use crate::browse::results::format_size;
 use crate::theme::{mono, tokens, Tokens};
-use crate::widgets::fit_text;
+use crate::widgets::{ellipsize_middle, fit_text};
 use eframe::egui::{self, vec2, Align, Layout, Margin, RichText, Sense, Stroke};
 use jobs::{JobRow, JobsState, RowStatus};
-use roost_core::events::JobId;
+use roost_core::events::{JobId, Stage};
 
 /// What the user asked for; the app applies it (backend commands or local).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,12 +37,17 @@ pub struct DockProbe {
     pub clear_button: Option<egui::Rect>,
     /// Row content rectangles painted this frame.
     pub rows: Vec<egui::Rect>,
+    /// Progress bars and stage pills painted this frame.
+    pub bars: Vec<egui::Rect>,
+    pub pills: Vec<egui::Rect>,
     /// The floating log drawer, when open.
     pub log_panel: Option<egui::Rect>,
     /// The scrolling log text area inside the drawer.
     pub log_viewport: Option<egui::Rect>,
     /// The drawer's close button.
     pub log_close: Option<egui::Rect>,
+    /// The drawer's Copy button.
+    pub log_copy: Option<egui::Rect>,
 }
 
 /// View state of the dock (which logs are expanded).
@@ -57,9 +62,18 @@ pub struct DockUi {
     pub probe: DockProbe,
 }
 
-const ROW_H: f32 = 30.0;
-/// Room for `Downloading 100% · 123.4 MB/s`.
-const STATUS_W: f32 = 210.0;
+/// A job is two lines: name, size, pill and buttons; then bar and numbers.
+const LINE1_H: f32 = 24.0;
+const LINE2_H: f32 = 14.0;
+const LINE_GAP: f32 = 4.0;
+const ROW_H: f32 = LINE1_H + LINE_GAP + LINE2_H;
+/// Every job's bar is this wide, so the bars line up down the dock.
+const BAR_W: f32 = 300.0;
+/// The bar never gets narrower than this, whatever the window.
+const BAR_MIN_W: f32 = 120.0;
+/// Room the numbers keep before the bar starts giving way.
+const DETAIL_MIN_W: f32 = 330.0;
+const PILL_H: f32 = 18.0;
 const COL_GAP: f32 = 14.0;
 const FRAME_V: f32 = 10.0;
 const HEADER_H: f32 = 24.0;
@@ -95,10 +109,13 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
         st.probe.buttons.clear();
         st.probe.clear_button = None;
         st.probe.rows.clear();
+        st.probe.bars.clear();
+        st.probe.pills.clear();
         st.probe.viewport = None;
         st.probe.log_panel = None;
         st.probe.log_viewport = None;
         st.probe.log_close = None;
+        st.probe.log_copy = None;
     }
     let resp = egui::Panel::bottom("dock")
         .frame(crate::app::panel_frame(
@@ -211,6 +228,22 @@ fn log_drawer(ui: &egui::Ui, dock: egui::Rect, t: &Tokens, row: &JobRow, st: &mu
                             }
                             if resp.clicked() {
                                 close = true;
+                            }
+                            ui.spacing_mut().button_padding = vec2(8.0, 1.0);
+                            let copy = ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Copy").size(11.5).color(t.fg2),
+                                    )
+                                    .min_size(vec2(0.0, 20.0)),
+                                )
+                                .on_hover_text("Copy the whole log");
+                            #[cfg(test)]
+                            {
+                                st.probe.log_copy = Some(copy.rect);
+                            }
+                            if copy.clicked() {
+                                ui.ctx().copy_text(row.log.join("\n"));
                             }
                         });
                     });
@@ -377,12 +410,13 @@ fn row_ui(
     let (rect, _) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::hover());
     #[cfg(test)]
     st.probe.rows.push(rect);
+    let line1 = egui::Rect::from_min_size(rect.min, vec2(w, LINE1_H));
 
     // Buttons, rightmost first.
     let open = st.open_log == Some(row.id);
     let mut bui = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect)
+            .max_rect(line1)
             .layout(Layout::right_to_left(Align::Center)),
     );
     bui.spacing_mut().item_spacing.x = 6.0;
@@ -412,58 +446,88 @@ fn row_ui(
     }
     let buttons_left = bui.min_rect().left();
 
-    // Name, progress bar and status in the space left of the buttons.
+    // Line 1: name, size and stage pill in the space left of the buttons.
     let region = (buttons_left - COL_GAP - rect.left()).max(0.0);
-    let bar_min = 40.0;
-    let name_w = (region * 0.34)
-        .clamp(120.0, 300.0)
-        .min((region - bar_min - STATUS_W - 2.0 * COL_GAP).max(60.0));
-    let bar_w = (region - name_w - STATUS_W - 2.0 * COL_GAP).max(bar_min);
-    let cy = rect.center().y;
-
-    let size_text = (row.total > 0).then(|| format_size(row.total));
-    let size_g = size_text.map(|s| {
-        ui.painter()
-            .layout_no_wrap(s, egui::FontId::proportional(12.0), t.fg3)
+    let line1_cy = rect.top() + LINE1_H / 2.0;
+    let size_g = (row.total > 0).then(|| {
+        ui.painter().layout_no_wrap(
+            format_size(row.total),
+            egui::FontId::proportional(12.0),
+            t.fg3,
+        )
     });
     let size_w = size_g.as_ref().map_or(0.0, |g| g.size().x + 8.0);
-    let name = if row.name.is_empty() {
-        "Starting…"
-    } else {
-        &row.name
+    let (pill_fg, pill_bg) = match row.status {
+        RowStatus::Finished => (t.ok, t.accent_soft),
+        RowStatus::Failed => (bad(dark), bad(dark).gamma_multiply(0.16)),
+        RowStatus::Paused | RowStatus::Cancelled => (t.fg2, t.line),
+        RowStatus::Queued => (t.fg2, t.line),
+        RowStatus::Running if row.stage == Stage::Downloading => (t.accent, t.accent_soft),
+        RowStatus::Running => (t.warn, t.warn.gamma_multiply(0.18)),
     };
-    let name_g = fit_text(ui, name, mono(12.5), t.fg, (name_w - size_w).max(30.0));
+    let pill_g = ui
+        .painter()
+        .layout_no_wrap(row.pill_text().into(), mono(11.0), pill_fg);
+    let pill_w = pill_g.size().x + 16.0;
+    let name_w = (region - size_w - pill_w - 8.0).max(60.0);
+    let name = if row.name.is_empty() {
+        "Starting…".to_string()
+    } else {
+        // Cut in the middle so a model's tag, such as `:32b`, stays visible.
+        ellipsize_middle(ui, &row.name, mono(12.5), name_w)
+    };
+    let name_g = ui.painter().layout_no_wrap(name, mono(12.5), t.fg);
     let name_end = rect.left() + name_g.size().x;
     ui.painter().galley(
-        egui::pos2(rect.left(), cy - name_g.size().y / 2.0),
+        egui::pos2(rect.left(), line1_cy - name_g.size().y / 2.0),
         name_g,
         t.fg,
     );
+    let mut x = name_end + 8.0;
     if let Some(g) = size_g {
+        let w = g.size().x;
         ui.painter()
-            .galley(egui::pos2(name_end + 8.0, cy - g.size().y / 2.0), g, t.fg3);
+            .galley(egui::pos2(x, line1_cy - g.size().y / 2.0), g, t.fg3);
+        x += w + 8.0;
     }
+    let pill =
+        egui::Rect::from_min_size(egui::pos2(x, line1_cy - PILL_H / 2.0), vec2(pill_w, PILL_H));
+    ui.painter().rect_filled(pill, PILL_H / 2.0, pill_bg);
+    ui.painter()
+        .galley(pill.center() - pill_g.size() / 2.0, pill_g, pill_fg);
+    #[cfg(test)]
+    st.probe.pills.push(pill);
 
-    let bar = egui::Rect::from_min_size(
-        egui::pos2(rect.left() + name_w + COL_GAP, cy - 3.0),
-        vec2(bar_w, 6.0),
-    );
+    // Line 2: a bar of the same width for every job, then the numbers.
+    let line2_cy = rect.top() + LINE1_H + LINE_GAP + LINE2_H / 2.0;
+    let bar_w = BAR_W.min((rect.width() - DETAIL_MIN_W - COL_GAP).max(BAR_MIN_W));
+    let bar = egui::Rect::from_min_size(egui::pos2(rect.left(), line2_cy - 3.0), vec2(bar_w, 6.0));
     let (fill, text_color) = match row.status {
-        RowStatus::Finished => (t.ok, t.ok),
+        RowStatus::Finished => (t.ok, t.fg2),
         RowStatus::Failed => (bad(dark), bad(dark)),
-        RowStatus::Paused => (t.warn, t.warn),
-        RowStatus::Cancelled => (t.fg3, t.fg3),
-        RowStatus::Queued | RowStatus::Running => (t.accent, t.fg2),
+        RowStatus::Paused | RowStatus::Cancelled => (t.fg3, t.fg2),
+        RowStatus::Queued => (t.accent, t.fg2),
+        RowStatus::Running if row.stage == Stage::Downloading => (t.accent, t.fg2),
+        RowStatus::Running => (t.warn, t.fg2),
     };
     ui.painter().rect_filled(bar, 3.0, t.line);
     let mut done = bar;
     done.set_width(bar.width() * row.fraction());
     ui.painter().rect_filled(done, 3.0, fill);
+    #[cfg(test)]
+    st.probe.bars.push(bar);
 
-    let status_g = fit_text(ui, &row.status_text(), mono(12.0), text_color, STATUS_W);
+    let detail_x = bar.right() + COL_GAP;
+    let detail_g = fit_text(
+        ui,
+        &row.detail_text(),
+        mono(12.0),
+        text_color,
+        rect.right() - detail_x,
+    );
     ui.painter().galley(
-        egui::pos2(bar.right() + COL_GAP, cy - status_g.size().y / 2.0),
-        status_g,
+        egui::pos2(detail_x, line2_cy - detail_g.size().y / 2.0),
+        detail_g,
         text_color,
     );
 

@@ -258,6 +258,12 @@ fn log_drawer_shows_five_scrollable_lines_above_the_dock() {
                 inside(view, drawer),
                 "{size:?} dark={dark}: log text {view:?} outside the drawer {drawer:?}"
             );
+            let copy = probe.log_copy.expect("Copy button");
+            let close = probe.log_close.expect("close button");
+            assert!(
+                inside(copy, drawer) && copy.right() <= close.left(),
+                "{size:?} dark={dark}: Copy {copy:?} close {close:?} drawer {drawer:?}"
+            );
             assert!(
                 drawer.width() >= panel.width() - 1.0,
                 "{size:?} dark={dark}: drawer {} px is narrower than the dock {} px",
@@ -568,6 +574,45 @@ fn dock_buttons_respond_after_a_log_was_opened_by_click() {
                 )),
                 "{size:?} dark={dark}: Cancel after opening a log sent {sent:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn every_job_has_a_bar_of_the_same_width_and_a_pill_clear_of_the_buttons() {
+    let kinds = [Kind::Running, Kind::Paused, Kind::Finished, Kind::Failed];
+    for size in SIZES {
+        for dark in [false, true] {
+            let mut app = browse_app();
+            for (i, k) in kinds.iter().enumerate() {
+                add_job(&mut app, i as u64 + 1, *k, 0);
+            }
+            let mut app = laid_out(app, dark, size);
+            let probe = app.state_mut().dock.probe.clone();
+            assert_eq!(probe.bars.len(), kinds.len(), "{size:?}: bars");
+            assert_eq!(probe.pills.len(), kinds.len(), "{size:?}: pills");
+            let w = probe.bars[0].width();
+            assert!(w >= 120.0, "{size:?} dark={dark}: bar only {w} px");
+            for b in &probe.bars {
+                assert!(
+                    (b.width() - w).abs() < 0.5 && (b.left() - probe.bars[0].left()).abs() < 0.5,
+                    "{size:?} dark={dark}: bars differ {:?}",
+                    probe.bars
+                );
+            }
+            for pill in &probe.pills {
+                // Buttons on the same first line as the pill.
+                for btn in probe
+                    .buttons
+                    .iter()
+                    .filter(|b| (b.center().y - pill.center().y).abs() < 12.0)
+                {
+                    assert!(
+                        pill.right() + 4.0 <= btn.left(),
+                        "{size:?} dark={dark}: pill {pill:?} meets button {btn:?}"
+                    );
+                }
+            }
         }
     }
 }
