@@ -1078,3 +1078,49 @@ fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
     assert!(!texts.contains("Locked while a run is active."));
     let _ = (sent, s);
 }
+
+fn open_markdown_reply(f: &mut Fixture, reply: &str) {
+    let now = now_ms();
+    let mut s = Session::new_chat("llama3.2:3b", SessionLifetime::Persisted, now);
+    s.push_user("Show me", now);
+    let a = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(a, reply, "");
+    s.finish_assistant(a, AssistantStatus::Complete, None, now);
+    f.app.state_mut().chat.fold(ChatEvent::Opened(Box::new(s)));
+}
+
+#[test]
+fn assistant_replies_are_drawn_as_markdown_and_user_text_is_not() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(
+        &mut f,
+        "Here is **bold** text:\n\n- first item\n- second item\n\n```\nlet x = 1;\n```",
+    );
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(!texts.contains("**"), "{texts}");
+    assert!(!texts.contains("```"), "{texts}");
+    assert!(
+        texts.contains("bold") && texts.contains("first item"),
+        "{texts}"
+    );
+    assert!(texts.contains("let x = 1;"), "{texts}");
+}
+
+#[test]
+fn every_message_has_a_copy_button_inside_the_pane() {
+    for size in SIZES {
+        let mut f = fixture_with(1);
+        let mut h = Harness::new(false);
+        open_markdown_reply(&mut f, "A short answer.");
+        run(&mut f.app, &mut h, size, 3);
+        let probe = f.app.state_mut().chat_ui.probe.clone();
+        let pane = probe.pane.expect("pane");
+        assert_eq!(probe.copy_buttons.len(), 2, "{size:?}: one per message");
+        for b in &probe.copy_buttons {
+            assert!(inside(*b, pane), "{size:?}: {b:?} outside {pane:?}");
+        }
+    }
+}

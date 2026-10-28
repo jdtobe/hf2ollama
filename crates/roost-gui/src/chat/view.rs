@@ -4,6 +4,7 @@
 
 use super::state::{local_day, status_label, RailRow, RunBadge, SendAttempt};
 use crate::app::{AppState, View};
+use crate::browse::markdown::{self, Block};
 use crate::confirm::Confirm;
 use crate::runtime::BackendRequest;
 use crate::theme::{semibold, tokens, Tokens};
@@ -38,6 +39,9 @@ pub struct ChatUi {
     pub new_agent: NewAgent,
     /// What the rail's search field holds.
     pub rail_query: String,
+    /// Parsed Markdown of assistant replies, by message and the text length
+    /// it was parsed from, so a streaming reply is parsed once per chunk.
+    md_cache: std::collections::HashMap<roost_core::session::MessageId, (usize, Vec<Block>)>,
     #[cfg(test)]
     pub probe: ChatProbe,
 }
@@ -59,6 +63,8 @@ pub struct NewAgent {
 pub struct ChatProbe {
     pub rail: Option<egui::Rect>,
     pub rail_search: Option<egui::Rect>,
+    /// The Copy button of every message card painted this frame.
+    pub copy_buttons: Vec<egui::Rect>,
     pub pane: Option<egui::Rect>,
     pub composer: Option<egui::Rect>,
     pub header: Option<egui::Rect>,
@@ -702,7 +708,7 @@ fn pane(
                     i = end;
                     continue;
                 }
-                message_card(ui, t, m, &model, badge);
+                message_card(ui, t, m, &model, badge, &mut app.chat_ui);
                 if i == last && s.mode == SessionMode::Chat {
                     retry_row(ui, app, out, s, m);
                 }
@@ -956,7 +962,15 @@ pub(super) fn truncate_chars(text: &str, max: usize) -> String {
     format!("{cut}…")
 }
 
-fn message_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, model: &str, badge: RunBadge) {
+fn message_card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    m: &Message,
+    model: &str,
+    badge: RunBadge,
+    cx: &mut ChatUi,
+) {
+    let is_assistant = matches!(m.content, MessageContent::Assistant { .. });
     let (who, fill, body, status, error, thinking) = match &m.content {
         MessageContent::User { text, .. } => ("You", t.accent_soft, text.clone(), None, None, None),
         MessageContent::Assistant {
@@ -998,6 +1012,21 @@ fn message_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, model: &str, badge: 
                     };
                     tag(ui, label, fg, bg);
                 }
+                if !body.is_empty() {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let copy = ui
+                            .add(
+                                egui::Button::new(RichText::new("Copy").size(11.5).color(t.fg3))
+                                    .frame(false),
+                            )
+                            .on_hover_text("Copy this message");
+                        #[cfg(test)]
+                        cx.probe.copy_buttons.push(copy.rect);
+                        if copy.clicked() {
+                            ui.ctx().copy_text(body.clone());
+                        }
+                    });
+                }
             });
             if let Some(th) = thinking.filter(|x| !x.is_empty()) {
                 egui::CollapsingHeader::new(RichText::new("Thinking").size(12.0).color(t.fg3))
@@ -1017,6 +1046,16 @@ fn message_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, model: &str, badge: 
                     "Loading model…"
                 };
                 ui.label(RichText::new(wait).color(t.fg3));
+            } else if !body.is_empty() && is_assistant {
+                let len = body.len();
+                if cx.md_cache.len() > 400 {
+                    cx.md_cache.clear();
+                }
+                let entry = cx.md_cache.entry(m.id).or_default();
+                if entry.0 != len || entry.1.is_empty() {
+                    *entry = (len, markdown::parse_capped(&body).0);
+                }
+                crate::browse::about::render(ui, t, &entry.1, t.fg);
             } else if !body.is_empty() {
                 ui.add(
                     egui::Label::new(RichText::new(body).size(14.0).color(t.fg))

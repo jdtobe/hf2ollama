@@ -86,6 +86,11 @@ impl Cx {
     }
 }
 
+/// Draws parsed Markdown blocks in `color`; the chat view reuses this.
+pub(crate) fn render(ui: &mut egui::Ui, t: &Tokens, list: &[Block], color: Color32) {
+    blocks(ui, &mut Cx::default(), t, list, color);
+}
+
 const BODY: f32 = 13.5;
 const CODE: f32 = 12.5;
 
