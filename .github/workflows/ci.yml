@@ -33,7 +33,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
       - run: cargo fmt --check
       - run: python3 packaging/macos/make_icon.py --check
-      - run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_check_roost_identity.py
+      - run: python3 -B scripts/test_check_roost_identity.py
       - run: python3 scripts/check_roost_identity.py
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
