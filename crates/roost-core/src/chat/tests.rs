@@ -1983,3 +1983,103 @@ async fn a_branch_reports_whether_its_original_changed_or_is_gone() {
     })
     .await;
 }
+
+fn btw_done(h: &H, session: SessionId) -> Option<crate::session::BtwEntry> {
+    h.events().iter().rev().find_map(|e| match e {
+        ChatEvent::BtwDone { session: s, entry } if *s == session => Some(entry.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn a_side_question_is_answered_from_the_history_and_stays_out_of_the_chat() {
+    let srv = fake(vec![chat_route(reply("one")), chat_route(reply("side"))]).await;
+    let h = start(&srv).await;
+    let (id, at) = chat_with_one_exchange(&h).await;
+    h.cmd(ChatCommand::Btw {
+        session: id,
+        message: at,
+        question: "why?".into(),
+    });
+    h.wait("answered", |_| btw_done(&h, id).is_some()).await;
+    let entry = btw_done(&h, id).unwrap();
+    assert_eq!(
+        (entry.question.as_str(), entry.answer.as_str()),
+        ("why?", "side")
+    );
+    let body = &chat_bodies(&srv)[1]["messages"];
+    let roles: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["system", "user", "assistant", "user"]);
+    assert_eq!(body[3]["content"], "why?");
+    h.wait("saved", |_| {
+        h.try_read(id).is_some_and(|s| s.btw.len() == 1)
+    })
+    .await;
+    let s = h.read(id);
+    assert_eq!(s.messages.len(), 2, "the transcript is untouched");
+}
+
+#[tokio::test]
+async fn a_side_question_that_fails_says_so_and_is_not_kept() {
+    let srv = fake(vec![
+        chat_route(reply("one")),
+        chat_route(vec![Step::Close]),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let (id, at) = chat_with_one_exchange(&h).await;
+    h.cmd(ChatCommand::Btw {
+        session: id,
+        message: at,
+        question: "why?".into(),
+    });
+    h.wait("failed", |evs| {
+        evs.iter()
+            .any(|e| matches!(e, ChatEvent::BtwFailed { session, .. } if *session == id))
+    })
+    .await;
+    assert!(h.read(id).btw.is_empty());
+}
+
+#[tokio::test]
+async fn adding_a_side_question_appends_it_and_deleting_forgets_it() {
+    let srv = fake(vec![chat_route(reply("one")), chat_route(reply("side"))]).await;
+    let h = start(&srv).await;
+    let (id, at) = chat_with_one_exchange(&h).await;
+    h.cmd(ChatCommand::Btw {
+        session: id,
+        message: at,
+        question: "why?".into(),
+    });
+    h.wait("answered", |_| btw_done(&h, id).is_some()).await;
+    let entry = btw_done(&h, id).unwrap();
+    h.cmd(ChatCommand::BtwAdd {
+        session: id,
+        id: entry.id,
+    });
+    h.wait("added", |_| {
+        h.try_read(id).is_some_and(|s| s.messages.len() == 4)
+    })
+    .await;
+    let s = h.read(id);
+    assert_eq!(texts(&s)[3], ("assistant:Complete".into(), "side".into()));
+    assert!(s.btw[0].added);
+    h.cmd(ChatCommand::BtwDelete {
+        session: id,
+        id: entry.id,
+    });
+    h.wait("deleted", |_| {
+        h.try_read(id).is_some_and(|s| s.btw.is_empty())
+    })
+    .await;
+    assert_eq!(
+        h.read(id).messages.len(),
+        4,
+        "deleting does not undo the add"
+    );
+}

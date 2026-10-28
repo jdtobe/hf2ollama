@@ -5,15 +5,15 @@
 
 use super::agent_loop::{AgentRun, ToolRun};
 use super::context::{build_request, window};
-use super::run::{drive, RunMsg};
+use super::run::{answer_once, drive, RunMsg};
 use super::types::{
     BranchState, ChatCommand, ChatEvent, EventSink, RunOutcome, SendRejection, TurnOutcome,
 };
 use crate::error::Error;
 use crate::ollama::{ChatRequestBody, OllamaClient, StreamEvent};
 use crate::session::{
-    AssistantStatus, Message, MessageContent, MessageId, RunId, Session, SessionError, SessionId,
-    SessionLifetime, SessionMode, TurnId, UserDelivery,
+    AssistantStatus, BtwEntry, BtwId, Message, MessageContent, MessageId, RunId, Session,
+    SessionError, SessionId, SessionLifetime, SessionMode, TurnId, UserDelivery,
 };
 use crate::store::{live_row, IndexRow, LoadError, StoreWarning, Writer};
 use std::collections::HashMap;
@@ -326,6 +326,23 @@ impl Manager {
                 model,
             } => self.branch(session, message, model).await,
             ChatCommand::CheckBranch(id) => self.check_branch(id).await,
+            ChatCommand::Btw {
+                session,
+                message,
+                question,
+            } => self.btw(session, message, question).await,
+            ChatCommand::BtwAdd { session, id } => self.btw_add(session, id).await,
+            ChatCommand::BtwDelete { session, id } => {
+                self.edit(session, move |s| {
+                    if s.delete_btw(id) {
+                        Ok(())
+                    } else {
+                        Err(SessionError::UnknownMessage)
+                    }
+                })
+                .await;
+                self.emit(ChatEvent::BtwDeleted { session, id });
+            }
             ChatCommand::SwitchVersion { session, after, to } => {
                 self.switch_version(session, after, to).await
             }
@@ -454,6 +471,102 @@ impl Manager {
             }
         }
         self.emit_rows().await;
+    }
+
+    /// Asks a side question about the history through `message`. It runs on
+    /// its own, so it works while a reply or an agent run is going.
+    async fn btw(&mut self, id: SessionId, message: MessageId, question: String) {
+        let question = question.trim().to_string();
+        if question.is_empty() {
+            self.session_error(Some(id), "Type a question first.".into());
+            return;
+        }
+        if let Err(e) = self.ensure(id).await {
+            self.session_error(Some(id), load_error_text(&e));
+            return;
+        }
+        let Some(live) = self.sessions.get(&id) else {
+            return;
+        };
+        let Some(at) = live.s.messages.iter().position(|m| m.id == message) else {
+            self.session_error(Some(id), "That message is no longer in this chat.".into());
+            return;
+        };
+        let now = now_ms();
+        let mut context = live.s.messages[..=at].to_vec();
+        context.push(Message {
+            id: MessageId::new(),
+            created_at_ms: now,
+            content: MessageContent::User {
+                text: question.clone(),
+                delivery: UserDelivery::Normal,
+            },
+        });
+        let ctx = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
+        let win = window(live.s.model_options.num_ctx, ctx);
+        let trimmed = match build_request(CHAT_SYSTEM_PROMPT, &context, win) {
+            Ok(t) => t,
+            Err(e) => {
+                self.session_error(Some(id), e.to_string());
+                return;
+            }
+        };
+        let body = ChatRequestBody {
+            model: live.s.model.clone(),
+            messages: trimmed.messages,
+            num_ctx: win,
+            temperature: live.s.model_options.temperature,
+            seed: live.s.model_options.seed,
+            think: live.s.model_options.think,
+            tools: None,
+        };
+        let entry = BtwEntry {
+            id: BtwId::new(),
+            at: message,
+            question: question.clone(),
+            answer: String::new(),
+            model: live.s.model.clone(),
+            asked_at_ms: now,
+            added: false,
+        };
+        self.emit(ChatEvent::BtwStarted {
+            session: id,
+            id: entry.id,
+            message,
+            question,
+        });
+        let (client, tx) = (self.client.clone(), self.run_tx.clone());
+        tokio::spawn(async move {
+            let result = answer_once(client, body).await;
+            let _ = tx.send(RunMsg::Btw {
+                session: id,
+                entry,
+                result,
+            });
+        });
+    }
+
+    /// Appends a kept side question to the conversation. Only when idle.
+    async fn btw_add(&mut self, id: SessionId, entry: BtwId) {
+        if self
+            .sessions
+            .get(&id)
+            .is_some_and(|l| !matches!(l.slot, Slot::Idle))
+        {
+            self.session_error(Some(id), "Wait for the current reply to finish.".into());
+            return;
+        }
+        self.edit(id, move |s| {
+            if s.add_btw_to_chat(entry, now_ms()) {
+                Ok(())
+            } else {
+                Err(SessionError::UnknownMessage)
+            }
+        })
+        .await;
+        if let Some(live) = self.sessions.get(&id) {
+            self.emit(ChatEvent::Opened(Box::new(live.s.clone())));
+        }
     }
 
     /// Starts a new chat from `session`'s history through `message`.
@@ -925,6 +1038,32 @@ impl Manager {
                 };
                 self.proceed(session, intent, info).await;
             }
+            RunMsg::Btw {
+                session,
+                mut entry,
+                result,
+            } => match result {
+                Ok(answer) => {
+                    entry.answer = answer;
+                    let kept = entry.clone();
+                    self.edit(session, move |s| {
+                        let before = s.updated_at_ms;
+                        s.push_btw(entry);
+                        s.updated_at_ms = before;
+                        Ok(())
+                    })
+                    .await;
+                    self.emit(ChatEvent::BtwDone {
+                        session,
+                        entry: kept,
+                    });
+                }
+                Err(message) => self.emit(ChatEvent::BtwFailed {
+                    session,
+                    id: entry.id,
+                    message,
+                }),
+            },
             RunMsg::Capabilities { model, info } => {
                 if let Ok(i) = info {
                     self.ctx_cache.insert(model.clone(), i);

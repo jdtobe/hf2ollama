@@ -1,7 +1,9 @@
 //! The vocabulary between the GUI and the chat manager: intent commands in,
 //! ordered events out.
 
-use crate::session::{Message, MessageId, Permission, SessionId, SessionLifetime, TurnId};
+use crate::session::{
+    BtwEntry, BtwId, Message, MessageId, Permission, SessionId, SessionLifetime, TurnId,
+};
 use crate::store::IndexRow;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,6 +57,23 @@ pub enum ChatCommand {
         session: SessionId,
         message: MessageId,
         model: Option<String>,
+    },
+    /// Ask a side question about the conversation up to `message`. The
+    /// question and answer are kept apart from the transcript.
+    Btw {
+        session: SessionId,
+        message: MessageId,
+        question: String,
+    },
+    /// Append a side question and its answer to the conversation.
+    BtwAdd {
+        session: SessionId,
+        id: BtwId,
+    },
+    /// Forget a side question.
+    BtwDelete {
+        session: SessionId,
+        id: BtwId,
     },
     /// Compare a branch's original with what the branch was made from; answered
     /// with `BranchChecked`.
@@ -186,6 +205,27 @@ pub enum ChatEvent {
     ModelMissing {
         session: SessionId,
         model: String,
+    },
+    /// A side question was sent.
+    BtwStarted {
+        session: SessionId,
+        id: BtwId,
+        message: MessageId,
+        question: String,
+    },
+    BtwDone {
+        session: SessionId,
+        entry: BtwEntry,
+    },
+    BtwFailed {
+        session: SessionId,
+        id: BtwId,
+        message: String,
+    },
+    /// A side question was forgotten.
+    BtwDeleted {
+        session: SessionId,
+        id: BtwId,
     },
     /// How a branch's original compares with when the branch was made.
     BranchChecked {
