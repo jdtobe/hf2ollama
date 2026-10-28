@@ -112,6 +112,7 @@ pub(super) struct ModelInfo {
 pub(super) enum Intent {
     Send(String),
     Retry,
+    Regenerate,
 }
 
 pub(super) struct Run {
@@ -310,6 +311,7 @@ impl Manager {
             ChatCommand::Delete(id) => self.delete(id).await,
             ChatCommand::Send { session, text } => self.begin(session, Intent::Send(text)).await,
             ChatCommand::Retry(id) => self.begin(id, Intent::Retry).await,
+            ChatCommand::Regenerate(id) => self.begin(id, Intent::Regenerate).await,
             ChatCommand::Stop(id) => self.stop(id).await,
             ChatCommand::CreateAgent {
                 lifetime,
@@ -560,6 +562,26 @@ impl Manager {
                     return;
                 }
             }
+            Intent::Regenerate => {
+                let m = &live.s.messages;
+                let ok = live.s.mode == SessionMode::Chat
+                    && m.len() >= 2
+                    && matches!(
+                        m.last().map(|m| &m.content),
+                        Some(MessageContent::Assistant {
+                            status: AssistantStatus::Complete,
+                            ..
+                        })
+                    )
+                    && matches!(
+                        m.get(m.len() - 2).map(|m| &m.content),
+                        Some(MessageContent::User { .. })
+                    );
+                if !ok {
+                    self.session_error(Some(id), "There is no reply to regenerate.".into());
+                    return;
+                }
+            }
             Intent::Send(_) => {}
         }
         let model = live.s.model.clone();
@@ -600,12 +622,17 @@ impl Manager {
         };
         let now = now_ms();
         let before = live.s.updated_at_ms;
+        let mut removed = None;
         let user = match &intent {
             Intent::Send(text) => {
                 let uid = live.s.push_user(text, now);
                 live.s.messages.iter().find(|m| m.id == uid).cloned()
             }
             Intent::Retry => None,
+            Intent::Regenerate => {
+                removed = live.s.messages.pop();
+                None
+            }
         };
         let win = window(live.s.model_options.num_ctx, show_ctx);
         let trimmed = match build_request(CHAT_SYSTEM_PROMPT, &live.s.messages, win) {
@@ -615,6 +642,8 @@ impl Manager {
                     live.s.messages.pop();
                     live.s.updated_at_ms = before;
                 }
+                // A failed regenerate keeps the reply it meant to replace.
+                live.s.messages.extend(removed);
                 live.slot = Slot::Idle;
                 let close = live.close_when_idle;
                 self.emit(ChatEvent::SendRejected {

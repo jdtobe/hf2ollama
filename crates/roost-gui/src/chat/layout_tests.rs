@@ -1124,3 +1124,70 @@ fn every_message_has_a_copy_button_inside_the_pane() {
         }
     }
 }
+
+#[test]
+fn headings_tables_quotes_and_rules_in_a_reply_are_not_shown_as_markup() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(
+        &mut f,
+        "# Title\n\n## Section\n\n> quoted words\n\n---\n\n| Name | Size |\n|------|------|\n| a | 1 |\n| b | 2 |\n\n1. one\n2. two",
+    );
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    for markup in [
+        "# Title",
+        "## Section",
+        "> quoted",
+        "|------|",
+        "| Name",
+        "---",
+    ] {
+        assert!(!texts.contains(markup), "{markup:?} shown raw in:\n{texts}");
+    }
+    for words in [
+        "Title",
+        "Section",
+        "quoted words",
+        "Name",
+        "Size",
+        "one",
+        "two",
+    ] {
+        assert!(texts.contains(words), "{words:?} missing in:\n{texts}");
+    }
+}
+
+#[test]
+fn a_finished_reply_offers_regenerate_and_clicking_it_sends_the_command() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "A short answer.");
+    let id = f.app.state_mut().chat.open.as_ref().unwrap().id;
+    run(&mut f.app, &mut h, size, 3);
+    let _ = sent_chat_commands(&f.sent);
+    let button = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .regenerate
+        .expect("Regenerate button");
+    click(&mut f.app, &mut h, size, button.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Regenerate(s)] if *s == id),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn a_failed_reply_offers_retry_and_not_regenerate() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    assert!(f.app.state_mut().chat_ui.probe.regenerate.is_none());
+}

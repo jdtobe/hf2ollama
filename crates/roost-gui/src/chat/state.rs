@@ -470,6 +470,15 @@ impl ChatState {
         SendAttempt::Sent(ChatCommand::Retry(id))
     }
 
+    /// Marks a regenerate as in flight, like `try_retry`.
+    pub fn try_regenerate(&mut self, id: SessionId) -> SendAttempt {
+        if self.is_running(id) {
+            return SendAttempt::Busy;
+        }
+        self.sending.insert(id);
+        SendAttempt::Sent(ChatCommand::Regenerate(id))
+    }
+
     /// The model for a new chat: the newest saved session's, if installed,
     /// else the first installed model alphabetically.
     pub fn default_model(&self, installed: &[String]) -> Option<String> {

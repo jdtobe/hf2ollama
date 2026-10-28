@@ -65,6 +65,8 @@ pub struct ChatProbe {
     pub rail_search: Option<egui::Rect>,
     /// The Copy button of every message card painted this frame.
     pub copy_buttons: Vec<egui::Rect>,
+    /// The Regenerate button under the last reply, when shown.
+    pub regenerate: Option<egui::Rect>,
     pub pane: Option<egui::Rect>,
     pub composer: Option<egui::Rect>,
     pub header: Option<egui::Rect>,
@@ -950,6 +952,26 @@ fn retry_row(
     if retryable && !app.chat.is_running(s.id) && small_button(ui, "Retry") {
         if let SendAttempt::Sent(cmd) = app.chat.try_retry(s.id) {
             out.push(BackendRequest::Chat(cmd));
+        }
+    }
+    let finished = matches!(
+        &last.content,
+        MessageContent::Assistant {
+            status: AssistantStatus::Complete,
+            ..
+        }
+    );
+    if finished && s.messages.len() >= 2 && !app.chat.is_running(s.id) {
+        let r = crate::widgets::small_button_response(ui, "Regenerate")
+            .on_hover_text("Replace this reply with a new one");
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.regenerate = Some(r.rect);
+        }
+        if r.clicked() {
+            if let SendAttempt::Sent(cmd) = app.chat.try_regenerate(s.id) {
+                out.push(BackendRequest::Chat(cmd));
+            }
         }
     }
 }
