@@ -1581,3 +1581,22 @@ async fn deleting_a_session_in_the_middle_of_a_tool_run_leaves_nothing_behind() 
     assert!(!h.file(id).exists());
     assert!(run_ends(&h.events()).is_empty());
 }
+
+#[tokio::test]
+async fn changing_an_idle_agents_settings_reports_them() {
+    let ws = workspace();
+    let other = workspace();
+    let srv = fake_agent(vec![]).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.cmd(ChatCommand::SetToolEnabled(id, "find_files".into(), false));
+    h.cmd(ChatCommand::SetStepBudget(id, 7));
+    h.cmd(ChatCommand::SetWorkspace(id, other.path().to_path_buf()));
+    h.wait("settings", |e| {
+        e.iter().any(|e| {
+            matches!(e, ChatEvent::AgentSettings { step_budget: 7, workspace: Some(w), tools, .. }
+            if w == other.path() && tools.tools.get("find_files") == Some(&false))
+        })
+    })
+    .await;
+}

@@ -13,7 +13,9 @@ use crate::agent::registry;
 use crate::agent::tools::Limits;
 use crate::agent::{ToolError, Workspace};
 use crate::ollama::ChatRequestBody;
-use crate::session::{MessageId, RunId, Session, SessionId, SessionLifetime, ToolStatus, TurnId};
+use crate::session::{
+    MessageId, RunId, Session, SessionId, SessionLifetime, SessionMode, ToolStatus, TurnId,
+};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -147,6 +149,18 @@ impl Manager {
             return;
         }
         self.edit(id, f).await;
+        if let Some(live) = self
+            .sessions
+            .get(&id)
+            .filter(|l| l.s.mode == SessionMode::Agent)
+        {
+            self.emit(ChatEvent::AgentSettings {
+                session: id,
+                workspace: live.s.workspace.clone(),
+                step_budget: live.s.step_budget,
+                tools: live.s.effective_tools.clone(),
+            });
+        }
     }
 
     // ------------------------------------------------------------ starting

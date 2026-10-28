@@ -150,6 +150,13 @@ pub enum ChatEvent {
         model: String,
         tools: bool,
     },
+    /// An idle agent's folder, step budget or tool settings changed.
+    AgentSettings {
+        session: SessionId,
+        workspace: Option<PathBuf>,
+        step_budget: u32,
+        tools: crate::session::EffectiveToolConfig,
+    },
     /// The model is not installed; the user should pick another.
     ModelMissing {
         session: SessionId,

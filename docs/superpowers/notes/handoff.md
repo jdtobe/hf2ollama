@@ -100,3 +100,15 @@ Taking a screenshot on macOS (the display must be unlocked): run the release bin
 - The detail pane budget (`browse/detail.rs`): the Files/About switch is pinned above the scroll area and counted in the measured notices height; `MIN_SCROLL_H` is 108 and `TAB_SWITCH_H` is 40. At the 900x640 minimum window the import card must show its last line ("Temporary space..."). A layout test does not cover that line; check it with a screenshot after any change there.
 - `segmented_nav` (`widgets.rs`) always lays out in one row and sizes each segment by the bolder face.
 - Headless layout tests run both themes, at least three frames, at 1180x820 and 900x640.
+
+## Agents (stage 3): where it stopped (2026-10-28, usage limit)
+
+Draft PR #10 (`feat/roost-agents`) has the finished engine: workspace jail, four read tools, registry, agent loop with steering/stop/budget, tool calls in the Ollama client, agent request building, GUI view-model. All tested.
+
+Local, unpushed WIP commit on top: Work-tab pieces in `crates/roost-gui/src/chat/view.rs` (`show_work`, `new_agent_panel`, `agent_bar`, `tool_card`, queued-steering chips). They compile but are NOT wired in yet, so clippy `-D warnings` will fail on dead code until finished:
+
+1. `app.rs`: add `View::Work` between Chat and Browse (label, `ALL`, dispatch to `chat::view::show_work`, nav badge from agent runs).
+2. `message_card`: call `tool_card` for `MessageContent::Tool` (early return); hide Retry for agents (done in `pane`); composer hint text for agents (steering while running).
+3. Menu: View > Work (⌘2; Browse ⌘3, Installed ⌘4, add `Key::Num4` to `menu::model` and `native::code_for`), File > New Agent…; update the shortcut tests in `menu` and `app.rs`.
+4. Tests: Work-tab layout at 900x640 in all themes, new-agent form (Start disabled until the model supports tools), tool cards inside the pane, steering chip.
+5. Docs: README, CHANGELOG, ARCHITECTURE, ROADMAP (stage 3 implemented), then mark PR #10 ready.

@@ -245,6 +245,18 @@ impl ChatState {
                     self.notice = message;
                 }
             }
+            ChatEvent::AgentSettings {
+                session,
+                workspace,
+                step_budget,
+                tools,
+            } => {
+                if let Some(s) = self.open.as_mut().filter(|s| s.id == session) {
+                    s.workspace = workspace;
+                    s.step_budget = step_budget;
+                    s.effective_tools = tools;
+                }
+            }
             ChatEvent::ModelCapabilities { model, tools } => {
                 self.tool_support.insert(model, tools);
             }
