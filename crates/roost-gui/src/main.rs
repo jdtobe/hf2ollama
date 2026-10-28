@@ -5,6 +5,7 @@ mod confirm;
 mod dock;
 mod identity;
 mod installed;
+mod menu;
 mod quit;
 #[cfg(test)]
 mod quit_tests;
