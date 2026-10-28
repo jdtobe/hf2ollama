@@ -1,7 +1,6 @@
 //! Tests of the About tab: chips, states, layout and links.
 
 use super::about::{chips, MAX_LANGUAGE_CHIPS};
-use super::state::DetailTab;
 use super::test_util::Harness;
 use crate::app::App;
 use eframe::egui::{self, vec2, Pos2, Rect};
@@ -62,6 +61,7 @@ fn new_app() -> App {
     st.ollama = Some(Some("0.9".into()));
     st.browse.on_model_info(ID, Ok(info()));
     st.browse.select_repo(ID);
+    st.browse.choose_recommended();
     app
 }
 
@@ -75,7 +75,6 @@ fn card(md: &str) -> Result<Option<ModelCard>, String> {
 fn about_app(result: Option<Result<Option<ModelCard>, String>>) -> App {
     let mut app = new_app();
     let st = app.state_mut();
-    st.browse.set_tab(DetailTab::About);
     if let Some(r) = result {
         st.browse.on_model_card(ID, r);
     }
@@ -214,69 +213,6 @@ fn chips_do_not_repeat_the_pipeline_tag() {
 
 // ---- switch and states ----
 
-/// Equal to within a pixel (layout settles in sub-pixel steps).
-fn same_place(a: Rect, b: Rect) -> bool {
-    (a.min - b.min).abs().max_elem() < 1.0 && (a.max - b.max).abs().max_elem() < 1.0
-}
-
-#[test]
-fn switch_is_pinned_above_the_scroll_area_and_never_moves() {
-    for size in SIZES {
-        for dark in [false, true] {
-            let mut app = about_app(Some(card(&long_card())));
-            app.state_mut().browse.set_card_expanded(true);
-            let mut h = Harness::new(dark);
-            run(&mut app, &mut h, size, 10);
-            let first = app.state_mut().browse.probe.switch.expect("switch");
-            let view = pane_viewport(&mut app);
-            assert!(
-                first.height() < 40.0 && first.width() > first.height() * 2.0,
-                "{size:?} dark={dark}: tabs are not one row: {first:?}"
-            );
-            assert!(
-                first.bottom() <= view.top() + 0.5,
-                "{size:?} dark={dark}: switch {first:?} overlaps the scroll area {view:?}"
-            );
-            scroll_by(&mut app, &mut h, size, -500.0);
-            let scrolled = app.state_mut().browse.probe.switch.expect("switch");
-            assert!(
-                same_place(first, scrolled),
-                "{size:?} dark={dark}: moved on scroll"
-            );
-            app.state_mut().browse.set_tab(DetailTab::Files);
-            run(&mut app, &mut h, size, 6);
-            let files = app.state_mut().browse.probe.switch.expect("switch");
-            assert!(
-                same_place(first, files),
-                "{size:?} dark={dark}: moved on tab change"
-            );
-        }
-    }
-}
-
-#[test]
-fn clicking_the_pinned_switch_changes_tab_without_moving_it() {
-    for size in SIZES {
-        for dark in [false, true] {
-            let mut app = new_app();
-            let mut h = Harness::new(dark);
-            run(&mut app, &mut h, size, 8);
-            let sw = app.state_mut().browse.probe.switch.expect("switch");
-            let about = Pos2::new(sw.right() - 20.0, sw.center().y);
-            click(&mut app, &mut h, size, about);
-            assert_eq!(app.state_mut().browse.tab(), DetailTab::About);
-            let after = app.state_mut().browse.probe.switch.expect("switch");
-            assert!(
-                same_place(sw, after),
-                "{size:?} dark={dark}: {sw:?} {after:?}"
-            );
-            let files = Pos2::new(sw.left() + 20.0, sw.center().y);
-            click(&mut app, &mut h, size, files);
-            assert_eq!(app.state_mut().browse.tab(), DetailTab::Files);
-        }
-    }
-}
-
 #[test]
 fn about_shows_loading_empty_error_and_card_states() {
     for dark in [false, true] {
@@ -395,19 +331,6 @@ fn about_keeps_the_pinned_card_and_the_scroll_minimum() {
             );
         }
     }
-}
-
-#[test]
-fn recommended_row_scroll_request_applies_only_to_the_files_tab() {
-    let size = SIZES[0];
-    let mut h = Harness::new(false);
-    let mut app = new_app();
-    app.state_mut().browse.set_tab(DetailTab::About);
-    run(&mut app, &mut h, size, 8);
-    assert!(
-        app.state_mut().browse.scroll_request_pending(),
-        "the scroll request was used up on the About tab"
-    );
 }
 
 // ---- links ----

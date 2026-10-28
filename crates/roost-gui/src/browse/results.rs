@@ -123,12 +123,7 @@ pub fn section(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendReque
         (_, true) => visible.to_string(),
         (_, false) => format!("{visible} of {loaded}"),
     };
-    let title = if app.query.trim().is_empty() {
-        "Popular on Hugging Face"
-    } else {
-        "Hugging Face"
-    };
-    section_header(ui, title, &count);
+    section_header(ui, "Hugging Face", &count);
     match app.browse.search.clone() {
         SearchStatus::Loading if loaded == 0 => {
             message_box(ui, |ui| {

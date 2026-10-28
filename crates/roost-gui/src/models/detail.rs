@@ -8,8 +8,8 @@ use crate::installed::state::{
 };
 use crate::runtime::BackendRequest;
 use crate::theme::{mono, semibold, tokens, Tokens};
-use crate::widgets::{ellipsize_middle, primary_button, small_button_response};
-use eframe::egui::{self, vec2, Align2, Color32, FontId, Margin, RichText, Sense};
+use crate::widgets::{band, ellipsize_middle, primary_button};
+use eframe::egui::{self, vec2, Align2, Color32, FontId, RichText, Sense};
 use roost_core::chat::ChatCommand;
 use roost_core::session::SessionLifetime;
 use std::time::{Instant, SystemTime};
@@ -34,33 +34,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     }
 }
 
-/// One full-width band of a detail page. The bands stack: the header
-/// (tinted with the theme's accent), the details (the second surface) and
-/// the description (the page surface), so every theme keeps its own look.
-pub fn band<R>(
-    ui: &mut egui::Ui,
-    fill: Color32,
-    line: Option<Color32>,
-    min_height: f32,
-    add: impl FnOnce(&mut egui::Ui) -> R,
-) -> (R, egui::Rect) {
-    let out = egui::Frame::new()
-        .fill(fill)
-        .inner_margin(Margin::symmetric(24, 16))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.set_min_height(min_height);
-            ui.spacing_mut().item_spacing.y = 10.0;
-            add(ui)
-        });
-    let rect = out.response.rect;
-    if let Some(c) = line {
-        ui.painter()
-            .hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, c));
-    }
-    (out.inner, rect)
-}
-
 fn installed(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -74,11 +47,12 @@ fn installed(
     let panel = egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(t.surface))
         .show(ui, |ui| {
+            // Measured outside the scroll area, where it is the real height.
+            let view_h = ui.available_height();
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let view_h = ui.available_height();
                     let (_, top) = band(ui, t.accent_soft, Some(t.line), 0.0, |ui| {
                         ui.add(
                             egui::Label::new(RichText::new(&name).font(mono(18.0)).color(t.fg))
@@ -170,13 +144,28 @@ fn actions(
                         .color(Color32::WHITE),
                 )
                 .fill(fill)
-                .min_size(vec2(0.0, 30.0)),
+                .min_size(vec2(0.0, 32.0)),
             )
         } else {
-            ui.add(
-                egui::Button::new(RichText::new("Delete…").size(13.0).color(bad(dark)))
-                    .min_size(vec2(0.0, 30.0)),
-            )
+            // A red trash can, like the delete controls elsewhere.
+            let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 32.0), Sense::click());
+            let resp = resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Delete this model…");
+            let fill = if resp.hovered() {
+                bad(dark).gamma_multiply(0.18)
+            } else {
+                t.surface
+            };
+            ui.painter().rect(
+                rect,
+                6.0,
+                fill,
+                egui::Stroke::new(1.0, bad(dark).gamma_multiply(0.6)),
+                egui::StrokeKind::Inside,
+            );
+            crate::icons::paint(ui.painter(), rect, crate::icons::Icon::Trash, bad(dark));
+            resp
         };
         #[cfg(test)]
         {
@@ -280,7 +269,16 @@ fn details(ui: &mut egui::Ui, app: &mut AppState, row: &InstalledRow, t: &Tokens
         if shown != cmd {
             r.on_hover_text(&cmd);
         }
-        copy = small_button_response(ui, "Copy").clicked();
+        let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+        let resp = resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Copy the command");
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, 5.0, t.line);
+        }
+        let colour = if resp.hovered() { t.fg } else { t.fg3 };
+        crate::icons::paint(ui.painter(), rect, crate::icons::Icon::Copy, colour);
+        copy = resp.clicked();
     });
     if copy {
         ui.ctx().copy_text(cmd.clone());

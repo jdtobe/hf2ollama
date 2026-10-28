@@ -59,8 +59,8 @@ Decided with the user:
    Delete, menu and navigation changes. The old Installed table and the filter
    rail are removed with their tests.
 2. **Cross-links and About:** the installed badge on results, the About card on
-   installed models that came from a repository, "Popular for your hardware"
-   when the search is empty.
+   installed models that came from a repository, a constant "Hugging Face" section title (a "Popular" title
+   was tried and dropped: it stops being true when the sort order changes).
 
 ## Testing
 

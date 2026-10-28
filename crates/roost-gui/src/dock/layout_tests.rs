@@ -92,6 +92,8 @@ fn browse_app_chan(
             }),
         );
         st.browse.select_repo(id);
+        st.browse.choose_recommended();
+        st.browse.choose_recommended();
         return (app, sent);
     }
     st.browse.on_model_info(
@@ -114,6 +116,7 @@ fn browse_app_chan(
         }),
     );
     st.browse.select_repo(id);
+    st.browse.choose_recommended();
     (app, sent)
 }
 

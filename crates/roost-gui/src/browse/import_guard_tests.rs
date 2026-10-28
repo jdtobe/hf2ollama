@@ -57,6 +57,7 @@ fn new_app() -> (App, Receiver<BackendRequest>) {
     st.ollama = Some(Some("0.9".into()));
     st.browse.on_model_info(ID, Ok(info()));
     st.browse.select_repo(ID);
+    st.browse.choose_recommended();
     (app, req_rx)
 }
 

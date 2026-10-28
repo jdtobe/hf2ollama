@@ -95,9 +95,6 @@ pub fn friendly_error(raw: &str) -> String {
     raw.to_string()
 }
 
-/// How many frames a new plan keeps asking the options table to scroll.
-pub const SCROLL_REQUEST_FRAMES: u8 = 3;
-
 /// At most this many repository lookups run at once.
 pub const MAX_INFO_IN_FLIGHT: usize = 4;
 /// Related GGUF repositories shown for an unsupported one.
@@ -124,8 +121,6 @@ pub struct BrowseState {
     selected: Option<String>,
     plan: Option<Plan>,
     selected_option: Option<usize>,
-    scroll_frames_left: u8,
-    tab: DetailTab,
     card_expanded: bool,
     cards: CardStore,
     #[cfg(test)]
@@ -215,8 +210,6 @@ impl BrowseState {
             selected: None,
             plan: None,
             selected_option: None,
-            scroll_frames_left: 0,
-            tab: DetailTab::Files,
             card_expanded: false,
             cards: CardStore::default(),
             #[cfg(test)]
@@ -474,12 +467,9 @@ impl BrowseState {
                 rows: Vec::new(),
             },
         };
-        self.selected_option = plan.rows.iter().position(|r| r.recommended);
-        self.scroll_frames_left = if self.selected_option.is_some() {
-            SCROLL_REQUEST_FRAMES
-        } else {
-            0
-        };
+        // Nothing is chosen until the user picks a file: the import card
+        // appears with the first choice.
+        self.selected_option = None;
         self.plan = Some(plan);
         self.rederive_name();
     }
@@ -487,21 +477,6 @@ impl BrowseState {
     fn rederive_name(&mut self) {
         if !self.name_edited {
             self.name = self.default_model_name();
-        }
-    }
-
-    pub fn tab(&self) -> DetailTab {
-        self.tab
-    }
-
-    /// Switches the detail tab. Opening About for the first time asks for
-    /// the selected repository's model card.
-    pub fn set_tab(&mut self, tab: DetailTab) {
-        self.tab = tab;
-        if tab == DetailTab::About {
-            if let Some(id) = self.selected.clone() {
-                self.cards.want(&id);
-            }
         }
     }
 
@@ -579,7 +554,7 @@ impl BrowseState {
             return;
         }
         self.selected = Some(id.to_string());
-        self.tab = DetailTab::Files;
+        self.cards.want(id);
         self.card_expanded = false;
         if !self.requested.contains(id) {
             self.queued.retain(|q| q != id);
@@ -605,14 +580,31 @@ impl BrowseState {
         }
         self.machine = machine;
         self.apply_filters();
-        let (chosen, scroll) = (self.selected_option, self.scroll_frames_left);
+        let chosen = self.selected_option;
         self.rebuild_plan();
         let rows = self.plan.as_ref().map_or(0, |p| p.rows.len());
         if let Some(i) = chosen.filter(|&i| i < rows) {
             self.selected_option = Some(i);
         }
-        self.scroll_frames_left = scroll;
         self.rederive_name();
+    }
+
+    /// Forgets the chosen option.
+    #[cfg(test)]
+    pub fn unchoose(&mut self) {
+        self.selected_option = None;
+    }
+
+    /// Picks the recommended option, as a click on it would.
+    #[cfg(test)]
+    pub fn choose_recommended(&mut self) {
+        if let Some(i) = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.rows.iter().position(|r| r.recommended))
+        {
+            self.select_option(i);
+        }
     }
 
     pub fn select_option(&mut self, idx: usize) {
@@ -711,20 +703,6 @@ impl BrowseState {
         None
     }
 
-    /// True for the first few frames after a repository's plan was built:
-    /// the options table should scroll the recommended row into view.
-    pub fn take_scroll_request(&mut self) -> bool {
-        let asked = self.scroll_frames_left > 0;
-        self.scroll_frames_left = self.scroll_frames_left.saturating_sub(1);
-        asked
-    }
-
-    /// True while a scroll request is still running, so the UI keeps
-    /// repainting until it has completed.
-    pub fn scroll_request_pending(&self) -> bool {
-        self.scroll_frames_left > 0
-    }
-
     /// True when the selected repository loaded but is marked gated.
     pub fn selected_info_gated(&self) -> bool {
         matches!(
@@ -745,14 +723,6 @@ impl BrowseState {
             Some(Err(e)) if is_gated_error(e)
         )
     }
-}
-
-/// Which part of the detail pane's scroll area is shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DetailTab {
-    #[default]
-    Files,
-    About,
 }
 
 /// At most this many model-card downloads run at once.
@@ -902,6 +872,7 @@ mod tests {
         let mut st = BrowseState::new(m);
         st.on_model_info(repo.0, Ok(repo.1));
         st.select_repo(repo.0);
+        st.choose_recommended();
         st
     }
 
@@ -1102,6 +1073,7 @@ mod tests {
         let (id, i) = gguf_repo();
         st.on_model_info(id, Ok(i));
         st.select_repo(id);
+        st.choose_recommended();
         assert!(
             st.next_related_request().is_none(),
             "supported repos need none"
@@ -1139,6 +1111,7 @@ mod tests {
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.on_model_info(id, Ok(info(id, files, None)));
         st.select_repo(id);
+        st.choose_recommended();
         let labels: Vec<String> = st
             .plan()
             .expect("plan")
@@ -1154,40 +1127,13 @@ mod tests {
     }
 
     #[test]
-    fn scroll_request_fires_once_per_plan_not_on_user_clicks() {
-        let mut st = BrowseState::new(machine(32.0, Some(16.0)));
-        let (id, i) = gguf_repo();
-        st.select_repo(id);
-        assert!(!st.take_scroll_request(), "nothing to scroll to yet");
-        st.on_model_info(id, Ok(i));
-        // The pane layout settles over the first frames, so the request
-        // lasts a few of them, then stops so manual scrolling is left alone.
-        for frame in 0..SCROLL_REQUEST_FRAMES {
-            assert!(st.scroll_request_pending(), "frame {frame} still pending");
-            assert!(st.take_scroll_request(), "frame {frame}");
-        }
-        assert!(!st.scroll_request_pending());
-        assert!(!st.take_scroll_request(), "then it stops");
-        st.select_option(0);
-        assert!(!st.take_scroll_request(), "user clicks never scroll");
-        let (id2, i2) = st_repo();
-        st.on_model_info(id2, Ok(i2));
-        st.select_repo(id2);
-        assert!(st.take_scroll_request(), "cached repo selected");
-        st.select_option(1);
-        for _ in 0..SCROLL_REQUEST_FRAMES {
-            st.take_scroll_request();
-        }
-        assert!(!st.take_scroll_request());
-    }
-
-    #[test]
     fn gated_repo_info_shows_warning_but_allows_import() {
         let (id, mut i) = gguf_repo();
         i.gated = true;
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.on_model_info(id, Ok(i));
         st.select_repo(id);
+        st.choose_recommended();
         assert!(st.selected_info_gated());
         assert!(!st.selected_is_gated(), "not the blocking error case");
         assert_eq!(st.import_block_reason(Some(true)), None);
@@ -1221,6 +1167,7 @@ mod tests {
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         let id = "meta-llama/Llama-3.2-1B";
         st.select_repo(id);
+        st.choose_recommended();
         assert_eq!(st.next_info_requests(), [id]);
         st.on_model_info(id, Err("HTTP 403: Forbidden".into()));
         assert!(st.selected_is_gated());
@@ -1308,6 +1255,7 @@ mod tests {
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.on_model_info(id, Ok(info(id, std::mem::take(&mut files), None)));
         st.select_repo(id);
+        st.choose_recommended();
         assert_eq!(selected_label(&st), "Q4_K_M");
         let req = st.import_request().expect("request");
         assert_eq!(req.repo_id, id);
@@ -1359,6 +1307,7 @@ mod tests {
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.on_model_info(id, Ok(info(id, files, None)));
         st.select_repo(id);
+        st.choose_recommended();
         assert!(st.import_request().is_none());
         assert!(matches!(
             st.plan().map(|p| &p.kind),
@@ -1379,12 +1328,14 @@ mod tests {
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.on_model_info(id, Ok(info(id, files.clone(), None)));
         st.select_repo(id);
+        st.choose_recommended();
         // 16 GB VRAM: needs <= 12.8 GB incl. 1.5 GB overhead, so 9 GB fits.
         assert_eq!(selected_label(&st), "Q6_K");
         // Nothing fits when VRAM is unknown: the smallest wins.
         let mut st = BrowseState::new(machine(32.0, None));
         st.on_model_info(id, Ok(info(id, files, None)));
         st.select_repo(id);
+        st.choose_recommended();
         assert_eq!(selected_label(&st), "Q2_K");
     }
 
@@ -1416,6 +1367,7 @@ mod tests {
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.on_model_info(id, Err("gated repository: meta-llama/Llama-3.2-1B".into()));
         st.select_repo(id);
+        st.choose_recommended();
         assert!(st.selected_is_gated());
         let why = st.import_block_reason(Some(true)).expect("blocked");
         assert!(
@@ -1474,30 +1426,27 @@ mod tests {
     }
 
     #[test]
-    fn no_card_request_until_about_is_opened() {
-        let mut st = two_repos();
-        st.select_repo(gguf_repo().0);
-        assert_eq!(st.tab(), DetailTab::Files);
-        assert!(st.next_card_requests().is_empty());
-    }
-
-    #[test]
-    fn about_tab_requests_card_once() {
+    fn selecting_a_repository_requests_its_card_once() {
         let mut st = two_repos();
         let id = gguf_repo().0;
         st.select_repo(id);
-        st.set_tab(DetailTab::About);
+        st.choose_recommended();
         assert_eq!(st.next_card_requests(), vec![id.to_string()]);
         assert!(st.card_pending(id));
         assert!(st.next_card_requests().is_empty());
-        st.set_tab(DetailTab::Files);
-        st.set_tab(DetailTab::About);
-        assert!(st.next_card_requests().is_empty());
+        st.select_repo(st_repo().0);
+        st.select_repo(id);
+        st.choose_recommended();
+        st.next_card_requests();
         st.on_model_card(id, card("# Hi"));
         assert!(!st.card_pending(id));
-        st.set_tab(DetailTab::Files);
-        st.set_tab(DetailTab::About);
-        assert!(st.next_card_requests().is_empty(), "never refetched");
+        st.select_repo(st_repo().0);
+        st.select_repo(id);
+        st.choose_recommended();
+        assert!(
+            st.next_card_requests().iter().all(|r| r != id),
+            "never refetched"
+        );
     }
 
     #[test]
@@ -1505,7 +1454,7 @@ mod tests {
         let mut st = two_repos();
         let id = gguf_repo().0;
         st.select_repo(id);
-        st.set_tab(DetailTab::About);
+        st.choose_recommended();
         st.next_card_requests();
         st.on_model_card(id, Err("network error: down".into()));
         assert!(matches!(st.card_for(id), Some(Err(_))));
@@ -1531,23 +1480,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_resets_to_files_on_new_selection() {
-        let mut st = two_repos();
-        st.select_repo(gguf_repo().0);
-        st.set_tab(DetailTab::About);
-        st.set_card_expanded(true);
-        st.select_repo(st_repo().0);
-        assert_eq!(st.tab(), DetailTab::Files);
-        assert!(!st.card_expanded());
-    }
-
-    #[test]
     fn card_in_flight_is_bounded_to_2() {
         let mut st = BrowseState::new(machine(32.0, None));
         let ids = ["a/one", "a/two", "a/three"];
         for id in ids {
             st.select_repo(id);
-            st.set_tab(DetailTab::About);
         }
         let first = st.next_card_requests();
         assert_eq!(first, vec!["a/one".to_string(), "a/two".to_string()]);
@@ -1614,6 +1551,7 @@ mod tests {
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.on_model_info(id, Ok(info(id, files, None)));
         st.select_repo(id);
+        st.choose_recommended();
         assert_eq!(selected_label(&st), "Q6_K");
         // The user picks another quantization.
         st.select_option(3);

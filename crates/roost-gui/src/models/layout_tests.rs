@@ -364,21 +364,6 @@ fn results_for_an_installed_models_repository_say_so() {
 }
 
 #[test]
-fn an_empty_search_is_labelled_as_the_popular_models() {
-    let size = (1180.0, 820.0);
-    let (mut app, _rx) = models_app();
-    let mut h = Harness::new(false);
-    run(&mut app, &mut h, size, 4);
-    assert!(texts(&mut app, &mut h, size)
-        .to_uppercase()
-        .contains("POPULAR ON HUGGING FACE"));
-    app.state_mut().query = "alpha".into();
-    run(&mut app, &mut h, size, 4);
-    let t = texts(&mut app, &mut h, size).to_uppercase();
-    assert!(!t.contains("POPULAR"), "{t}");
-}
-
-#[test]
 fn an_installed_model_from_a_repository_shows_that_repositorys_about_below_the_actions() {
     let size = (1180.0, 820.0);
     let (mut app, rx) = models_app();

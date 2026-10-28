@@ -37,8 +37,6 @@ pub struct Probe {
     pub notices: Vec<egui::Rect>,
     /// Content rectangle of the detail pane (inside its margins).
     pub pane: Option<egui::Rect>,
-    /// Visible rectangle of the notices region.
-    pub notices_view: Option<egui::Rect>,
     /// Rectangle of the pinned import card panel.
     pub card_panel: Option<egui::Rect>,
     pub name_field: Option<egui::Rect>,
@@ -50,7 +48,6 @@ pub struct Probe {
     /// The left filter rail panel.
     /// The metadata strip and the `Files | About` switch below it.
     pub meta_strip: Option<egui::Rect>,
-    pub switch: Option<egui::Rect>,
     /// Which About state was drawn: loading, empty, error or card.
     pub about_state: Option<&'static str>,
     /// Every content widget of the About tab (text, code blocks, tables).

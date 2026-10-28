@@ -4,18 +4,15 @@ use super::about;
 use super::options::{gb, OptionRow};
 use super::plan_card;
 use super::results::{compact_count, format_size, relative_age};
-use super::state::{
-    is_gated_error, DetailTab, PlanKind, SearchStatus, GATED_MESSAGE, GATED_REPO_WARNING,
-};
+use super::state::{is_gated_error, PlanKind, SearchStatus, GATED_MESSAGE, GATED_REPO_WARNING};
 use crate::app::AppState;
 use crate::runtime::BackendRequest;
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::{
-    caption, fit_pill_kind, fit_pill_label, fit_text, pill_colors, segmented_nav, small_button,
+    band, caption, fit_pill_kind, fit_pill_label, fit_text, pill_colors, small_button,
 };
 use eframe::egui::{
-    self, vec2, Align2, Color32, CornerRadius, FontId, Margin, Rect, RichText, Sense, Stroke,
-    StrokeKind,
+    self, vec2, Align2, CornerRadius, FontId, Margin, Rect, RichText, Sense, Stroke, StrokeKind,
 };
 use roost_core::fit::{fit, Machine};
 use roost_core::hf::ModelInfo;
@@ -442,42 +439,28 @@ fn metadata(info: &ModelInfo) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Smallest height the scrolling part of the pane keeps at any window size
-/// the app allows (see `MIN_WINDOW` in main.rs). The `Files | About` switch
-/// is pinned above it (it used to scroll, so this was 160 with the switch
-/// inside it).
+/// Smallest height the scrolling page keeps at any window size the app
+/// allows (see `MIN_WINDOW` in main.rs).
+#[cfg(test)]
 pub(crate) const MIN_SCROLL_H: f32 = 108.0;
-/// Vertical margins of the detail pane (top plus bottom).
-const PANE_MARGIN_V: f32 = 28.0;
-/// Space between the header, the notices and the scroll area.
-const GAP: f32 = 6.0;
-/// Height the pinned `Files | About` switch takes, with its spacing.
-const TAB_SWITCH_H: f32 = 40.0;
-/// What the header needs before it has been measured once.
-const DEFAULT_HEADER_H: f32 = 90.0;
 /// Smallest the pinned card may get: caption, name field and button.
 const CARD_MIN_H: f32 = 132.0;
+/// Most of the pane the pinned card may take.
+const CARD_MAX_SHARE: f32 = 0.6;
 
-/// The detail pane: scrolling header, metadata and options, with the import
-/// card pinned below so the primary action is always visible.
+/// The page for the selected repository: three stacked bands (the header with
+/// its notices, the files to choose from, the description) in one scrolling
+/// column. The import card is pinned below, and only once a file has been
+/// chosen, so the primary action is always in view while you read.
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
     let selected = app.browse.selected_id().map(str::to_string);
     let card_visible = selected.as_deref().is_some_and(|id| {
-        matches!(app.browse.info_for(id), Some(Ok(_))) || app.browse.selected_is_gated()
+        matches!(app.browse.info_for(id), Some(Ok(_))) && app.browse.selected_option().is_some()
     });
-    // Height budget: header, notices, scroll area and the pinned card share
-    // the pane. The header and notices heights are measured every frame and
-    // reused by the card on the next one.
-    let budget_id = egui::Id::NULL.with("detail_budget");
-    let (header_h, notices_h): (f32, f32) = ui
-        .ctx()
-        .data(|d| d.get_temp(budget_id))
-        .unwrap_or((DEFAULT_HEADER_H, 0.0));
     let pane_h = ui.available_height();
-    let card_max = (pane_h - PANE_MARGIN_V - header_h - notices_h - MIN_SCROLL_H).max(CARD_MIN_H);
     if card_visible {
-        let max_h = card_max;
+        let max_h = (pane_h * CARD_MAX_SHARE).max(CARD_MIN_H);
         let card_panel = egui::Panel::bottom("plan_card")
             .resizable(false)
             .max_size(max_h)
@@ -501,64 +484,73 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
         let _ = card_panel;
     }
     egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface)
-                .inner_margin(Margin::symmetric(24, 14)),
-        )
+        .frame(egui::Frame::new().fill(t.surface))
         .show(ui, |ui| {
             let Some(id) = selected else {
-                ui.label(
-                    RichText::new("Pick a model from the list to see its files and import it.")
-                        .color(t.fg3),
-                );
+                ui.add_space(24.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("Pick a model from the list to see its files and import it.")
+                            .color(t.fg3),
+                    );
+                });
                 return;
             };
-            ui.spacing_mut().item_spacing.y = GAP;
-            let info = app.browse.info_for(&id).cloned();
-            let top = ui.cursor().top();
-            header(
-                ui,
-                &id,
-                info.as_ref().and_then(|r| r.as_ref().ok()).map(|i| &**i),
-            );
-            let measured_header_h = ui.cursor().top() - top;
             #[cfg(test)]
             {
                 app.browse.probe.pane = Some(ui.max_rect());
                 app.browse.probe.notices.clear();
             }
-            let mut notices_used = notices(ui, app, &id, info.as_ref());
-            if matches!(info, Some(Ok(_))) {
-                notices_used += tab_switch(ui, app);
-            }
-            let now = (measured_header_h, notices_used);
-            if (now.0 - header_h).abs() > 0.5 || (now.1 - notices_h).abs() > 0.5 {
-                ui.ctx().data_mut(|d| d.insert_temp(budget_id, now));
-                ui.ctx().request_repaint();
-            }
-            // A tab switch starts the new tab at the top.
-            let to_top: bool = ui
-                .ctx()
-                .data_mut(|d| d.remove_temp(egui::Id::NULL.with("tab_to_top")))
-                .unwrap_or(false);
-            let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
-            if to_top {
-                area = area.vertical_scroll_offset(0.0);
-            }
-            let scroll = area.show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 6.0;
-                match info {
-                    None => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(RichText::new("Loading the file list…").color(t.fg3));
-                        });
+            // Measured outside the scroll area, where it is the real height.
+            let view_h = ui.available_height();
+            let scroll = egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let info = app.browse.info_for(&id).cloned();
+                    let (_, top) = band(ui, t.accent_soft, Some(t.line), 0.0, |ui| {
+                        header(
+                            ui,
+                            &id,
+                            info.as_ref().and_then(|r| r.as_ref().ok()).map(|i| &**i),
+                        );
+                        notices(ui, app, &id, info.as_ref());
+                        if let Some(Ok(i)) = &info {
+                            #[cfg(test)]
+                            let strip_top = ui.cursor().top();
+                            meta_strip(ui, &metadata(i));
+                            #[cfg(test)]
+                            {
+                                app.browse.probe.meta_strip = Some(Rect::from_min_max(
+                                    egui::pos2(ui.max_rect().left(), strip_top),
+                                    egui::pos2(ui.max_rect().right(), ui.cursor().top()),
+                                ));
+                            }
+                        }
+                    });
+                    let (_, mid) = band(ui, t.surface2, Some(t.line), 0.0, |ui| match &info {
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(RichText::new("Loading the file list…").color(t.fg3));
+                            });
+                        }
+                        Some(Err(_)) => {
+                            ui.label(RichText::new("No files to show.").color(t.fg3));
+                        }
+                        Some(Ok(i)) => files(ui, app, i),
+                    });
+                    let rest = (view_h - top.height() - mid.height() - 32.0).max(0.0);
+                    band(ui, t.surface, None, rest, |ui| {
+                        if let Some(Ok(i)) = &info {
+                            about::show(ui, app, i, &i.id);
+                        }
+                    });
+                    #[cfg(test)]
+                    {
+                        app.browse.probe.bands = vec![top, mid];
                     }
-                    Some(Err(_)) => {}
-                    Some(Ok(info)) => ready(ui, app, &info),
-                }
-            });
+                });
             #[cfg(test)]
             {
                 app.browse.probe.viewport = Some(scroll.inner_rect);
@@ -570,122 +562,50 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
 }
 
 /// Messages that carry the key instruction for a state (gated repo, token
-/// error, unsupported reason). They sit above the scroll area so no scroll
-/// can hide them; the region is bounded so the scroll area keeps room.
+/// error, unsupported reason), inside the header band.
 fn notices(
     ui: &mut egui::Ui,
     app: &mut AppState,
     id: &str,
     info: Option<&Result<std::sync::Arc<ModelInfo>, String>>,
-) -> f32 {
+) {
     let unsupported = match app.browse.plan().map(|p| &p.kind) {
         Some(PlanKind::Unsupported(reason)) => Some(reason.clone()),
         _ => None,
     };
-    let has_notice = match info {
-        Some(Err(_)) => true,
-        Some(Ok(_)) => app.browse.selected_info_gated() || unsupported.is_some(),
-        None => false,
-    };
-    if !has_notice {
-        return 0.0;
-    }
-    // Size the region to the measured height of its content, never more
-    // than what leaves the scroll area its minimum.
-    let width = ui.available_width();
-    let mut texts: Vec<String> = Vec::new();
-    let mut retry = false;
+    let mut shown = Vec::new();
     match info {
         Some(Err(e)) => {
-            texts.push(if is_gated_error(e) {
+            let text = if is_gated_error(e) {
                 GATED_MESSAGE.to_string()
             } else {
                 crate::browse::state::friendly_error(e)
-            });
-            retry = true;
+            };
+            shown.push(callout(ui, true, &text));
+            if small_button(ui, "Retry") {
+                app.browse.retry_info(id);
+            }
         }
         Some(Ok(_)) => {
             if app.browse.selected_info_gated() {
-                texts.push(GATED_REPO_WARNING.to_string());
+                shown.push(callout(ui, true, GATED_REPO_WARNING));
             }
             if let Some(reason) = &unsupported {
-                texts.push(format!("Ollama cannot import this repository. {reason}"));
+                shown.push(callout(
+                    ui,
+                    true,
+                    &format!("Ollama cannot import this repository. {reason}"),
+                ));
             }
         }
         None => {}
     }
-    let mut natural: f32 = texts.iter().map(|t| callout_height(ui, t, width)).sum();
-    natural += GAP * texts.len().saturating_sub(1) as f32;
-    if retry {
-        natural += GAP + 32.0;
-    }
-    let switch_h = if matches!(info, Some(Ok(_))) {
-        TAB_SWITCH_H
-    } else {
-        0.0
-    };
-    let cap = (ui.available_height() - GAP - MIN_SCROLL_H - switch_h).max(0.0);
-    let max_h = (natural + 2.0).min(cap);
-    let region = egui::ScrollArea::vertical()
-        .id_salt("notices")
-        .min_scrolled_height(0.0)
-        .max_height(max_h)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 6.0;
-            let mut shown = Vec::new();
-            match info {
-                Some(Err(e)) => {
-                    let text = if is_gated_error(e) {
-                        GATED_MESSAGE.to_string()
-                    } else {
-                        crate::browse::state::friendly_error(e)
-                    };
-                    shown.push(callout(ui, true, &text));
-                    if small_button(ui, "Retry") {
-                        app.browse.retry_info(id);
-                    }
-                }
-                Some(Ok(_)) => {
-                    // The header already links to the repository.
-                    if app.browse.selected_info_gated() {
-                        shown.push(callout(ui, true, GATED_REPO_WARNING));
-                    }
-                    if let Some(reason) = &unsupported {
-                        shown.push(callout(
-                            ui,
-                            true,
-                            &format!("Ollama cannot import this repository. {reason}"),
-                        ));
-                    }
-                }
-                None => {}
-            }
-            #[cfg(test)]
-            {
-                app.browse.probe.notices = shown;
-            }
-            #[cfg(not(test))]
-            let _ = shown;
-        });
     #[cfg(test)]
     {
-        app.browse.probe.notices_view = Some(region.inner_rect);
+        app.browse.probe.notices = shown;
     }
     #[cfg(not(test))]
-    let _ = region;
-    max_h + GAP
-}
-
-/// Height `callout` will take for `text` in a pane `width` wide.
-fn callout_height(ui: &egui::Ui, text: &str, width: f32) -> f32 {
-    let galley = ui.painter().layout(
-        text.to_string(),
-        FontId::proportional(13.0),
-        Color32::WHITE,
-        (width - 30.0).max(1.0),
-    );
-    galley.size().y + 22.0
+    let _ = shown;
 }
 
 fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
@@ -710,66 +630,12 @@ fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
     ui.add_space(2.0);
 }
 
-/// The `Files | About` switch. It sits above the scroll area, so it never
-/// scrolls away and a tab change cannot move it. Returns the height used.
-fn tab_switch(ui: &mut egui::Ui, app: &mut AppState) -> f32 {
-    let top = ui.cursor().top();
-    let tab = app.browse.tab();
-    let switch = ui.scope(|ui| {
-        segmented_nav(
-            ui,
-            &["Files", "About"],
-            &[],
-            usize::from(tab == DetailTab::About),
-        )
-    });
-    #[cfg(test)]
-    {
-        app.browse.probe.switch = Some(switch.response.rect);
-    }
-    if let Some(i) = switch.inner {
-        let next = if i == 1 {
-            DetailTab::About
-        } else {
-            DetailTab::Files
-        };
-        if next != tab {
-            app.browse.set_tab(next);
-            ui.ctx()
-                .data_mut(|d| d.insert_temp(egui::Id::NULL.with("tab_to_top"), true));
-            ui.ctx().request_repaint();
-        }
-    }
-    ui.cursor().top() - top
-}
-
-fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
-    #[cfg(test)]
-    let strip_top = ui.cursor().top();
-    meta_strip(ui, &metadata(info));
-    #[cfg(test)]
-    {
-        app.browse.probe.meta_strip = Some(Rect::from_min_max(
-            egui::pos2(ui.max_rect().left(), strip_top),
-            egui::pos2(ui.max_rect().right(), ui.cursor().top()),
-        ));
-    }
-    ui.add_space(12.0);
-    let tab = app.browse.tab();
-    if tab == DetailTab::About {
-        about::show(ui, app, info, &info.id);
-        return;
-    }
-
+/// The files (or quantizations) to choose from.
+fn files(ui: &mut egui::Ui, app: &mut AppState, _info: &ModelInfo) {
     let Some(plan) = app.browse.plan().cloned() else {
         return;
     };
     let selected = app.browse.selected_option();
-    let scroll = app.browse.take_scroll_request();
-    if app.browse.scroll_request_pending() {
-        // The request counts frames; keep frames coming until it is done.
-        ui.ctx().request_repaint();
-    }
     let mut table_out = TableOut::default();
     let mut clicked = None;
     match &plan.kind {
@@ -789,7 +655,7 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
                     first_col: "File",
                     label: Some(label_rect),
                     selected,
-                    scroll_to_selected: scroll,
+                    scroll_to_selected: false,
                 },
                 &plan.rows,
                 &app.machine,
@@ -822,7 +688,7 @@ fn ready(ui: &mut egui::Ui, app: &mut AppState, info: &ModelInfo) {
                     first_col: "Quantization",
                     label: Some(label_rect),
                     selected,
-                    scroll_to_selected: scroll,
+                    scroll_to_selected: false,
                 },
                 &plan.rows,
                 &app.machine,
@@ -1009,25 +875,37 @@ mod tests {
             }),
         );
         app.browse.select_repo(id);
+        app.browse.choose_recommended();
         app
     }
 
     #[test]
-    fn recommended_row_is_scrolled_into_view_after_the_first_frames() {
+    fn no_file_is_chosen_and_there_is_no_import_card_until_a_row_is_clicked() {
         use crate::browse::test_util::Harness;
         for dark in [false, true] {
             let mut app = many_options_app(false);
+            app.browse.unchoose();
             let mut h = Harness::new(dark);
             for _ in 0..6 {
                 h.frame(vec2(1180.0, 820.0), vec![], |ui| {
                     show(ui, &mut app, &mut Vec::new())
                 });
             }
-            let row = app.browse.probe.selected_row.expect("selected row painted");
-            let view = app.browse.probe.viewport.expect("viewport recorded");
+            assert!(app.browse.selected_option().is_none());
             assert!(
-                row.top() >= view.top() - 0.5 && row.bottom() <= view.bottom() + 0.5,
-                "dark={dark}: row {row:?} outside viewport {view:?}"
+                app.browse.probe.card_panel.is_none(),
+                "dark={dark}: card shown"
+            );
+            assert!(app.browse.probe.card.is_none());
+            app.browse.choose_recommended();
+            for _ in 0..6 {
+                h.frame(vec2(1180.0, 820.0), vec![], |ui| {
+                    show(ui, &mut app, &mut Vec::new())
+                });
+            }
+            assert!(
+                app.browse.probe.card_panel.is_some(),
+                "dark={dark}: card missing"
             );
         }
     }
@@ -1053,7 +931,8 @@ mod tests {
                 egui::Event::PointerMoved(egui::pos2(600.0, 300.0)),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
-                    delta: vec2(0.0, 400.0),
+                    // Content moves up (the page scrolls down) from the top.
+                    delta: vec2(0.0, if start > 5.0 { 400.0 } else { -400.0 }),
                     modifiers: egui::Modifiers::NONE,
                     phase: egui::TouchPhase::Move,
                     source: egui::MouseWheelSource::Wheel,
@@ -1072,59 +951,27 @@ mod tests {
         }
     }
 
-    /// Runs the pane for several frames, scrolls it with the mouse wheel and
-    /// checks that every pinned notice stays inside the pane, above the
-    /// scroll area, and does not move.
-    fn assert_notices_pinned(mut app: AppState, what: &str) {
+    #[test]
+    fn a_gated_warning_sits_in_the_header_band_at_the_top_of_the_page() {
         use crate::browse::test_util::Harness;
         for dark in [false, true] {
+            let mut app = many_options_app(true);
             let mut h = Harness::new(dark);
             let size = vec2(1180.0, 820.0);
-            let mut app2 = std::mem::replace(&mut app, AppState::new());
             for _ in 0..8 {
-                h.frame(size, vec![], |ui| show(ui, &mut app2, &mut Vec::new()));
+                h.frame(size, vec![], |ui| show(ui, &mut app, &mut Vec::new()));
             }
-            let before = app2.browse.probe.notices.clone();
-            let pane = app2.browse.probe.pane.expect("pane recorded");
-            let view = app2.browse.probe.viewport.expect("viewport recorded");
-            assert!(!before.is_empty(), "{what} dark={dark}: no notice painted");
-            for n in &before {
+            let notices = app.browse.probe.notices.clone();
+            let pane = app.browse.probe.pane.expect("pane recorded");
+            let header = app.browse.probe.bands[0];
+            assert!(!notices.is_empty(), "dark={dark}: no notice painted");
+            for n in &notices {
                 assert!(
-                    n.top() >= pane.top() - 0.5 && n.bottom() <= view.top() + 0.5,
-                    "{what} dark={dark}: notice {n:?} not inside pane {pane:?} above scroll area {view:?}"
+                    n.top() >= pane.top() - 0.5 && n.bottom() <= header.bottom() + 0.5,
+                    "dark={dark}: notice {n:?} not inside the header band {header:?}"
                 );
             }
-            let start = app2.browse.probe.scroll_offset;
-            let wheel = vec![
-                egui::Event::PointerMoved(egui::pos2(700.0, 500.0)),
-                egui::Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    // Content moves down (scrolls up) when we are scrolled, else up.
-                    delta: vec2(0.0, if start > 5.0 { 600.0 } else { -600.0 }),
-                    modifiers: egui::Modifiers::NONE,
-                    phase: egui::TouchPhase::Move,
-                    source: egui::MouseWheelSource::Wheel,
-                },
-            ];
-            h.frame(size, wheel, |ui| show(ui, &mut app2, &mut Vec::new()));
-            for _ in 0..12 {
-                h.frame(size, vec![], |ui| show(ui, &mut app2, &mut Vec::new()));
-            }
-            assert!(
-                (app2.browse.probe.scroll_offset - start).abs() > 5.0,
-                "{what} dark={dark}: did not scroll"
-            );
-            assert_eq!(
-                before, app2.browse.probe.notices,
-                "{what} dark={dark}: notice moved"
-            );
-            app = app2;
         }
-    }
-
-    #[test]
-    fn gated_warning_stays_inside_the_pane_and_does_not_scroll_away() {
-        assert_notices_pinned(many_options_app(true), "gated");
     }
 
     // ---- full-window layout tests (top bar, bars and dock included) ----
@@ -1241,6 +1088,7 @@ mod tests {
             }
         }
         st.browse.select_repo(id);
+        st.browse.choose_recommended();
         app
     }
 
@@ -1260,7 +1108,6 @@ mod tests {
             && inner.right() <= outer.right() + 0.5
     }
 
-    const NOTICE_KINDS: [Kind; 3] = [Kind::ManyGated, Kind::Unsupported, Kind::Forbidden];
     const ALL_KINDS: [Kind; 5] = [
         Kind::ManyGated,
         Kind::Many,
@@ -1268,30 +1115,6 @@ mod tests {
         Kind::Forbidden,
         Kind::SafetensorsUnreachable,
     ];
-
-    #[test]
-    fn notices_are_fully_visible_inside_their_region() {
-        for kind in NOTICE_KINDS {
-            for size in SIZES {
-                for dark in [false, true] {
-                    let mut app = laid_out(kind, dark, size);
-                    let p = &app.state_mut().browse.probe;
-                    let view = p.notices_view.expect("notices region");
-                    let pane = p.pane.expect("pane");
-                    assert!(
-                        !p.notices.is_empty(),
-                        "{kind:?} {size:?} dark={dark}: no notice"
-                    );
-                    for n in &p.notices {
-                        assert!(
-                            inside(*n, view) && inside(*n, pane),
-                            "{kind:?} {size:?} dark={dark}: notice {n:?} clipped by region {view:?}"
-                        );
-                    }
-                }
-            }
-        }
-    }
 
     #[test]
     fn scroll_area_keeps_min_height_at_minimum_window_size() {
@@ -1326,27 +1149,6 @@ mod tests {
                         "{kind:?} {size:?} dark={dark}: field {field:?} button {button:?} panel {panel:?}"
                     );
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn selected_row_and_table_header_are_visible_after_the_first_frames() {
-        for size in SIZES {
-            for dark in [false, true] {
-                let mut app = laid_out(Kind::Many, dark, size);
-                let p = &app.state_mut().browse.probe;
-                let view = p.viewport.expect("viewport");
-                let row = p.selected_row.expect("selected row");
-                assert!(
-                    inside(row, view),
-                    "{size:?} dark={dark}: row {row:?} outside {view:?}"
-                );
-                let head = p.table_header.or(p.table_label).expect("header or label");
-                assert!(
-                    inside(head, view),
-                    "{size:?} dark={dark}: header {head:?} outside {view:?}"
-                );
             }
         }
     }

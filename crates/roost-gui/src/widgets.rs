@@ -173,17 +173,6 @@ pub fn small_button_response(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(egui::Button::new(RichText::new(text).size(12.0).color(t.fg2)).min_size(vec2(0.0, 24.0)))
 }
 
-/// Segmented control. `badges[i]`, when present, is drawn after label `i`.
-/// Returns the clicked index, if any.
-pub fn segmented_nav(
-    ui: &mut egui::Ui,
-    labels: &[&str],
-    badges: &[Option<String>],
-    selected: usize,
-) -> Option<usize> {
-    segmented_nav_rect(ui, labels, badges, selected).0
-}
-
 /// Like `segmented_nav`, also returning the rectangle it occupies.
 pub fn segmented_nav_rect(
     ui: &mut egui::Ui,
@@ -257,6 +246,33 @@ pub fn segmented_nav_rect(
             });
         });
     (clicked, frame.response.rect)
+}
+
+/// One full-width band of a detail page. The bands stack: the header
+/// (tinted with the theme's accent), the details (the second surface) and
+/// the description (the page surface), so every theme keeps its own look.
+pub fn band<R>(
+    ui: &mut egui::Ui,
+    fill: Color32,
+    line: Option<Color32>,
+    min_height: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, egui::Rect) {
+    let out = egui::Frame::new()
+        .fill(fill)
+        .inner_margin(Margin::symmetric(24, 16))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(min_height);
+            ui.spacing_mut().item_spacing.y = 10.0;
+            add(ui)
+        });
+    let rect = out.response.rect;
+    if let Some(c) = line {
+        ui.painter()
+            .hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, c));
+    }
+    (out.inner, rect)
 }
 
 #[cfg(test)]

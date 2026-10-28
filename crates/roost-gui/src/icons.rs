@@ -14,6 +14,7 @@ pub enum Icon {
     Read,
     Stop,
     Filter,
+    Trash,
     Prev,
     Next,
 }
@@ -139,6 +140,26 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 ],
                 stroke,
             ));
+        }
+        Icon::Trash => {
+            painter.line_segment([p(2.5, 4.0), p(13.5, 4.0)], stroke);
+            painter.add(egui::Shape::line(
+                vec![p(6.0, 4.0), p(6.0, 2.5), p(10.0, 2.5), p(10.0, 4.0)],
+                stroke,
+            ));
+            painter.add(egui::Shape::line(
+                vec![
+                    p(3.8, 4.0),
+                    p(4.6, 13.0),
+                    p(5.2, 13.5),
+                    p(10.8, 13.5),
+                    p(11.4, 13.0),
+                    p(12.2, 4.0),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(6.6, 6.5), p(6.8, 11.0)], stroke);
+            painter.line_segment([p(9.4, 6.5), p(9.2, 11.0)], stroke);
         }
         Icon::Stop => {
             painter.rect_filled(Rect::from_min_max(p(4.5, 4.5), p(11.5, 11.5)), 1.5, color);
