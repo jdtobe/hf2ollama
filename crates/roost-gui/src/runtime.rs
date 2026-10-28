@@ -1414,7 +1414,19 @@ mod tests {
         let h = harness_with("http://127.0.0.1:1", &hf.uri(), &[], store);
         assert_eq!(status(&h), HfTokenStatus::Saved);
         std::thread::sleep(Duration::from_millis(200));
-        assert!(hf.received_requests().await.unwrap().is_empty());
+        // Only the token check matters here. Other tests' backends may poll
+        // a port this server later reused, so unrelated paths are ignored.
+        let seen: Vec<String> = hf
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.path().to_string())
+            .collect();
+        assert!(
+            !seen.iter().any(|p| p.starts_with("/api/whoami")),
+            "startup asked Hugging Face to check the token: {seen:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
