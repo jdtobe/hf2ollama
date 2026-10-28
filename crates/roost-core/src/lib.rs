@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod chat;
 pub mod compat;
 pub mod config;

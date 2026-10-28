@@ -25,6 +25,10 @@ tokio = { version = "1.54.1", features = ["net", "rt-multi-thread", "macros", "f
 toml = "1.1.8"
 uuid = { version = "1.28", features = ["v4", "serde"] }
 
+cap-std = "3"
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case", "perf"] }
+globset = { version = "0.4", default-features = false }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 wiremock = "0.6.5"
