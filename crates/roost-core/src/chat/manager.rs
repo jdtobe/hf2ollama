@@ -622,7 +622,8 @@ impl Manager {
         };
         let now = now_ms();
         let before = live.s.updated_at_ms;
-        let mut removed = None;
+        let mut removed: Option<crate::session::Message> = None;
+        let removed_id;
         let user = match &intent {
             Intent::Send(text) => {
                 let uid = live.s.push_user(text, now);
@@ -634,6 +635,7 @@ impl Manager {
                 None
             }
         };
+        removed_id = removed.as_ref().map(|m| m.id);
         let win = window(live.s.model_options.num_ctx, show_ctx);
         let trimmed = match build_request(CHAT_SYSTEM_PROMPT, &live.s.messages, win) {
             Ok(t) => t,
@@ -689,6 +691,12 @@ impl Manager {
         let session = live.s.clone();
         let assistant_msg = session.messages.iter().find(|m| m.id == assistant).cloned();
         self.save(&session);
+        if let Some(message) = removed_id {
+            self.emit(ChatEvent::Removed {
+                session: id,
+                message,
+            });
+        }
         if let Some(m) = user {
             self.emit(ChatEvent::Appended {
                 session: id,

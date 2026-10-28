@@ -147,6 +147,11 @@ impl ChatState {
                 self.open = Some(*s);
             }
             ChatEvent::Appended { session, message } => self.appended(session, *message),
+            ChatEvent::Removed { session, message } => {
+                if let Some(s) = self.open.as_mut().filter(|s| s.id == session) {
+                    s.messages.retain(|m| m.id != message);
+                }
+            }
             ChatEvent::TurnStarted { session, turn } => {
                 if self
                     .model_missing
@@ -1143,6 +1148,30 @@ mod tests {
         assert_eq!(titles("llama3.2"), ["Trip planning"]);
         assert!(titles("trip borrow").is_empty(), "every word must match");
         assert!(titles("zzz").is_empty());
+    }
+
+    #[test]
+    fn a_removed_message_leaves_the_open_chat() {
+        let (mut st, s, turn) = started();
+        let old = st.open.as_ref().unwrap().messages.last().unwrap().id;
+        st.fold(ChatEvent::TurnEnded {
+            session: s.id,
+            turn,
+            outcome: TurnOutcome::Completed,
+            message: None,
+            prompt_eval_count: None,
+        });
+        st.fold(ChatEvent::Removed {
+            session: s.id,
+            message: old,
+        });
+        assert!(st
+            .open
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .all(|m| m.id != old));
     }
 
     #[test]

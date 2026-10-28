@@ -1624,6 +1624,31 @@ async fn regenerate_replaces_the_last_complete_reply_and_resends_the_question() 
 }
 
 #[tokio::test]
+async fn regenerate_tells_the_window_which_reply_went_away_before_the_new_one_appears() {
+    let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    let old = h.read(id).messages.last().unwrap().id;
+    h.cmd(ChatCommand::Regenerate(id));
+    h.wait_ended(2).await;
+    let evs = h.events();
+    let removed = evs
+        .iter()
+        .position(|e| matches!(e, ChatEvent::Removed { message, .. } if *message == old))
+        .expect("Removed event");
+    let appended = evs
+        .iter()
+        .rposition(|e| matches!(e, ChatEvent::Appended { .. }))
+        .unwrap();
+    assert!(
+        removed < appended,
+        "removed {removed} after appended {appended}"
+    );
+}
+
+#[tokio::test]
 async fn regenerate_does_nothing_when_the_last_reply_did_not_complete() {
     let srv = fake(vec![chat_route(vec![
         Step::Write(line("half")),

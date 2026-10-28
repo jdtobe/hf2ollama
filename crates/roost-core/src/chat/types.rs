@@ -1,7 +1,7 @@
 //! The vocabulary between the GUI and the chat manager: intent commands in,
 //! ordered events out.
 
-use crate::session::{Message, Permission, SessionId, SessionLifetime, TurnId};
+use crate::session::{Message, MessageId, Permission, SessionId, SessionLifetime, TurnId};
 use crate::store::IndexRow;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -92,6 +92,11 @@ pub enum ChatEvent {
     Appended {
         session: SessionId,
         message: Box<Message>,
+    },
+    /// A message left the transcript (a reply replaced by Regenerate).
+    Removed {
+        session: SessionId,
+        message: MessageId,
     },
     TurnStarted {
         session: SessionId,
