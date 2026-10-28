@@ -66,8 +66,8 @@ Regenerate is offered on the latest reply only.
 
 ## Branch
 
-Decision: versions (Regenerate and Edit as forks, below) are tabled until
-after Branch and BTW. Until then Regenerate replaces the last reply.
+Decision: versions (Regenerate and Edit as forks, below) were tabled, then
+built before Branch (stage 2) because Regenerate otherwise discards a reply.
 
 A branched chat shows a strip at the top: `↳ Branched from "A" › "B"`, each
 name a link that opens that chat at the message where the branch began. Long

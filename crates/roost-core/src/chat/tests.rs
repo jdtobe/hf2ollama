@@ -1602,7 +1602,7 @@ async fn changing_an_idle_agents_settings_reports_them() {
 }
 
 #[tokio::test]
-async fn regenerate_replaces_the_last_complete_reply_and_resends_the_question() {
+async fn regenerate_keeps_the_old_reply_as_a_version_and_resends_the_question() {
     let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
     let h = start(&srv).await;
     let id = h.create(SessionLifetime::Persisted).await;
@@ -1611,41 +1611,146 @@ async fn regenerate_replaces_the_last_complete_reply_and_resends_the_question() 
     h.cmd(ChatCommand::Regenerate(id));
     h.wait_ended(2).await;
     h.wait("saved", |_| {
-        texts(&h.read(id))
+        let s = h.read(id);
+        texts(&s)
             == [
                 ("user".into(), "ask".into()),
                 ("assistant:Complete".into(), "two".into()),
             ]
+            && s.forks.len() == 1
     })
     .await;
+    let s = h.read(id);
+    let new_reply = s.messages.last().unwrap().id;
+    assert_eq!(s.version_of(new_reply), Some((2, 2)));
+    assert_eq!(texts(&s_with_version(s, 0)).last().unwrap().1, "one");
     let second = &chat_bodies(&srv)[1]["messages"];
     assert_eq!(second.as_array().unwrap().len(), 2, "{second}");
     assert_eq!(second[1]["content"], "ask");
 }
 
+/// The saved chat with version `to` of its first fork showing.
+fn s_with_version(mut s: Session, to: usize) -> Session {
+    let after = s.forks[0].after;
+    assert!(s.switch_version(after, to));
+    s
+}
+
 #[tokio::test]
-async fn regenerate_tells_the_window_which_reply_went_away_before_the_new_one_appears() {
+async fn regenerate_sends_the_window_a_fresh_copy_of_the_chat() {
     let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
     let h = start(&srv).await;
     let id = h.create(SessionLifetime::Persisted).await;
     h.send(id, "ask").await;
     h.wait_ended(1).await;
-    let old = h.read(id).messages.last().unwrap().id;
     h.cmd(ChatCommand::Regenerate(id));
     h.wait_ended(2).await;
     let evs = h.events();
-    let removed = evs
+    let opened = evs
         .iter()
-        .position(|e| matches!(e, ChatEvent::Removed { message, .. } if *message == old))
-        .expect("Removed event");
-    let appended = evs
+        .rposition(
+            |e| matches!(e, ChatEvent::Opened(s) if s.forks.len() == 1 && s.messages.len() == 2),
+        )
+        .expect("Opened with the new version");
+    let started = evs
         .iter()
-        .rposition(|e| matches!(e, ChatEvent::Appended { .. }))
+        .rposition(|e| matches!(e, ChatEvent::TurnStarted { .. }))
         .unwrap();
     assert!(
-        removed < appended,
-        "removed {removed} after appended {appended}"
+        opened < started,
+        "snapshot {opened} after turn start {started}"
     );
+}
+
+#[tokio::test]
+async fn editing_a_message_makes_a_new_version_and_asks_again_from_there() {
+    let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    let first = h.read(id).messages[0].id;
+    h.cmd(ChatCommand::Edit {
+        session: id,
+        message: first,
+        text: "better ask".into(),
+    });
+    h.wait_ended(2).await;
+    h.wait("saved", |_| {
+        let s = h.read(id);
+        texts(&s).len() == 2 && texts(&s)[1].1 == "two" && s.forks.len() == 1
+    })
+    .await;
+    let s = h.read(id);
+    assert_eq!(texts(&s)[0].1, "better ask");
+    assert_eq!(s.version_of(s.messages[0].id), Some((2, 2)));
+    let old = s_with_version(s, 0);
+    assert_eq!(texts(&old)[0].1, "ask");
+    assert_eq!(texts(&old)[1].1, "one");
+    let second = &chat_bodies(&srv)[1]["messages"];
+    assert_eq!(second.as_array().unwrap().len(), 2, "{second}");
+    assert_eq!(second[1]["content"], "better ask");
+}
+
+#[tokio::test]
+async fn an_edit_of_anything_but_your_own_message_is_refused() {
+    let srv = fake(vec![chat_route(reply("one"))]).await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    let reply_id = h.read(id).messages[1].id;
+    for (message, text) in [
+        (reply_id, "x"),
+        (crate::session::MessageId::new(), "x"),
+        (h.read(id).messages[0].id, "   "),
+    ] {
+        h.cmd(ChatCommand::Edit {
+            session: id,
+            message,
+            text: text.into(),
+        });
+    }
+    h.wait("refused", |evs| {
+        evs.iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    ChatEvent::SessionError { .. } | ChatEvent::SendRejected { .. }
+                )
+            })
+            .count()
+            >= 3
+    })
+    .await;
+    assert_eq!(chat_bodies(&srv).len(), 1, "no new request");
+    assert!(h.read(id).forks.is_empty());
+}
+
+#[tokio::test]
+async fn switching_versions_changes_what_is_shown_and_saved() {
+    let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    h.cmd(ChatCommand::Regenerate(id));
+    h.wait_ended(2).await;
+    h.wait("saved", |_| h.read(id).forks.len() == 1).await;
+    let user = h.read(id).messages[0].id;
+    h.cmd(ChatCommand::SwitchVersion {
+        session: id,
+        after: Some(user),
+        to: 0,
+    });
+    let shows_one = |evs: &[ChatEvent]| {
+        evs.iter().rev().find_map(|e| match e {
+            ChatEvent::Opened(s) => Some(texts(s)[1].1 == "one"),
+            _ => None,
+        }) == Some(true)
+    };
+    h.wait("window told", shows_one).await;
+    h.wait("saved", |_| texts(&h.read(id))[1].1 == "one").await;
 }
 
 #[tokio::test]

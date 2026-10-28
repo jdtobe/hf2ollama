@@ -7,7 +7,7 @@ use crate::app::{AppState, View};
 use crate::browse::markdown::{self, Block};
 use crate::confirm::Confirm;
 use crate::runtime::BackendRequest;
-use crate::theme::{semibold, tokens, Tokens};
+use crate::theme::{mono, semibold, tokens, Tokens};
 use crate::widgets::{primary_button, small_button, tag};
 use eframe::egui::{
     self, vec2, Align, Color32, FontId, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke,
@@ -39,6 +39,8 @@ pub struct ChatUi {
     pub new_agent: NewAgent,
     /// What the rail's search field holds.
     pub rail_query: String,
+    /// Your message being edited, with the text so far.
+    pub editing: Option<(roost_core::session::MessageId, String)>,
     /// Parsed Markdown of assistant replies, by message and the text length
     /// it was parsed from, so a streaming reply is parsed once per chunk.
     md_cache: std::collections::HashMap<roost_core::session::MessageId, (usize, Vec<Block>)>,
@@ -71,6 +73,11 @@ pub struct ChatProbe {
     pub details: Option<egui::Rect>,
     /// The bubble of every message painted this frame.
     pub cards: Vec<egui::Rect>,
+    pub edit_icon: Option<egui::Rect>,
+    pub edit_send: Option<egui::Rect>,
+    pub version_counter: Option<egui::Rect>,
+    pub version_prev: Option<egui::Rect>,
+    pub version_next: Option<egui::Rect>,
     pub pane: Option<egui::Rect>,
     pub composer: Option<egui::Rect>,
     pub header: Option<egui::Rect>,
@@ -714,10 +721,17 @@ fn pane(
                     i = end;
                     continue;
                 }
-                let card = message_card(ui, t, m, &model, badge, &mut app.chat_ui);
+                let editing_this = app.chat_ui.editing.as_ref().is_some_and(|e| e.0 == m.id);
+                let card = if editing_this {
+                    edit_box(ui, t, app, out, s)
+                } else {
+                    message_card(ui, t, m, &model, badge, &mut app.chat_ui)
+                };
                 #[cfg(test)]
                 app.chat_ui.probe.cards.push(card);
-                message_actions(ui, t, app, out, s, m, &model, i == last, card);
+                if !editing_this {
+                    message_actions(ui, t, app, out, s, (i, m), &model, i == last, card);
+                }
                 if i == last && s.mode == SessionMode::Chat {
                     retry_row(ui, app, out, s, m);
                 }
@@ -1096,7 +1110,7 @@ fn message_actions(
     app: &mut AppState,
     out: &mut Vec<BackendRequest>,
     s: &Session,
-    m: &Message,
+    (index, m): (usize, &Message),
     model: &str,
     is_latest: bool,
     card: egui::Rect,
@@ -1113,6 +1127,11 @@ fn message_actions(
         } => (text, Some(*status), *stats),
         MessageContent::Tool { .. } => return,
     };
+    if let Some((n, total)) = s.version_of(m.id) {
+        let after = index.checked_sub(1).map(|i| s.messages[i].id);
+        let idle = !app.chat.is_running(s.id);
+        version_counter(ui, t, app, out, row, (s.id, after), (n, total), idle);
+    }
     if text.is_empty() || status == Some(AssistantStatus::Streaming) {
         return;
     }
@@ -1139,6 +1158,24 @@ fn message_actions(
     if copy.clicked() {
         ui.ctx().copy_text(text.clone());
     }
+    let yours = matches!(m.content, MessageContent::User { .. });
+    if yours && s.mode == SessionMode::Chat && !app.chat.is_running(s.id) {
+        let r = action_icon(
+            ui,
+            t,
+            next(),
+            egui::Id::unique("edit").with(m.id),
+            Icon::Edit,
+            "Edit and resend",
+        );
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.edit_icon = Some(r.rect);
+        }
+        if r.clicked() {
+            app.chat_ui.editing = Some((m.id, text.clone()));
+        }
+    }
     let complete = status == Some(AssistantStatus::Complete);
     if complete
         && is_latest
@@ -1152,7 +1189,7 @@ fn message_actions(
             next(),
             egui::Id::unique("regen").with(m.id),
             Icon::Regenerate,
-            "Replace this reply with a new one",
+            "Ask again. This reply stays as a version",
         );
         #[cfg(test)]
         {
@@ -1174,6 +1211,152 @@ fn message_actions(
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| details_card(ui, t, model, stats));
     }
+}
+
+/// `‹ 2 / 3 ›` at the right end of the row, whatever the hover state.
+#[allow(clippy::too_many_arguments)]
+fn version_counter(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    row: egui::Rect,
+    (session, after): (SessionId, Option<roost_core::session::MessageId>),
+    (n, total): (usize, usize),
+    enabled: bool,
+) {
+    use crate::icons::Icon;
+    let label = format!("{n} / {total}");
+    let galley = ui.painter().layout_no_wrap(label, mono(12.0), t.fg2);
+    let w = galley.size().x;
+    let right = row.right() - 2.0;
+    let next_r = egui::Rect::from_min_size(
+        egui::pos2(right - 28.0, row.top()),
+        vec2(28.0, row.height()),
+    );
+    let text_r = egui::Rect::from_min_size(
+        egui::pos2(next_r.left() - w - 6.0, row.top()),
+        vec2(w + 6.0, row.height()),
+    );
+    let prev_r = egui::Rect::from_min_size(
+        egui::pos2(text_r.left() - 28.0, row.top()),
+        vec2(28.0, row.height()),
+    );
+    ui.painter().galley(
+        egui::pos2(text_r.left() + 3.0, row.center().y - galley.size().y / 2.0),
+        galley,
+        t.fg2,
+    );
+    let key = (session, after);
+    let step = |ui: &mut egui::Ui, rect, icon, tip, id_salt: &str, ok: bool| {
+        let id = egui::Id::unique(id_salt).with(key.0).with(key.1);
+        if ok && enabled {
+            action_icon(ui, t, rect, id, icon, tip).clicked()
+        } else {
+            let color = t.line;
+            crate::icons::paint(ui.painter(), rect, icon, color);
+            false
+        }
+    };
+    let go_prev = step(
+        ui,
+        prev_r,
+        Icon::Prev,
+        "Previous version",
+        "ver-prev",
+        n > 1,
+    );
+    let go_next = step(
+        ui,
+        next_r,
+        Icon::Next,
+        "Next version",
+        "ver-next",
+        n < total,
+    );
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.version_counter = Some(prev_r.union(next_r));
+        app.chat_ui.probe.version_prev = Some(prev_r);
+        app.chat_ui.probe.version_next = Some(next_r);
+    }
+    let to = if go_prev {
+        Some(n - 2)
+    } else if go_next {
+        Some(n)
+    } else {
+        None
+    };
+    if let Some(to) = to {
+        out.push(BackendRequest::Chat(ChatCommand::SwitchVersion {
+            session,
+            after,
+            to,
+        }));
+    }
+    let _ = app;
+}
+
+/// The bubble of one of your messages while it is being edited.
+fn edit_box(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+) -> egui::Rect {
+    let mut send = false;
+    let mut cancel = false;
+    let Some((mid, text)) = app.chat_ui.editing.as_mut() else {
+        return egui::Rect::NOTHING;
+    };
+    let mid = *mid;
+    let frame = egui::Frame::new()
+        .fill(t.accent_soft)
+        .stroke(Stroke::new(1.0, t.accent))
+        .corner_radius(10.0)
+        .inner_margin(Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new("Edit message")
+                    .font(semibold(12.0))
+                    .color(t.fg2),
+            );
+            ui.add(
+                egui::TextEdit::multiline(text)
+                    .desired_rows(2)
+                    .desired_width(ui.available_width()),
+            );
+            ui.label(
+                RichText::new("Sends as a new version. The original stays one click away.")
+                    .size(11.5)
+                    .color(t.fg3),
+            );
+            ui.horizontal(|ui| {
+                let blank = text.trim().is_empty();
+                let r = primary_button(ui, "Send", !blank);
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.edit_send = Some(r.rect);
+                }
+                send = r.clicked() && !blank;
+                cancel = secondary(ui, "Cancel", true).clicked();
+            });
+        });
+    if send {
+        if let Some((_, text)) = app.chat_ui.editing.take() {
+            app.chat.sending_started(s.id);
+            out.push(BackendRequest::Chat(ChatCommand::Edit {
+                session: s.id,
+                message: mid,
+                text,
+            }));
+        }
+    } else if cancel {
+        app.chat_ui.editing = None;
+    }
+    frame.response.rect
 }
 
 fn details_card(

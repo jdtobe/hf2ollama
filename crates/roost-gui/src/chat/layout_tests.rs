@@ -1260,3 +1260,110 @@ fn a_failed_reply_offers_retry_and_not_regenerate() {
     run(&mut f.app, &mut h, size, 3);
     assert!(f.app.state_mut().chat_ui.probe.regenerate.is_none());
 }
+
+fn open_two_versions(
+    f: &mut Fixture,
+) -> (
+    roost_core::session::SessionId,
+    roost_core::session::MessageId,
+) {
+    let now = now_ms();
+    let mut s = Session::new_chat("llama3.2:3b", SessionLifetime::Persisted, now);
+    let u = s.push_user("Show me", now);
+    let a = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(a, "first answer", "");
+    s.finish_assistant(a, AssistantStatus::Complete, None, now);
+    s.fork_at(1);
+    let b = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(b, "second answer", "");
+    s.finish_assistant(b, AssistantStatus::Complete, None, now);
+    let id = s.id;
+    f.app.state_mut().chat.fold(ChatEvent::Opened(Box::new(s)));
+    (id, u)
+}
+
+#[test]
+fn a_message_with_versions_shows_a_counter_at_the_bottom_right_and_switches() {
+    for size in SIZES {
+        let mut f = fixture_with(1);
+        let mut h = Harness::new(false);
+        let (id, user) = open_two_versions(&mut f);
+        run(&mut f.app, &mut h, size, 3);
+        let _ = sent_chat_commands(&f.sent);
+        let probe = f.app.state_mut().chat_ui.probe.clone();
+        let pane = probe.pane.expect("pane");
+        let counter = probe.version_counter.expect("counter");
+        let (prev, next) = (probe.version_prev.unwrap(), probe.version_next.unwrap());
+        let card = *probe.cards.last().unwrap();
+        assert!(inside(counter, pane), "{size:?}");
+        assert!(
+            counter.top() >= card.bottom() - 0.5,
+            "{size:?}: below the bubble"
+        );
+        assert!(
+            counter.right() >= card.right() - 40.0,
+            "{size:?}: at the right"
+        );
+        assert!(prev.right() <= next.left() + 0.5);
+        let texts = texts_of(&mut f.app, &mut h, size);
+        assert!(texts.contains("2 / 2"), "{texts}");
+        click(&mut f.app, &mut h, size, prev.center());
+        let cmds = sent_chat_commands(&f.sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SwitchVersion { session, after, to: 0 }]
+                if *session == id && *after == Some(user)),
+            "{cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn a_message_without_versions_has_no_counter() {
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, (1180.0, 820.0), 3);
+    assert!(f.app.state_mut().chat_ui.probe.version_counter.is_none());
+}
+
+#[test]
+fn editing_your_message_sends_the_new_text_as_an_edit() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "A short answer.");
+    let (id, mid) = {
+        let s = f.app.state_mut().chat.open.as_ref().unwrap();
+        (s.id, s.messages[0].id)
+    };
+    run(&mut f.app, &mut h, size, 3);
+    let first = f.app.state_mut().chat_ui.probe.cards[0];
+    h.frame(
+        vec2(size.0, size.1),
+        vec![egui::Event::PointerMoved(first.center())],
+        |ui| f.app.show(ui),
+    );
+    let edit = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .edit_icon
+        .expect("Edit icon");
+    click(&mut f.app, &mut h, size, edit.center());
+    assert_eq!(
+        f.app.state_mut().chat_ui.editing.as_ref().map(|e| e.0),
+        Some(mid)
+    );
+    f.app.state_mut().chat_ui.editing.as_mut().unwrap().1 = "a better question".into();
+    run(&mut f.app, &mut h, size, 2);
+    let send = f.app.state_mut().chat_ui.probe.edit_send.expect("Send");
+    let _ = sent_chat_commands(&f.sent);
+    click(&mut f.app, &mut h, size, send.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Edit { session, message, text }]
+            if *session == id && *message == mid && text == "a better question"),
+        "{cmds:?}"
+    );
+    assert!(f.app.state_mut().chat_ui.editing.is_none());
+}

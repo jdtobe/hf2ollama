@@ -8,6 +8,9 @@ pub enum Icon {
     Copy,
     Regenerate,
     Details,
+    Edit,
+    Prev,
+    Next,
 }
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
@@ -48,6 +51,31 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             painter.add(egui::Shape::line(arc, stroke));
             painter.add(egui::Shape::line(
                 vec![p(13.5, 2.5), p(13.5, 5.5), p(10.5, 5.5)],
+                stroke,
+            ));
+        }
+        Icon::Edit => {
+            painter.add(egui::Shape::line(
+                vec![
+                    p(10.5, 2.5),
+                    p(13.5, 5.5),
+                    p(6.0, 13.0),
+                    p(2.5, 13.5),
+                    p(3.0, 10.0),
+                    p(10.5, 2.5),
+                ],
+                stroke,
+            ));
+        }
+        Icon::Prev => {
+            painter.add(egui::Shape::line(
+                vec![p(10.0, 3.5), p(5.5, 8.0), p(10.0, 12.5)],
+                stroke,
+            ));
+        }
+        Icon::Next => {
+            painter.add(egui::Shape::line(
+                vec![p(6.0, 3.5), p(10.5, 8.0), p(6.0, 12.5)],
                 stroke,
             ));
         }

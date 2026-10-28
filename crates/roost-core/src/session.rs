@@ -221,6 +221,19 @@ pub enum MessageContent {
     },
 }
 
+/// A place where the conversation continues in more than one way. The active
+/// way is the tail of `Session.messages`; the others are parked here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Fork {
+    /// The message before the fork; `None` when it is at the very start.
+    pub after: Option<MessageId>,
+    /// Versions that are not showing, in display order with the active one
+    /// left out.
+    pub parked: Vec<Vec<Message>>,
+    /// Where the active version sits among all versions (0-based).
+    pub active: usize,
+}
+
 /// Numbers Ollama reports with the last message of a reply. Durations are
 /// whole milliseconds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,6 +277,9 @@ pub struct Session {
     pub step_budget: u32,
     pub run_state: RunState,
     pub parent: Option<BranchOrigin>,
+    /// Other versions of parts of the conversation (see `Fork`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forks: Vec<Fork>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub messages: Vec<Message>,
@@ -303,6 +319,7 @@ impl Session {
             step_budget: DEFAULT_STEP_BUDGET,
             run_state: RunState::Idle,
             parent: None,
+            forks: Vec::new(),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             messages: Vec::new(),
@@ -328,6 +345,66 @@ impl Session {
             Some(workspace),
             now_ms,
         ))
+    }
+
+    fn fork_index(&self, after: Option<MessageId>) -> Option<usize> {
+        self.forks.iter().position(|f| f.after == after)
+    }
+
+    /// Index in `messages` where the tail after `after` starts.
+    fn tail_start(&self, after: Option<MessageId>) -> Option<usize> {
+        match after {
+            None => Some(0),
+            Some(id) => self.messages.iter().position(|m| m.id == id).map(|i| i + 1),
+        }
+    }
+
+    /// Parks the messages from `pos` on as a version and makes room for a new
+    /// one: the caller pushes the new messages next. `pos` is at most the
+    /// number of messages.
+    pub fn fork_at(&mut self, pos: usize) {
+        let pos = pos.min(self.messages.len());
+        let after = pos.checked_sub(1).map(|i| self.messages[i].id);
+        let tail = self.messages.split_off(pos);
+        match self.fork_index(after) {
+            Some(i) => {
+                let f = &mut self.forks[i];
+                f.parked.insert(f.active, tail);
+                f.active = f.parked.len();
+            }
+            None => self.forks.push(Fork {
+                after,
+                parked: vec![tail],
+                active: 1,
+            }),
+        }
+    }
+
+    /// Shows version `to` (0-based) of the fork after `after`. False, and no
+    /// change, when there is no such fork or version.
+    pub fn switch_version(&mut self, after: Option<MessageId>, to: usize) -> bool {
+        let (Some(fi), Some(pos)) = (self.fork_index(after), self.tail_start(after)) else {
+            return false;
+        };
+        if to > self.forks[fi].parked.len() || to == self.forks[fi].active {
+            return to == self.forks[fi].active;
+        }
+        let active_tail = self.messages.split_off(pos);
+        let f = &mut self.forks[fi];
+        f.parked.insert(f.active, active_tail);
+        let shown = f.parked.remove(to);
+        f.active = to;
+        self.messages.extend(shown);
+        true
+    }
+
+    /// `(number, total)` (1-based) when `id` is the first message of a
+    /// version, so the window can show a `‹ 2 / 3 ›` counter beside it.
+    pub fn version_of(&self, id: MessageId) -> Option<(usize, usize)> {
+        let at = self.messages.iter().position(|m| m.id == id)?;
+        let after = at.checked_sub(1).map(|i| self.messages[i].id);
+        let f = &self.forks[self.fork_index(after)?];
+        Some((f.active + 1, f.parked.len() + 1))
     }
 
     pub fn is_branch(&self) -> bool {
@@ -1037,6 +1114,91 @@ mod tests {
         s.set_pinned(true);
         assert!(s.pinned);
         assert_eq!(s.updated_at_ms, T0);
+    }
+
+    fn three_message_chat() -> (Session, Message, Message) {
+        let mut s = Session::new_chat("m", SessionLifetime::Persisted, T0);
+        let (u, a) = (user("ask"), assistant("one", AssistantStatus::Complete));
+        s.messages = vec![u.clone(), a.clone()];
+        (s, u, a)
+    }
+
+    #[test]
+    fn a_new_reply_parks_the_old_one_as_a_version() {
+        let (mut s, u, a1) = three_message_chat();
+        s.fork_at(1);
+        let a2 = assistant("two", AssistantStatus::Complete);
+        s.messages.push(a2.clone());
+        assert_eq!(s.version_of(a2.id), Some((2, 2)));
+        assert_eq!(s.version_of(u.id), None);
+        assert!(s.switch_version(Some(u.id), 0));
+        assert_eq!(s.messages, vec![u.clone(), a1.clone()]);
+        assert_eq!(s.version_of(a1.id), Some((1, 2)));
+        assert!(s.switch_version(Some(u.id), 1));
+        assert_eq!(s.messages, vec![u, a2]);
+    }
+
+    #[test]
+    fn editing_the_first_message_parks_the_whole_conversation() {
+        let (mut s, u1, a1) = three_message_chat();
+        s.fork_at(0);
+        let (u2, a2) = (
+            user("better ask"),
+            assistant("two", AssistantStatus::Complete),
+        );
+        s.messages.extend([u2.clone(), a2.clone()]);
+        assert_eq!(s.version_of(u2.id), Some((2, 2)));
+        assert!(s.switch_version(None, 0));
+        assert_eq!(s.messages, vec![u1, a1]);
+        assert!(s.switch_version(None, 1));
+        assert_eq!(s.messages, vec![u2, a2]);
+    }
+
+    #[test]
+    fn a_third_version_keeps_the_order_of_the_first_two() {
+        let (mut s, u, a1) = three_message_chat();
+        s.fork_at(1);
+        let a2 = assistant("two", AssistantStatus::Complete);
+        s.messages.push(a2.clone());
+        s.fork_at(1);
+        let a3 = assistant("three", AssistantStatus::Complete);
+        s.messages.push(a3.clone());
+        assert_eq!(s.version_of(a3.id), Some((3, 3)));
+        assert!(s.switch_version(Some(u.id), 0));
+        assert_eq!(s.messages[1], a1);
+        assert!(s.switch_version(Some(u.id), 1));
+        assert_eq!(s.messages[1], a2);
+        assert_eq!(s.version_of(a2.id), Some((2, 3)));
+        assert!(s.switch_version(Some(u.id), 2));
+        assert_eq!(s.messages[1], a3);
+        assert_eq!(s.forks.len(), 1, "one fork, three versions");
+    }
+
+    #[test]
+    fn switching_to_an_unknown_version_changes_nothing() {
+        let (mut s, u, a1) = three_message_chat();
+        s.fork_at(1);
+        s.messages.push(assistant("two", AssistantStatus::Complete));
+        let before = s.messages.clone();
+        assert!(!s.switch_version(Some(u.id), 5));
+        assert!(!s.switch_version(Some(MessageId::new()), 0));
+        assert!(!s.switch_version(Some(a1.id), 0));
+        assert_eq!(s.messages, before);
+    }
+
+    #[test]
+    fn forks_are_saved_and_older_files_without_them_load() {
+        let (mut s, _u, _a) = three_message_chat();
+        s.fork_at(1);
+        s.messages.push(assistant("two", AssistantStatus::Complete));
+        let json = serde_json::to_string(&SessionDocument::new(s.clone())).unwrap();
+        let back: SessionDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.session.forks, s.forks);
+        let plain = Session::new_chat("m", SessionLifetime::Persisted, T0);
+        let json = serde_json::to_string(&SessionDocument::new(plain)).unwrap();
+        assert!(!json.contains("forks"), "empty forks are not written");
+        let loaded: SessionDocument = serde_json::from_str(&json).unwrap();
+        assert!(loaded.session.forks.is_empty());
     }
 
     #[test]

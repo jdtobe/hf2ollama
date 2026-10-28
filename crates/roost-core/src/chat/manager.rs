@@ -10,8 +10,8 @@ use super::types::{ChatCommand, ChatEvent, EventSink, RunOutcome, SendRejection,
 use crate::error::Error;
 use crate::ollama::{ChatRequestBody, OllamaClient, StreamEvent};
 use crate::session::{
-    AssistantStatus, MessageContent, MessageId, RunId, Session, SessionError, SessionId,
-    SessionLifetime, SessionMode, TurnId,
+    AssistantStatus, Message, MessageContent, MessageId, RunId, Session, SessionError, SessionId,
+    SessionLifetime, SessionMode, TurnId, UserDelivery,
 };
 use crate::store::{live_row, IndexRow, LoadError, StoreWarning, Writer};
 use std::collections::HashMap;
@@ -113,6 +113,7 @@ pub(super) enum Intent {
     Send(String),
     Retry,
     Regenerate,
+    Edit(MessageId, String),
 }
 
 pub(super) struct Run {
@@ -312,6 +313,14 @@ impl Manager {
             ChatCommand::Send { session, text } => self.begin(session, Intent::Send(text)).await,
             ChatCommand::Retry(id) => self.begin(id, Intent::Retry).await,
             ChatCommand::Regenerate(id) => self.begin(id, Intent::Regenerate).await,
+            ChatCommand::Edit {
+                session,
+                message,
+                text,
+            } => self.begin(session, Intent::Edit(message, text)).await,
+            ChatCommand::SwitchVersion { session, after, to } => {
+                self.switch_version(session, after, to).await
+            }
             ChatCommand::Stop(id) => self.stop(id).await,
             ChatCommand::CreateAgent {
                 lifetime,
@@ -437,6 +446,31 @@ impl Manager {
             }
         }
         self.emit_rows().await;
+    }
+
+    /// Shows another version of a fork. Only while the chat is idle.
+    async fn switch_version(&mut self, id: SessionId, after: Option<MessageId>, to: usize) {
+        if self
+            .sessions
+            .get(&id)
+            .is_some_and(|l| !matches!(l.slot, Slot::Idle))
+        {
+            self.session_error(Some(id), "Wait for the current reply to finish.".into());
+            return;
+        }
+        self.edit(id, move |s| {
+            let before = s.updated_at_ms;
+            if s.switch_version(after, to) {
+                s.updated_at_ms = before;
+                Ok(())
+            } else {
+                Err(SessionError::UnknownMessage)
+            }
+        })
+        .await;
+        if let Some(live) = self.sessions.get(&id) {
+            self.emit(ChatEvent::Opened(Box::new(live.s.clone())));
+        }
     }
 
     /// Edits a session (loading it if needed), saves it and refreshes rows.
@@ -582,6 +616,22 @@ impl Manager {
                     return;
                 }
             }
+            Intent::Edit(message, text) => {
+                let yours = live.s.messages.iter().any(|m| {
+                    m.id == *message
+                        && matches!(
+                            m.content,
+                            MessageContent::User {
+                                delivery: UserDelivery::Normal,
+                                ..
+                            }
+                        )
+                });
+                if live.s.mode != SessionMode::Chat || !yours || text.trim().is_empty() {
+                    self.session_error(Some(id), "That message cannot be edited.".into());
+                    return;
+                }
+            }
             Intent::Send(_) => {}
         }
         let model = live.s.model.clone();
@@ -622,29 +672,49 @@ impl Manager {
         };
         let now = now_ms();
         let before = live.s.updated_at_ms;
-        let mut removed: Option<crate::session::Message> = None;
+        // Regenerate and Edit start a new version. Check that the request
+        // fits on a copy first, so a refusal leaves the chat untouched.
+        let probe: Option<Vec<Message>> = match &intent {
+            Intent::Regenerate => {
+                let keep = live.s.messages.len().saturating_sub(1);
+                Some(live.s.messages[..keep].to_vec())
+            }
+            Intent::Edit(message, text) => {
+                let at = live
+                    .s
+                    .messages
+                    .iter()
+                    .position(|m| m.id == *message)
+                    .unwrap_or(0);
+                let mut v = live.s.messages[..at].to_vec();
+                v.push(Message {
+                    id: MessageId::new(),
+                    created_at_ms: now,
+                    content: MessageContent::User {
+                        text: text.trim().to_string(),
+                        delivery: UserDelivery::Normal,
+                    },
+                });
+                Some(v)
+            }
+            _ => None,
+        };
         let user = match &intent {
             Intent::Send(text) => {
                 let uid = live.s.push_user(text, now);
                 live.s.messages.iter().find(|m| m.id == uid).cloned()
             }
-            Intent::Retry => None,
-            Intent::Regenerate => {
-                removed = live.s.messages.pop();
-                None
-            }
+            _ => None,
         };
-        let removed_id = removed.as_ref().map(|m| m.id);
         let win = window(live.s.model_options.num_ctx, show_ctx);
-        let trimmed = match build_request(CHAT_SYSTEM_PROMPT, &live.s.messages, win) {
+        let source = probe.as_deref().unwrap_or(&live.s.messages);
+        let trimmed = match build_request(CHAT_SYSTEM_PROMPT, source, win) {
             Ok(t) => t,
             Err(e) => {
                 if user.is_some() {
                     live.s.messages.pop();
                     live.s.updated_at_ms = before;
                 }
-                // A failed regenerate keeps the reply it meant to replace.
-                live.s.messages.extend(removed);
                 live.slot = Slot::Idle;
                 let close = live.close_when_idle;
                 self.emit(ChatEvent::SendRejected {
@@ -657,6 +727,24 @@ impl Manager {
                 return;
             }
         };
+        let new_version = probe.is_some();
+        match &intent {
+            Intent::Regenerate => {
+                let at = live.s.messages.len().saturating_sub(1);
+                live.s.fork_at(at);
+            }
+            Intent::Edit(message, text) => {
+                let at = live
+                    .s
+                    .messages
+                    .iter()
+                    .position(|m| m.id == *message)
+                    .unwrap_or(0);
+                live.s.fork_at(at);
+                live.s.push_user(text.trim(), now);
+            }
+            _ => {}
+        }
         let (run_id, turn) = (RunId::new(), TurnId::new());
         let assistant = live.s.begin_assistant(run_id, turn, now);
         let body = ChatRequestBody {
@@ -690,23 +778,22 @@ impl Manager {
         let session = live.s.clone();
         let assistant_msg = session.messages.iter().find(|m| m.id == assistant).cloned();
         self.save(&session);
-        if let Some(message) = removed_id {
-            self.emit(ChatEvent::Removed {
-                session: id,
-                message,
-            });
-        }
-        if let Some(m) = user {
-            self.emit(ChatEvent::Appended {
-                session: id,
-                message: Box::new(m),
-            });
-        }
-        if let Some(m) = assistant_msg {
-            self.emit(ChatEvent::Appended {
-                session: id,
-                message: Box::new(m),
-            });
+        if new_version {
+            // The messages changed shape: send the whole chat.
+            self.emit(ChatEvent::Opened(Box::new(session)));
+        } else {
+            if let Some(m) = user {
+                self.emit(ChatEvent::Appended {
+                    session: id,
+                    message: Box::new(m),
+                });
+            }
+            if let Some(m) = assistant_msg {
+                self.emit(ChatEvent::Appended {
+                    session: id,
+                    message: Box::new(m),
+                });
+            }
         }
         self.emit(ChatEvent::TurnStarted { session: id, turn });
         if trimmed.omitted > 0 {
