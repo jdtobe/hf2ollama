@@ -59,6 +59,8 @@ pub struct AppState {
     pub jobs: JobsState,
     /// Models Ollama has loaded right now.
     pub running: Vec<roost_core::ollama::RunningModel>,
+    /// The About window is open.
+    pub show_about: bool,
     pub chat: crate::chat::ChatState,
     pub chat_ui: crate::chat::view::ChatUi,
     pub dock: DockUi,
@@ -122,6 +124,7 @@ impl AppState {
             }),
             jobs: JobsState::new(),
             running: Vec::new(),
+            show_about: false,
             chat: crate::chat::ChatState::default(),
             chat_ui: crate::chat::view::ChatUi::default(),
             dock: DockUi::default(),
