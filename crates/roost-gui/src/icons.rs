@@ -10,6 +10,7 @@ pub enum Icon {
     Details,
     Edit,
     Branch,
+    Btw,
     Prev,
     Next,
 }
@@ -83,6 +84,22 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 ],
                 stroke,
             ));
+        }
+        Icon::Btw => {
+            painter.add(egui::Shape::line(
+                vec![
+                    p(2.5, 3.5),
+                    p(13.5, 3.5),
+                    p(13.5, 10.5),
+                    p(7.5, 10.5),
+                    p(4.5, 13.0),
+                    p(4.5, 10.5),
+                    p(2.5, 10.5),
+                    p(2.5, 3.5),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(6.0, 7.0), p(10.0, 7.0)], stroke);
         }
         Icon::Prev => {
             painter.add(egui::Shape::line(

@@ -95,9 +95,11 @@ to chat" (appends the pair to the transcript) and "Dismiss".
 
 - The request is separate from any run, so it can be asked while an agent
   works and does not steer it.
-- History: per session, newest first, capped at 50 items, stored in the
-  session's folder next to its file and removed with the session. Incognito
-  sessions keep it in memory only.
+- History: per session, newest first, capped at 50 items. Ruling: stored in
+  the chat's own file (field `btw`) rather than a second file, so it is
+  removed with the chat and incognito chats keep it in memory with no extra
+  code. A branch starts with an empty history. For agent chats the question
+  sees the conversation but not tool results.
 
 ## Details
 

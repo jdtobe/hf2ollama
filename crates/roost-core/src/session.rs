@@ -69,6 +69,10 @@ id_type!(
     MessageId
 );
 id_type!(
+    /// Names one side question (BTW) in a chat's history.
+    BtwId
+);
+id_type!(
     /// Names one agent run (a loop of turns and tool calls).
     RunId
 );
@@ -190,6 +194,25 @@ pub struct BranchOrigin {
     pub message_id: MessageId,
 }
 
+/// Most side questions a chat remembers.
+pub const MAX_BTW: usize = 50;
+
+/// A side question and its answer. It is not part of the conversation until
+/// the user adds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BtwEntry {
+    pub id: BtwId,
+    /// The message the question was asked about.
+    pub at: MessageId,
+    pub question: String,
+    pub answer: String,
+    pub model: String,
+    pub asked_at_ms: u64,
+    /// Already appended to the conversation.
+    #[serde(default)]
+    pub added: bool,
+}
+
 /// One chat in a branch's ancestry: the chat, the message the next branch was
 /// made at, and the chat's title at that time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,6 +317,9 @@ pub struct Session {
     /// branch was made (see `prefix_hash`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_hash: Option<u64>,
+    /// Side questions, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub btw: Vec<BtwEntry>,
     /// Other versions of parts of the conversation (see `Fork`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forks: Vec<Fork>,
@@ -338,6 +364,7 @@ impl Session {
             parent: None,
             lineage: Vec::new(),
             origin_hash: None,
+            btw: Vec::new(),
             forks: Vec::new(),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
@@ -482,6 +509,7 @@ impl Session {
         b.id = SessionId::new();
         b.messages = messages;
         b.forks = Vec::new();
+        b.btw = Vec::new();
         b.pinned = false;
         b.run_state = RunState::Idle;
         b.title = if self.title == UNTITLED {
@@ -506,6 +534,33 @@ impl Session {
         b.created_at_ms = now_ms;
         b.updated_at_ms = now_ms;
         Ok(b)
+    }
+
+    /// Remembers a side question, newest first, up to `MAX_BTW`.
+    pub fn push_btw(&mut self, entry: BtwEntry) {
+        self.btw.insert(0, entry);
+        self.btw.truncate(MAX_BTW);
+    }
+
+    pub fn delete_btw(&mut self, id: BtwId) -> bool {
+        let before = self.btw.len();
+        self.btw.retain(|e| e.id != id);
+        self.btw.len() != before
+    }
+
+    /// Appends a side question and its answer to the end of the conversation,
+    /// once. False when there is no such entry or it was added already.
+    pub fn add_btw_to_chat(&mut self, id: BtwId, now_ms: u64) -> bool {
+        let Some(i) = self.btw.iter().position(|e| e.id == id && !e.added) else {
+            return false;
+        };
+        let (question, answer) = (self.btw[i].question.clone(), self.btw[i].answer.clone());
+        self.push_user(&question, now_ms);
+        let reply = self.begin_assistant(RunId::new(), TurnId::new(), now_ms);
+        self.append_assistant(reply, &answer, "");
+        self.finish_assistant(reply, AssistantStatus::Complete, None, now_ms);
+        self.btw[i].added = true;
+        true
     }
 
     pub fn is_branch(&self) -> bool {
@@ -1389,6 +1444,63 @@ mod tests {
         assert_eq!(back.session.origin_hash, b.origin_hash);
         let plain = serde_json::to_string(&SessionDocument::new(s)).unwrap();
         assert!(!plain.contains("lineage") && !plain.contains("origin_hash"));
+    }
+
+    fn side_question(q: &str, at: MessageId) -> BtwEntry {
+        BtwEntry {
+            id: BtwId::new(),
+            at,
+            question: q.into(),
+            answer: format!("answer to {q}"),
+            model: "m".into(),
+            asked_at_ms: T0,
+            added: false,
+        }
+    }
+
+    #[test]
+    fn side_questions_are_kept_newest_first_and_capped() {
+        let (mut s, m) = four_message_chat();
+        for i in 0..(MAX_BTW + 5) {
+            s.push_btw(side_question(&format!("q{i}"), m[1].id));
+        }
+        assert_eq!(s.btw.len(), MAX_BTW);
+        assert_eq!(s.btw[0].question, format!("q{}", MAX_BTW + 4));
+        let gone = s.btw[0].id;
+        assert!(s.delete_btw(gone));
+        assert!(!s.delete_btw(gone));
+        assert_eq!(s.btw.len(), MAX_BTW - 1);
+    }
+
+    #[test]
+    fn adding_a_side_question_appends_the_pair_once() {
+        let (mut s, m) = four_message_chat();
+        let e = side_question("why?", m[1].id);
+        let id = e.id;
+        s.push_btw(e);
+        assert!(s.add_btw_to_chat(id, T0 + 9));
+        assert_eq!(s.messages.len(), 6);
+        assert!(
+            matches!(&s.messages[4].content, MessageContent::User { text, .. } if text == "why?")
+        );
+        assert!(matches!(&s.messages[5].content,
+            MessageContent::Assistant { text, status: AssistantStatus::Complete, .. } if text == "answer to why?"));
+        assert!(!s.add_btw_to_chat(id, T0 + 10), "only once");
+        assert!(!s.add_btw_to_chat(BtwId::new(), T0), "unknown id");
+        assert_eq!(s.messages.len(), 6);
+    }
+
+    #[test]
+    fn a_branch_starts_without_the_side_questions_and_they_are_saved() {
+        let (mut s, m) = four_message_chat();
+        s.push_btw(side_question("why?", m[1].id));
+        let b = s.branch(m[1].id, None, T0).unwrap();
+        assert!(b.btw.is_empty());
+        let json = serde_json::to_string(&SessionDocument::new(s.clone())).unwrap();
+        let back: SessionDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.session.btw, s.btw);
+        let plain = serde_json::to_string(&SessionDocument::new(b)).unwrap();
+        assert!(!plain.contains("\"btw\""));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use super::manager::ModelInfo;
 use crate::agent::ToolError;
 use crate::error::Error;
 use crate::ollama::{ChatRequestBody, OllamaClient, StreamEvent};
-use crate::session::{RunId, SessionId, TurnId};
+use crate::session::{BtwEntry, RunId, SessionId, TurnId};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
 pub(super) enum RunMsg {
@@ -26,6 +26,12 @@ pub(super) enum RunMsg {
         run: RunId,
         call_id: String,
         result: Result<String, ToolError>,
+    },
+    /// A side question finished (its answer, or why not).
+    Btw {
+        session: SessionId,
+        entry: BtwEntry,
+        result: Result<String, String>,
     },
     Event {
         session: SessionId,
@@ -90,6 +96,30 @@ pub(super) async fn drive(
                 });
                 return;
             }
+        }
+    }
+}
+
+/// Longest side answer kept, in characters.
+const MAX_BTW_ANSWER: usize = 50_000;
+
+/// Asks one question and collects the whole answer (thinking is dropped).
+pub(super) async fn answer_once(
+    client: OllamaClient,
+    body: ChatRequestBody,
+) -> Result<String, String> {
+    let mut stream = client.chat_stream(&body).await.map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    loop {
+        match stream.next().await {
+            Ok(Some(StreamEvent::Content(c))) => {
+                if answer.chars().count() < MAX_BTW_ANSWER {
+                    answer.push_str(&c);
+                }
+            }
+            Ok(Some(StreamEvent::Done { .. })) | Ok(None) => return Ok(answer),
+            Ok(Some(_)) => {}
+            Err(e) => return Err(e.to_string()),
         }
     }
 }

@@ -1549,3 +1549,109 @@ fn the_branch_icon_offers_two_ways_and_the_second_picks_a_model() {
     );
     assert!(f.app.state_mut().chat_ui.branch_dialog.is_none());
 }
+
+#[test]
+fn a_side_question_is_asked_answered_and_can_be_added() {
+    use roost_core::session::{BtwEntry, BtwId};
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "A short answer.");
+    let (id, reply) = {
+        let s = f.app.state_mut().chat.open.as_ref().unwrap();
+        (s.id, s.messages[1].id)
+    };
+    run(&mut f.app, &mut h, size, 3);
+    let icon = f.app.state_mut().chat_ui.probe.btw_icon.expect("BTW icon");
+    click(&mut f.app, &mut h, size, icon.center());
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("Not added to this chat"), "{texts}");
+
+    f.app.state_mut().chat_ui.btw_input = "why?".into();
+    run(&mut f.app, &mut h, size, 2);
+    let ask = f.app.state_mut().chat_ui.probe.btw_ask.expect("Ask");
+    let _ = sent_chat_commands(&f.sent);
+    click(&mut f.app, &mut h, size, ask.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Btw { session, message, question }]
+            if *session == id && *message == reply && question == "why?"),
+        "{cmds:?}"
+    );
+    assert!(f.app.state_mut().chat_ui.btw_input.is_empty());
+
+    let bid = BtwId::new();
+    f.app.state_mut().chat.fold(ChatEvent::BtwStarted {
+        session: id,
+        id: bid,
+        message: reply,
+        question: "why?".into(),
+    });
+    run(&mut f.app, &mut h, size, 2);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("Thinking"), "{texts}");
+
+    f.app.state_mut().chat.fold(ChatEvent::BtwDone {
+        session: id,
+        entry: BtwEntry {
+            id: bid,
+            at: reply,
+            question: "why?".into(),
+            answer: "Because borrowing is checked at compile time.".into(),
+            model: "m".into(),
+            asked_at_ms: 1,
+            added: false,
+        },
+    });
+    run(&mut f.app, &mut h, size, 2);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("Because borrowing"), "{texts}");
+    let add = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .btw_add
+        .expect("Add to chat");
+    let _ = sent_chat_commands(&f.sent);
+    click(&mut f.app, &mut h, size, add.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        cmds.iter().any(
+            |c| matches!(c, ChatCommand::BtwAdd { session, id: i } if *session == id && *i == bid)
+        ),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn a_failed_side_question_shows_why() {
+    use roost_core::session::BtwId;
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "A short answer.");
+    let (id, reply) = {
+        let s = f.app.state_mut().chat.open.as_ref().unwrap();
+        (s.id, s.messages[1].id)
+    };
+    run(&mut f.app, &mut h, size, 3);
+    let icon = f.app.state_mut().chat_ui.probe.btw_icon.unwrap();
+    click(&mut f.app, &mut h, size, icon.center());
+    let bid = BtwId::new();
+    f.app.state_mut().chat.fold(ChatEvent::BtwStarted {
+        session: id,
+        id: bid,
+        message: reply,
+        question: "why?".into(),
+    });
+    f.app.state_mut().chat.fold(ChatEvent::BtwFailed {
+        session: id,
+        id: bid,
+        message: "Ollama is not reachable.".into(),
+    });
+    run(&mut f.app, &mut h, size, 2);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("Ollama is not reachable."), "{texts}");
+    assert!(!texts.contains("Thinking"), "{texts}");
+}

@@ -4,8 +4,8 @@ use roost_core::chat::{
     BranchState, ChatCommand, ChatEvent, RunOutcome, SendRejection, TurnOutcome,
 };
 use roost_core::session::{
-    AssistantStatus, Message, MessageContent, MessageId, Session, SessionId, SessionLifetime,
-    SessionMode, ToolStatus, TurnId, UserDelivery,
+    AssistantStatus, BtwId, Message, MessageContent, MessageId, Session, SessionId,
+    SessionLifetime, SessionMode, ToolStatus, TurnId, UserDelivery,
 };
 use roost_core::store::{IndexRow, RowStatus};
 use std::collections::{HashMap, HashSet};
@@ -94,6 +94,9 @@ pub fn status_label(status: AssistantStatus) -> Option<&'static str> {
 pub struct ChatState {
     rows: Vec<IndexRow>,
     pub open: Option<Session>,
+    /// The side question being answered in each chat, and one that failed.
+    btw_pending: HashMap<SessionId, (BtwId, String)>,
+    btw_error: HashMap<SessionId, String>,
     /// What is known about each opened branch's original.
     branch_views: HashMap<SessionId, BranchView>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
@@ -163,6 +166,40 @@ impl ChatState {
                     self.branch_views.insert(s.id, BranchView::Unknown);
                 }
                 self.open = Some(*s);
+            }
+            ChatEvent::BtwStarted {
+                session,
+                id,
+                question,
+                ..
+            } => {
+                self.btw_error.remove(&session);
+                self.btw_pending.insert(session, (id, question));
+            }
+            ChatEvent::BtwDone { session, entry } => {
+                self.btw_pending.remove(&session);
+                if let Some(s) = self.open.as_mut().filter(|s| s.id == session) {
+                    s.push_btw(entry);
+                }
+            }
+            ChatEvent::BtwFailed {
+                session,
+                id,
+                message,
+            } => {
+                if self
+                    .btw_pending
+                    .get(&session)
+                    .is_some_and(|(p, _)| *p == id)
+                {
+                    self.btw_pending.remove(&session);
+                }
+                self.btw_error.insert(session, message);
+            }
+            ChatEvent::BtwDeleted { session, id } => {
+                if let Some(s) = self.open.as_mut().filter(|s| s.id == session) {
+                    s.delete_btw(id);
+                }
             }
             ChatEvent::BranchChecked { session, state } => {
                 self.branch_views.insert(session, BranchView::Known(state));
@@ -613,6 +650,15 @@ impl ChatState {
             }
         }
         rail
+    }
+
+    /// The side question being answered in this chat, if any.
+    pub fn btw_pending(&self, id: SessionId) -> Option<&str> {
+        self.btw_pending.get(&id).map(|(_, q)| q.as_str())
+    }
+
+    pub fn btw_error(&self, id: SessionId) -> Option<&str> {
+        self.btw_error.get(&id).map(String::as_str)
     }
 
     /// The answer about a branch's original, once there is one.
