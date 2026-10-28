@@ -38,6 +38,34 @@ pub struct ModelDetails {
     pub template: Option<String>,
 }
 
+/// A model Ollama currently holds in memory, from `/api/ps`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningModel {
+    pub name: String,
+    pub size: u64,
+    /// The part of `size` that sits in GPU memory.
+    pub size_vram: u64,
+    /// When Ollama will unload it (RFC 3339); far in the future means "stays".
+    pub expires_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Ps {
+    #[serde(default)]
+    models: Vec<RawRunning>,
+}
+
+#[derive(Deserialize)]
+struct RawRunning {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    size_vram: u64,
+    expires_at: Option<String>,
+}
+
 /// Body of `POST /api/create`. `files` maps file name to `sha256:<hex>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateRequest {
@@ -241,6 +269,35 @@ impl OllamaClient {
                 digest: m.digest,
             })
             .collect())
+    }
+
+    /// The models Ollama has loaded right now.
+    pub async fn running(&self) -> Result<Vec<RunningModel>> {
+        let resp = self.send(self.http.get(self.url("/api/ps")?)).await?;
+        let ps: Ps = resp.json().await.map_err(|e| Error::Parse(e.to_string()))?;
+        Ok(ps
+            .models
+            .into_iter()
+            .map(|m| RunningModel {
+                name: m.name,
+                size: m.size,
+                size_vram: m.size_vram,
+                expires_at: m.expires_at.filter(|e| !e.is_empty()),
+            })
+            .collect())
+    }
+
+    /// Asks Ollama to drop a model from memory now (`keep_alive: 0`).
+    pub async fn unload(&self, name: &str) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(Error::InvalidName("model name is empty".to_string()));
+        }
+        let req = self
+            .http
+            .post(self.url("/api/generate")?)
+            .json(&serde_json::json!({ "model": name, "keep_alive": 0 }));
+        self.send(req).await?;
+        Ok(())
     }
 
     pub async fn show(&self, name: &str) -> Result<ModelDetails> {
@@ -746,6 +803,70 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn running_lists_loaded_models() {
+        let server = MockServer::start().await;
+        let body = r#"{"models":[{"name":"llama3:8b","model":"llama3:8b","size":5137025024,"digest":"abc","details":{"family":"llama"},"expires_at":"2026-10-28T09:30:00.5-07:00","size_vram":4000000000}]}"#;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let client = OllamaClient::new(&server.uri());
+        let running = timeout(T5, client.running()).await.unwrap().unwrap();
+        assert_eq!(
+            running,
+            vec![RunningModel {
+                name: "llama3:8b".into(),
+                size: 5_137_025_024,
+                size_vram: 4_000_000_000,
+                expires_at: Some("2026-10-28T09:30:00.5-07:00".into()),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn running_with_nothing_loaded_is_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"models":[]}"#))
+            .mount(&server)
+            .await;
+        let client = OllamaClient::new(&server.uri());
+        assert!(timeout(T5, client.running())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn unload_asks_for_keep_alive_zero() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .and(body_json(json!({"model": "llama3:8b", "keep_alive": 0})))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"done":true}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = OllamaClient::new(&server.uri());
+        timeout(T5, client.unload("llama3:8b"))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unload_refuses_an_empty_name() {
+        let server = MockServer::start().await;
+        let client = OllamaClient::new(&server.uri());
+        let err = timeout(T5, client.unload(" ")).await.unwrap().unwrap_err();
+        assert!(matches!(err, Error::InvalidName(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
