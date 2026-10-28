@@ -38,6 +38,8 @@ impl View {
 }
 
 pub struct AppState {
+    /// Reads replies aloud (a fake in tests).
+    pub speaker: Box<dyn crate::speech::Speaker>,
     pub view: View,
     pub query: String,
     /// `None` until the first poll answers; then the version if reachable.
@@ -128,6 +130,7 @@ impl AppState {
             }),
             jobs: JobsState::new(),
             running: Vec::new(),
+            speaker: Box::new(crate::speech::SystemSpeaker::detect()),
             show_about: false,
             models_view: View::Browse,
             // Tests lay out the content alone; the bar is tested on its own.
