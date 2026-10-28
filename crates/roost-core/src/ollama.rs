@@ -7,6 +7,9 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
+mod chat;
+pub use chat::{ChatRequestBody, ChatStream, StreamEvent};
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const UPLOAD_STALL: Duration = Duration::from_secs(120);
@@ -49,6 +52,8 @@ pub struct OllamaClient {
     http: reqwest::Client,
     upload_stall: Duration,
     create_stall: Duration,
+    chat_stall: Duration,
+    first_event: Duration,
 }
 
 #[derive(Serialize)]
@@ -178,13 +183,16 @@ impl OllamaClient {
             http,
             upload_stall: UPLOAD_STALL,
             create_stall: CREATE_STALL,
+            chat_stall: chat::CHAT_STALL,
+            first_event: chat::FIRST_EVENT,
         }
     }
 
-    /// Overrides both the upload and the create stall timeouts.
+    /// Overrides the upload, create and chat stall timeouts.
     pub fn with_stall_timeout(mut self, stall: Duration) -> OllamaClient {
         self.upload_stall = stall;
         self.create_stall = stall;
+        self.chat_stall = stall;
         self
     }
 

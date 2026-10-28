@@ -37,7 +37,9 @@ All of these are implemented; see the status banner for what was verified.
 
 The window has a minimum size of 900 by 640; the layout is designed and tested down to that size.
 
-Roost is growing into a local-model workbench (chat, read-only agents, incognito sessions, branches). That is **planned, not available**: only the groundwork (the rename, migration, themes and session data types) has landed. The stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
+Roost is growing into a local-model workbench. **Chat is available**: stream a reply from any installed model, keep conversations in a history rail (pin, rename, delete), and start an **incognito** chat that lives only in memory and is gone when you close it or quit. Replies keep running in the background while you browse or import. Each conversation is saved as its own file under the history folder (`sessions/` next to the app in portable mode); only one Roost can use a history at a time.
+
+Read-only agents, `/btw` side threads, branches, automatic titles and a history search/manager are **planned, not available**. The stages are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for what is done, what is next and what is deliberately out of scope.
 

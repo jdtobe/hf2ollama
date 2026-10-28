@@ -1,5 +1,6 @@
 mod app;
 mod browse;
+mod chat;
 mod confirm;
 mod dock;
 mod identity;
@@ -96,7 +97,7 @@ fn preset_with(lookup: impl Fn(&str) -> Option<String>) -> (Option<String>, Opti
     (lookup("ROOST_QUERY"), lookup("ROOST_SELECT"))
 }
 
-/// `ROOST_VIEW=installed|settings|browse` starts on that view. Only meant for
+/// `ROOST_VIEW=chat|installed|settings|browse` starts on that view. Only meant for
 /// screenshots; inert unless set.
 fn view_override() -> Option<app::View> {
     view_override_with(|name| std::env::var(name).ok())
@@ -104,6 +105,7 @@ fn view_override() -> Option<app::View> {
 
 fn view_override_with(lookup: impl FnOnce(&str) -> Option<String>) -> Option<app::View> {
     match lookup("ROOST_VIEW").as_deref() {
+        Some("chat") => Some(app::View::Chat),
         Some("installed") => Some(app::View::Installed),
         Some("settings") => Some(app::View::Settings),
         Some("browse") => Some(app::View::Browse),
@@ -219,9 +221,8 @@ fn main() -> eframe::Result<()> {
             app.set_startup_notice(notice);
             let (query, select) = preset();
             app.preset(query, select);
-            if let Some(view) = view_override() {
-                app.preset_view(view);
-            }
+            // Chat is where people start; ROOST_VIEW still wins for screenshots.
+            app.preset_view(view_override().unwrap_or(app::View::Chat));
             Ok(Box::new(app))
         }),
     )

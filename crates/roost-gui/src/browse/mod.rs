@@ -124,6 +124,10 @@ pub(crate) mod test_util {
     }
 
     impl Harness {
+        pub fn ctx(&self) -> &egui::Context {
+            &self.ctx
+        }
+
         pub fn new(dark: bool) -> Harness {
             let ctx = egui::Context::default();
             crate::theme::install(&ctx);

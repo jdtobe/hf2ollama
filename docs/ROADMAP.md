@@ -4,10 +4,10 @@ This roadmap is drawn from the design spec (`docs/superpowers/specs/2026-10-22-h
 
 ## Roost workbench stages
 
-The product is being extended from an importer into a local-model workbench (chat, read-only agents, incognito sessions, branches and history). Only stage 1 exists; the rest is planned, not shipped.
+The product is being extended from an importer into a local-model workbench (chat, read-only agents, incognito sessions, branches and history). Stages 1 and 2 exist; the rest is planned, not shipped.
 
 1. **Foundation (implemented):** the rename to Roost, safe migration of hf2ollama settings, import history, staging markers and (on request) the Hugging Face token, four theme families with light and dark variants, and the serializable session domain types in `roost-core`.
-2. Streaming chat, per-session persistence, incognito, the history rail and background runs. Not started.
+2. **Streaming chat and history (implemented):** streaming chat, one file per session with a rebuildable index, incognito, the history rail with pinning, and background runs. Deferred inside this stage: markdown and code-block rendering, a copy button, regenerate, rail search and filters, and pagination of the Earlier group.
 3. Read-only agents with a workspace jail and the tool registry. Not started.
 4. `/btw` side threads, branches, automatic titles and the history manager. Not started.
 

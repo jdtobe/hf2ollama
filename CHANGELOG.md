@@ -17,6 +17,15 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - The Roost mark and icon, generated from `docs/design/roost-tail.svg`, and a CI scan for stray old names.
 - Serializable chat and agent session types in `roost-core`. Chat and agents themselves are not implemented yet.
 
+### Chat and history (stage 2)
+
+- A Chat view, now the first tab and the starting view: streaming replies from any installed Ollama model, a history rail (Pinned, Today, Yesterday, Earlier), New chat and New incognito, rename, pin and two-step delete, a model picker, Retry for failed, stopped or interrupted replies, and a Stop button while a reply runs.
+- Conversations are saved one file per session with a rebuildable index. Damaged files are set aside, files from a newer Roost are left untouched, and a crash during a reply keeps the partial text (marked Interrupted). Only one Roost can use a history at a time.
+- Incognito chats exist only in memory: nothing is written to disk, and their drafts and editor state are dropped when they end.
+- Requests send an explicit `num_ctx` (the model's context length, capped at 16,384) and trim old exchanges to fit, keeping the full transcript locally.
+- Replies continue in other sessions and while you use Browse, Installed or Settings; the Chat tab shows a count of running replies.
+- Fixed: the top bar's logo, tabs, search field and Ollama status pill now share one vertical centre.
+
 ### Added
 
 - A clear (✕) button in the Browse search field.

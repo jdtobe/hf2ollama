@@ -2,6 +2,7 @@
 //! `BackendRequest`s from the UI and answers with `UiEvent`s.
 
 use eframe::egui;
+use roost_core::chat::{ChatCommand, ChatConfig, ChatEvent, ChatHandle, ChatManager, EventSink};
 use roost_core::config::Settings;
 use roost_core::events::{Command, JobEvent, JobId};
 use roost_core::hf::{HfClient, ModelCard, ModelInfo, ModelSummary, SearchQuery};
@@ -11,6 +12,7 @@ use roost_core::paths::Paths;
 use roost_core::pipeline::{JobManager, PipelineCtx};
 use roost_core::secrets::{promote_legacy_token, KeychainStore, LegacyTokenMigration, TokenStore};
 use roost_core::staging::Staging;
+use roost_core::store::{Store, StoreError, Writer};
 use std::ops::Not;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -61,6 +63,10 @@ pub enum BackendRequest {
     ImportLegacyToken,
     ListCached,
     ClearCached,
+    /// An intent for the chat manager.
+    Chat(ChatCommand),
+    /// Stops chat runs and writes partial replies; answered on the sender.
+    ShutdownChat(Sender<()>),
 }
 
 /// What the Settings view shows about the Hugging Face token. Never the token.
@@ -113,6 +119,9 @@ pub enum UiEvent {
     CachedLoaded(Result<Vec<CachedRow>, String>),
     /// Bytes freed by `ClearCached`.
     CachedCleared(Result<u64, String>),
+    Chat(ChatEvent),
+    /// History cannot be used (another Roost holds it, or the folder failed).
+    ChatUnavailable(String),
 }
 
 /// One installed model plus the Hugging Face repo it was imported from, when
@@ -226,6 +235,7 @@ struct Shared {
     handle: tokio::runtime::Handle,
     out: Emitter,
     recheck: Notify,
+    chat: Option<ChatHandle>,
 }
 
 impl Shared {
@@ -267,6 +277,9 @@ impl Shared {
             self.job_tx.clone(),
             self.handle.clone(),
         ));
+        if let Some(chat) = &self.chat {
+            chat.set_ollama(ollama.clone());
+        }
         let mut clients = self.clients();
         clients.hf = hf;
         clients.ollama = ollama;
@@ -436,6 +449,7 @@ fn run(
         legacy_store,
         gate: token_gate,
     } = stores;
+    let chat = start_chat(&runtime, &paths, &settings, &out);
     let token = store.get().ok().flatten();
     let shared = Arc::new(Shared {
         clients: Mutex::new(Clients {
@@ -454,6 +468,7 @@ fn run(
         handle: runtime.handle().clone(),
         out,
         recheck: Notify::new(),
+        chat,
     });
     shared.install_settings(&settings);
     // What the keychain holds, without asking Hugging Face.
@@ -484,8 +499,51 @@ async fn poll_status(shared: Arc<Shared>) {
     }
 }
 
+/// Opens the session store and starts the chat manager. When history is
+/// locked or unusable, chat is off and the rest of the app still works.
+fn start_chat(
+    runtime: &tokio::runtime::Runtime,
+    paths: &Paths,
+    settings: &Settings,
+    out: &Emitter,
+) -> Option<ChatHandle> {
+    match Store::open(&paths.sessions_dir) {
+        Ok((store, warnings)) => {
+            let writer = Writer::spawn(store, warnings);
+            let emitter = out.clone();
+            let sink: EventSink = Arc::new(move |e| emitter.emit(UiEvent::Chat(e)));
+            let cfg = ChatConfig::new(OllamaClient::new(&settings.ollama_url));
+            Some(ChatManager::spawn(runtime.handle(), writer, cfg, sink))
+        }
+        Err(StoreError::Locked) => {
+            out.emit(UiEvent::ChatUnavailable(
+                "Another Roost is using this history. Close it to chat here; Browse, Installed and Settings still work.".into(),
+            ));
+            None
+        }
+        Err(e) => {
+            out.emit(UiEvent::ChatUnavailable(e.to_string()));
+            None
+        }
+    }
+}
+
 fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
     match req {
+        BackendRequest::Chat(cmd) => {
+            if let Some(chat) = &shared.chat {
+                chat.send(cmd);
+            }
+        }
+        BackendRequest::ShutdownChat(ack) => {
+            let chat = shared.chat.clone();
+            shared.handle.spawn(async move {
+                if let Some(chat) = chat {
+                    chat.shutdown().await;
+                }
+                let _ = ack.send(());
+            });
+        }
         BackendRequest::Core(cmd) => {
             let managers = shared.clients().managers.clone();
             match (&cmd, managers.split_last()) {
@@ -591,6 +649,9 @@ async fn serve(shared: &Shared, req: BackendRequest) {
                     })
                     .collect()
             });
+            if let Some(chat) = &shared.chat {
+                chat.send(ChatCommand::InstalledChanged);
+            }
             UiEvent::InstalledLoaded(r)
         }
         BackendRequest::ShowInstalled(name) => {
@@ -606,13 +667,19 @@ async fn serve(shared: &Shared, req: BackendRequest) {
                     eprintln!("could not save history: {e}");
                 }
             }
+            if let Some(chat) = &shared.chat {
+                chat.send(ChatCommand::InstalledChanged);
+            }
             UiEvent::DeleteDone(name, r)
         }
         BackendRequest::TestConnection(url) => {
             UiEvent::ConnectionTest(text(OllamaClient::new(&url).version().await))
         }
         // Handled synchronously in `dispatch`.
-        BackendRequest::Core(_) | BackendRequest::ApplySettings(_) => return,
+        BackendRequest::Core(_)
+        | BackendRequest::ApplySettings(_)
+        | BackendRequest::Chat(_)
+        | BackendRequest::ShutdownChat(_) => return,
         BackendRequest::SetHfToken(token) => {
             let failure = {
                 let _guard = shared.token_gate.acquire(TokenOperation::Save).await;
@@ -1625,5 +1692,119 @@ mod tests {
             _ => None,
         });
         assert_eq!(total, u64::MAX);
+    }
+
+    // ------------------------------------------------------------- chat
+
+    const SHOW_JSON: &str = r#"{"details":{"family":"llama"},"model_info":{"llama.context_length":4096},"capabilities":[],"digest":"sha256:abc"}"#;
+
+    fn create_chat() -> BackendRequest {
+        BackendRequest::Chat(ChatCommand::Create {
+            lifetime: roost_core::session::SessionLifetime::Persisted,
+            model: "llama3:8b".into(),
+        })
+    }
+
+    #[test]
+    fn chat_commands_round_trip_to_events() {
+        let h = harness("http://127.0.0.1:9", "http://127.0.0.1:9");
+        h.tx.send(create_chat()).unwrap();
+        let id = wait_for(&h.rx, |e| match e {
+            UiEvent::Chat(ChatEvent::Opened(s)) => Some(s.id),
+            _ => None,
+        });
+        let rows = wait_for(&h.rx, |e| match e {
+            UiEvent::Chat(ChatEvent::Rows(r)) if r.iter().any(|x| x.id == id) => Some(r.len()),
+            _ => None,
+        });
+        assert_eq!(rows, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_locked_history_reports_chat_unavailable_and_other_requests_still_work() {
+        let ollama = version_server("0.9.2").await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
+            log_dir: dir.path().join("logs"),
+            default_staging: dir.path().join("staging"),
+            portable: true,
+        };
+        let _holder = Store::open(&paths.sessions_dir).unwrap();
+        let settings = Settings {
+            ollama_url: ollama.uri(),
+            hf_endpoint: "http://127.0.0.1:9".into(),
+            ..Settings::default()
+        };
+        let (tx, rx) = Backend::spawn_with(
+            egui::Context::default(),
+            settings,
+            paths,
+            Arc::new(MemoryStore::default()),
+        );
+        let msg = wait_for(&rx, |e| match e {
+            UiEvent::ChatUnavailable(m) => Some(m.clone()),
+            _ => None,
+        });
+        assert!(msg.contains("Another Roost"), "{msg}");
+        tx.send(BackendRequest::TestConnection(ollama.uri()))
+            .unwrap();
+        let ok = wait_for(&rx, |e| match e {
+            UiEvent::ConnectionTest(r) => Some(r.clone()),
+            _ => None,
+        });
+        assert_eq!(ok, Ok("0.9.2".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn applying_settings_updates_the_chat_client() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(SHOW_JSON))
+            .mount(&server)
+            .await;
+        let reply = "{\"message\":{\"role\":\"assistant\",\"content\":\"hi there\"},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(reply))
+            .mount(&server)
+            .await;
+        // Starts pointing nowhere; the new settings point at the mock.
+        let h = harness("http://127.0.0.1:9", "http://127.0.0.1:9");
+        h.tx.send(BackendRequest::ApplySettings(Settings {
+            ollama_url: server.uri(),
+            hf_endpoint: "http://127.0.0.1:9".into(),
+            ..Settings::default()
+        }))
+        .unwrap();
+        wait_for(&h.rx, |e| {
+            matches!(e, UiEvent::SettingsSaved(_)).then_some(())
+        });
+        h.tx.send(create_chat()).unwrap();
+        let id = wait_for(&h.rx, |e| match e {
+            UiEvent::Chat(ChatEvent::Opened(s)) => Some(s.id),
+            _ => None,
+        });
+        h.tx.send(BackendRequest::Chat(ChatCommand::Send {
+            session: id,
+            text: "hello".into(),
+        }))
+        .unwrap();
+        let outcome = wait_for(&h.rx, |e| match e {
+            UiEvent::Chat(ChatEvent::TurnEnded { outcome, .. }) => Some(*outcome),
+            _ => None,
+        });
+        assert_eq!(outcome, roost_core::chat::TurnOutcome::Completed);
+    }
+
+    #[test]
+    fn shutting_down_chat_is_acknowledged() {
+        let h = harness("http://127.0.0.1:9", "http://127.0.0.1:9");
+        let (ack, done) = std::sync::mpsc::channel();
+        h.tx.send(BackendRequest::ShutdownChat(ack)).unwrap();
+        assert!(done.recv_timeout(Duration::from_secs(4)).is_ok());
     }
 }

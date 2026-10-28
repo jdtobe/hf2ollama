@@ -2,7 +2,11 @@
 
 Written 2026-10-22, refreshed 2026-10-23 after PRs #1-#4 were merged, so a new session (or a person) can continue without the earlier conversation. Read this first, then `follow-ups.md` and `acceptance.md` in this folder.
 
-## Update 2026-10-27 (read this first)
+## Update 2026-10-27, later: stage 2 (chat) is built (read this first)
+
+Stage 2 (streaming chat, per-session storage, incognito, history rail with pinning) is on branch `feat/roost-chat`; see `docs/superpowers/specs/2026-10-27-roost-chat-design.md` and `docs/superpowers/plans/2026-10-27-roost-chat.md`. Not pushed or merged. Manual verification still owed: a real Ollama (chat, stop, a model that is not installed), the look of all four themes, and Windows/Linux. Known gaps: markdown rendering, copy, regenerate, rail search, empty chats are saved at creation and not pruned, Earlier is not paginated. Stage 3 (agents) is next.
+
+## Update 2026-10-27 (earlier)
 
 - The repository was renamed `hf2ollama` -> `roost` on GitHub (`origin` is `https://github.com/jdtobe/roost.git`). Everything below this section was written before the rename and still uses the hf2ollama names; the identity scan allows that for this file.
 - The Roost foundation (`docs/superpowers/plans/2026-10-27-roost-foundation.md`, tasks 1-9) is implemented on branch `feat/roost` and submitted as a PR to `main`. It is a fast-forward of `main`. Spec: `docs/superpowers/specs/2026-10-27-roost-workbench-design.md`.

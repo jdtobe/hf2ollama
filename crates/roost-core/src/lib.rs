@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod compat;
 pub mod config;
 pub mod control;
@@ -17,3 +18,6 @@ pub mod pipeline;
 pub mod secrets;
 pub mod session;
 pub mod staging;
+pub mod store;
+#[cfg(test)]
+pub(crate) mod test_server;

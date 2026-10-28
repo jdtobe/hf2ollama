@@ -203,6 +203,9 @@ pub enum MessageContent {
         turn_id: Option<TurnId>,
         /// Readable reason when `status` is `failed`.
         error: Option<String>,
+        /// Reasoning text some models return; shown collapsed, never resent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
     },
     Tool {
         call_id: String,
@@ -365,7 +368,7 @@ impl Session {
 
     /// Manual rename: trims, remembers the old title for undo and turns
     /// Auto-title off. An invalid title changes nothing.
-    pub fn rename(&mut self, title: &str, now_ms: u64) -> Result<(), SessionError> {
+    pub fn rename(&mut self, title: &str) -> Result<(), SessionError> {
         let title = title.trim();
         if title.is_empty() || title.chars().count() > MAX_TITLE_CHARS {
             return Err(SessionError::InvalidTitle);
@@ -375,8 +378,86 @@ impl Session {
             self.title_metadata.undo_title = Some(std::mem::replace(&mut self.title, title.into()));
         }
         self.title_metadata.auto_title = false;
-        self.updated_at_ms = now_ms;
         Ok(())
+    }
+
+    /// Pinning is housekeeping: it never changes `updated_at_ms`.
+    pub fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
+
+    fn push(&mut self, content: MessageContent, now_ms: u64) -> MessageId {
+        let id = MessageId::new();
+        self.messages.push(Message {
+            id,
+            created_at_ms: now_ms,
+            content,
+        });
+        self.updated_at_ms = now_ms;
+        id
+    }
+
+    pub fn push_user(&mut self, text: &str, now_ms: u64) -> MessageId {
+        self.push(
+            MessageContent::User {
+                text: text.into(),
+                delivery: UserDelivery::Normal,
+            },
+            now_ms,
+        )
+    }
+
+    /// Starts an empty streaming assistant message and marks the run active.
+    pub fn begin_assistant(&mut self, run: RunId, turn: TurnId, now_ms: u64) -> MessageId {
+        self.run_state = RunState::Running {
+            run_id: run,
+            turn_id: turn,
+        };
+        self.push(
+            MessageContent::Assistant {
+                text: String::new(),
+                status: AssistantStatus::Streaming,
+                run_id: Some(run),
+                turn_id: Some(turn),
+                error: None,
+                thinking: None,
+            },
+            now_ms,
+        )
+    }
+
+    pub fn append_assistant(&mut self, id: MessageId, content: &str, thinking: &str) {
+        let Some(m) = self.messages.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        if let MessageContent::Assistant {
+            text, thinking: t, ..
+        } = &mut m.content
+        {
+            text.push_str(content);
+            if !thinking.is_empty() {
+                t.get_or_insert_with(String::new).push_str(thinking);
+            }
+        }
+    }
+
+    pub fn finish_assistant(
+        &mut self,
+        id: MessageId,
+        new_status: AssistantStatus,
+        new_error: Option<String>,
+        now_ms: u64,
+    ) {
+        if let Some(Message {
+            content: MessageContent::Assistant { status, error, .. },
+            ..
+        }) = self.messages.iter_mut().find(|m| m.id == id)
+        {
+            *status = new_status;
+            *error = new_error;
+        }
+        self.run_state = RunState::Idle;
+        self.updated_at_ms = now_ms;
     }
 }
 
@@ -445,6 +526,7 @@ mod tests {
             run_id: None,
             turn_id: None,
             error: None,
+            thinking: None,
         })
     }
 
@@ -569,6 +651,7 @@ mod tests {
                 run_id: Some(run_id),
                 turn_id: Some(turn_id),
                 error: None,
+                thinking: Some("hm".into()),
             }),
             msg(MessageContent::Tool {
                 call_id: "c1".into(),
@@ -731,30 +814,30 @@ mod tests {
     #[test]
     fn rename_trims_records_undo_and_disables_auto_title() {
         let mut s = chat();
-        s.rename("  My plan  ", T0 + 50).unwrap();
+        s.rename("  My plan  ").unwrap();
         assert_eq!(s.title, "My plan");
         assert_eq!(s.title_metadata.undo_title.as_deref(), Some("Untitled"));
         assert!(!s.title_metadata.auto_title);
-        assert_eq!(s.updated_at_ms, T0 + 50);
-        s.rename("Second", T0 + 60).unwrap();
+        assert_eq!(s.updated_at_ms, T0);
+        s.rename("Second").unwrap();
         assert_eq!(s.title_metadata.undo_title.as_deref(), Some("My plan"));
     }
 
     #[test]
     fn rename_rejects_invalid_titles_without_changing_anything() {
         let mut s = chat();
-        s.rename("Keep", T0 + 1).unwrap();
+        s.rename("Keep").unwrap();
         let before = s.clone();
         for bad in ["", "   \t\n", &"x".repeat(81), &"日".repeat(81)] {
             assert_eq!(
-                s.rename(bad, T0 + 99).unwrap_err(),
+                s.rename(bad).unwrap_err(),
                 SessionError::InvalidTitle,
                 "{bad:?}"
             );
             assert_eq!(s, before);
         }
         // 80 Unicode scalar values (not bytes) are allowed.
-        s.rename(&"日".repeat(80), T0 + 2).unwrap();
+        s.rename(&"日".repeat(80)).unwrap();
         assert_eq!(s.title.chars().count(), 80);
     }
 
@@ -777,8 +860,8 @@ mod tests {
     fn renaming_to_the_same_title_keeps_the_original_undo() {
         let mut s = chat();
         s.title = "Auto title".into();
-        s.rename("My title", T0 + 1).unwrap();
-        s.rename(" My title ", T0 + 2).unwrap();
+        s.rename("My title").unwrap();
+        s.rename(" My title ").unwrap();
         assert_eq!(s.title_metadata.undo_title.as_deref(), Some("Auto title"));
         assert_eq!(s.title, "My title");
     }
@@ -791,5 +874,60 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&Permission::Ask).unwrap(), "\"ask\"");
         assert_eq!(serde_json::to_string(&Permission::Off).unwrap(), "\"off\"");
+    }
+
+    #[test]
+    fn set_pinned_does_not_change_updated_at() {
+        let mut s = chat();
+        s.set_pinned(true);
+        assert!(s.pinned);
+        assert_eq!(s.updated_at_ms, T0);
+    }
+
+    #[test]
+    fn push_user_appends_normal_user_message_and_bumps_updated_at() {
+        let mut s = chat();
+        let id = s.push_user("hi", T0 + 5);
+        assert_eq!(s.updated_at_ms, T0 + 5);
+        assert_eq!(s.messages[0].id, id);
+        assert!(matches!(
+            &s.messages[0].content,
+            MessageContent::User { text, delivery: UserDelivery::Normal } if text == "hi"
+        ));
+    }
+
+    #[test]
+    fn begin_append_finish_builds_one_complete_assistant_message() {
+        let mut s = chat();
+        let (run, turn) = (RunId::new(), TurnId::new());
+        let id = s.begin_assistant(run, turn, T0 + 1);
+        assert_eq!(
+            s.run_state,
+            RunState::Running {
+                run_id: run,
+                turn_id: turn
+            }
+        );
+        s.append_assistant(id, "Hel", "t1");
+        s.append_assistant(id, "lo", "t2");
+        s.finish_assistant(id, AssistantStatus::Complete, None, T0 + 9);
+        assert_eq!(s.run_state, RunState::Idle);
+        assert_eq!(s.updated_at_ms, T0 + 9);
+        assert!(matches!(
+            &s.messages[0].content,
+            MessageContent::Assistant { text, thinking: Some(t), status: AssistantStatus::Complete, .. }
+                if text == "Hello" && t == "t1t2"
+        ));
+    }
+
+    #[test]
+    fn old_assistant_json_without_thinking_still_loads() {
+        let json = r#"{"role":"assistant","text":"a","status":"complete","run_id":null,"turn_id":null,"error":null}"#;
+        let c: MessageContent = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            c,
+            MessageContent::Assistant { thinking: None, .. }
+        ));
+        assert!(!serde_json::to_string(&c).unwrap().contains("thinking"));
     }
 }
