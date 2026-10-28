@@ -1,9 +1,9 @@
 //! Chat view-model: folds `ChatEvent`s into plain data. No egui types.
 
-use roost_core::chat::{ChatCommand, ChatEvent, SendRejection, TurnOutcome};
+use roost_core::chat::{ChatCommand, ChatEvent, RunOutcome, SendRejection, TurnOutcome};
 use roost_core::session::{
     AssistantStatus, Message, MessageContent, MessageId, Session, SessionId, SessionLifetime,
-    TurnId,
+    SessionMode, ToolStatus, TurnId, UserDelivery,
 };
 use roost_core::store::{IndexRow, RowStatus};
 use std::collections::{HashMap, HashSet};
@@ -82,6 +82,13 @@ pub struct ChatState {
     rows: Vec<IndexRow>,
     pub open: Option<Session>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
+    /// Sessions with a run in progress. A run spans several model turns for
+    /// an agent, so this outlives `runs`, which tracks only the streaming turn.
+    active: HashSet<SessionId>,
+    /// Steering messages sent to a running agent, waiting for its next safe step.
+    queued: HashMap<SessionId, Vec<String>>,
+    /// Whether each model advertises tool support (from `/api/show`).
+    tool_support: HashMap<String, bool>,
     drafts: HashMap<SessionId, String>,
     sending: HashSet<SessionId>,
     /// Sessions dropped since the view last looked; it clears their editors.
@@ -118,6 +125,7 @@ impl ChatState {
                     .copied()
                     .chain(self.open.as_ref().map(|s| s.id))
                     .chain(self.runs.keys().copied())
+                    .chain(self.active.iter().copied())
                     .filter(|id| known.contains(id) && !present.contains(id))
                     .collect();
                 for id in gone {
@@ -146,6 +154,7 @@ impl ChatState {
                     self.model_missing = None;
                 }
                 self.runs.insert(session, (turn, RunBadge::Running));
+                self.active.insert(session);
                 self.omitted.remove(&session);
                 self.sending.remove(&session);
                 self.notice = None;
@@ -191,8 +200,53 @@ impl ChatState {
                         Some("That chat is no longer available.".into())
                     }
                     SendRejection::EmptyMessage => None,
+                    SendRejection::NoToolSupport(m) => Some(format!(
+                        "{m} does not support tools, so it cannot run an agent. Choose a model that does."
+                    )),
+                    SendRejection::NoWorkspace(why) => {
+                        Some(format!("This agent's folder cannot be used: {why}"))
+                    }
                     SendRejection::Cancelled => None,
                 };
+            }
+            ChatEvent::ToolStarted {
+                session, call_id, ..
+            } => {
+                self.update_tool(session, &call_id, None, ToolStatus::Running);
+            }
+            ChatEvent::ToolFinished {
+                session,
+                call_id,
+                ok,
+                output,
+            } => {
+                let status = if ok {
+                    ToolStatus::Complete
+                } else {
+                    ToolStatus::Failed
+                };
+                self.update_tool(session, &call_id, Some(output), status);
+            }
+            ChatEvent::SteeringQueued { session, text } => {
+                self.drafts.remove(&session);
+                self.sending.remove(&session);
+                self.queued.entry(session).or_default().push(text);
+            }
+            ChatEvent::RunEnded {
+                session,
+                outcome,
+                message,
+            } => {
+                self.active.remove(&session);
+                self.runs.remove(&session);
+                self.sending.remove(&session);
+                self.queued.remove(&session);
+                if outcome == RunOutcome::BudgetExhausted {
+                    self.notice = message;
+                }
+            }
+            ChatEvent::ModelCapabilities { model, tools } => {
+                self.tool_support.insert(model, tools);
             }
             ChatEvent::ModelMissing { session, model } => {
                 self.model_missing = Some((session, model));
@@ -213,9 +267,17 @@ impl ChatState {
     }
 
     fn appended(&mut self, session: SessionId, message: Message) {
-        if matches!(message.content, MessageContent::User { .. }) {
-            self.drafts.remove(&session);
-            self.sending.remove(&session);
+        if let MessageContent::User { text, delivery } = &message.content {
+            if *delivery == UserDelivery::Steering {
+                if let Some(q) = self.queued.get_mut(&session) {
+                    if let Some(at) = q.iter().position(|t| t == text) {
+                        q.remove(at);
+                    }
+                }
+            } else {
+                self.drafts.remove(&session);
+                self.sending.remove(&session);
+            }
         }
         if let Some(s) = self.open.as_mut().filter(|s| s.id == session) {
             s.messages.push(message);
@@ -241,6 +303,7 @@ impl ChatState {
                     TurnOutcome::Completed => AssistantStatus::Complete,
                     TurnOutcome::Failed => AssistantStatus::Failed,
                     TurnOutcome::Cancelled => AssistantStatus::Cancelled,
+                    TurnOutcome::Interrupted => AssistantStatus::Interrupted,
                 };
                 let now = s.updated_at_ms;
                 s.finish_assistant(id, status, message, now);
@@ -249,16 +312,77 @@ impl ChatState {
     }
 
     pub fn badge(&self, id: SessionId) -> RunBadge {
-        self.runs.get(&id).map_or(RunBadge::None, |r| r.1)
+        match self.runs.get(&id) {
+            Some(r) => r.1,
+            // Between steps (a tool is running) the session is still busy.
+            None if self.active.contains(&id) => RunBadge::Running,
+            None => RunBadge::None,
+        }
     }
 
     pub fn is_running(&self, id: SessionId) -> bool {
-        self.runs.contains_key(&id) || self.sending.contains(&id)
+        self.active.contains(&id) || self.runs.contains_key(&id) || self.sending.contains(&id)
     }
 
-    /// Sessions with a reply in progress, shown or not.
+    /// Sessions with a run in progress, shown or not.
     pub fn active_runs(&self) -> usize {
-        self.runs.len()
+        self.active.len()
+    }
+
+    /// Whether the saved or open session is an agent.
+    pub fn is_agent(&self, id: SessionId) -> bool {
+        self.rows
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.mode == SessionMode::Agent)
+            .or_else(|| {
+                self.open
+                    .as_ref()
+                    .filter(|s| s.id == id)
+                    .map(|s| s.mode == SessionMode::Agent)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Steering messages still waiting to be applied to a running agent.
+    #[cfg_attr(not(test), allow(dead_code))] // until the Work tab shows them
+    pub fn queued(&self, id: SessionId) -> &[String] {
+        self.queued.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// `Some(true)` once the model is known to support tools.
+    #[cfg_attr(not(test), allow(dead_code))] // until the Work tab uses it
+    pub fn supports_tools(&self, model: &str) -> Option<bool> {
+        self.tool_support.get(model).copied()
+    }
+
+    fn update_tool(
+        &mut self,
+        id: SessionId,
+        call_id: &str,
+        result: Option<String>,
+        new: ToolStatus,
+    ) {
+        let Some(s) = self.open.as_mut().filter(|s| s.id == id) else {
+            return;
+        };
+        for m in &mut s.messages {
+            if let MessageContent::Tool {
+                call_id: c,
+                output,
+                status,
+                ..
+            } = &mut m.content
+            {
+                if c == call_id {
+                    *status = new;
+                    if result.is_some() {
+                        *output = result;
+                    }
+                    return;
+                }
+            }
+        }
     }
 
     pub fn omitted(&self, id: SessionId) -> usize {
@@ -278,6 +402,8 @@ impl ChatState {
         self.drafts.remove(&id);
         self.omitted.remove(&id);
         self.runs.remove(&id);
+        self.active.remove(&id);
+        self.queued.remove(&id);
         self.sending.remove(&id);
         self.forgotten.push(id);
         if self.open.as_ref().is_some_and(|s| s.id == id) {
@@ -292,7 +418,9 @@ impl ChatState {
 
     /// Enter / Send. The draft stays until the manager confirms the message.
     pub fn try_send(&mut self, id: SessionId) -> SendAttempt {
-        if self.is_running(id) {
+        // A running agent takes the message as steering; a chat does not.
+        let steering = self.active.contains(&id) && self.is_agent(id);
+        if self.sending.contains(&id) || (self.is_running(id) && !steering) {
             return SendAttempt::Busy;
         }
         let text = self.draft(id).trim().to_string();
@@ -331,9 +459,14 @@ impl ChatState {
 
     /// Groups rows for the rail. `day_of` maps a timestamp to a day number.
     pub fn rail(&self, now_ms: u64, day_of: impl Fn(u64) -> i64) -> Rail {
+        self.rail_for(SessionMode::Chat, now_ms, day_of)
+    }
+
+    /// The rail for one tab: chats for Chat, agents for Work.
+    pub fn rail_for(&self, mode: SessionMode, now_ms: u64, day_of: impl Fn(u64) -> i64) -> Rail {
         let today = day_of(now_ms);
         let mut rail = Rail::default();
-        let mut sorted: Vec<&IndexRow> = self.rows.iter().collect();
+        let mut sorted: Vec<&IndexRow> = self.rows.iter().filter(|r| r.mode == mode).collect();
         sorted.sort_by(|a, b| {
             b.updated_at_ms
                 .cmp(&a.updated_at_ms)
@@ -477,6 +610,12 @@ mod tests {
         assert_eq!(last_text(&st), ("Hello".into(), AssistantStatus::Streaming));
         st.fold(ended(&s, turn, TurnOutcome::Completed));
         assert_eq!(last_text(&st), ("Hello".into(), AssistantStatus::Complete));
+        assert_eq!(st.active_runs(), 1, "the run lasts until RunEnded");
+        st.fold(ChatEvent::RunEnded {
+            session: s.id,
+            outcome: RunOutcome::Completed,
+            message: None,
+        });
         assert_eq!(st.active_runs(), 0);
     }
 
@@ -762,5 +901,225 @@ mod tests {
         assert_eq!(display_title(&r), "hello");
         r.title = "Mine".into();
         assert_eq!(display_title(&r), "Mine");
+    }
+
+    // ---- agents
+
+    fn agent_state() -> (ChatState, Session) {
+        let mut st = ChatState::default();
+        let mut s =
+            Session::new_agent("m", SessionLifetime::Persisted, std::env::temp_dir(), 1).unwrap();
+        s.push_user("task", 2);
+        let mut r = roost_core_row(&s);
+        r.mode = SessionMode::Agent;
+        st.fold(ChatEvent::Rows(vec![r]));
+        st.fold(ChatEvent::Opened(Box::new(s.clone())));
+        (st, s)
+    }
+
+    fn run_ended(s: &Session, outcome: RunOutcome, message: Option<&str>) -> ChatEvent {
+        ChatEvent::RunEnded {
+            session: s.id,
+            outcome,
+            message: message.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn an_agent_run_stays_active_between_model_turns_until_the_run_ends() {
+        let (mut st, s) = agent_state();
+        let turn = TurnId::new();
+        st.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn,
+        });
+        st.fold(ended(&s, turn, TurnOutcome::Completed));
+        // A tool is running now: no turn is streaming, but the agent is busy.
+        assert_eq!(st.active_runs(), 1);
+        assert!(st.is_running(s.id));
+        assert_eq!(st.badge(s.id), RunBadge::Running);
+        st.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        assert_eq!(st.active_runs(), 1, "still one run");
+        st.fold(run_ended(&s, RunOutcome::Completed, None));
+        assert!(!st.is_running(s.id));
+        assert_eq!(st.badge(s.id), RunBadge::None);
+    }
+
+    #[test]
+    fn tool_events_update_the_tool_step_in_the_open_transcript() {
+        let (mut st, s) = agent_state();
+        let mut with_tool = s.clone();
+        let id = with_tool.push_tool_call(
+            roost_core::session::RunId::new(),
+            "call_1",
+            "read_file",
+            serde_json::json!({"path": "a"}),
+            3,
+        );
+        let msg = with_tool
+            .messages
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
+            .unwrap();
+        st.fold(ChatEvent::Appended {
+            session: s.id,
+            message: Box::new(msg),
+        });
+        let tool =
+            |st: &ChatState| match &st.open.as_ref().unwrap().messages.last().unwrap().content {
+                MessageContent::Tool { status, output, .. } => (*status, output.clone()),
+                _ => panic!("not a tool message"),
+            };
+        assert_eq!(tool(&st), (ToolStatus::Pending, None));
+        st.fold(ChatEvent::ToolStarted {
+            session: s.id,
+            call_id: "call_1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        });
+        assert_eq!(tool(&st).0, ToolStatus::Running);
+        st.fold(ChatEvent::ToolFinished {
+            session: s.id,
+            call_id: "call_1".into(),
+            ok: true,
+            output: "1| hi".into(),
+        });
+        assert_eq!(tool(&st), (ToolStatus::Complete, Some("1| hi".into())));
+        st.fold(ChatEvent::ToolFinished {
+            session: s.id,
+            call_id: "unknown".into(),
+            ok: false,
+            output: "x".into(),
+        });
+        assert_eq!(
+            tool(&st).0,
+            ToolStatus::Complete,
+            "an unknown call changes nothing"
+        );
+    }
+
+    #[test]
+    fn an_agent_accepts_steering_while_running_and_a_chat_does_not() {
+        let (mut st, s) = agent_state();
+        st.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        *st.draft_mut(s.id) = "look at src instead".into();
+        let SendAttempt::Sent(ChatCommand::Send { text, .. }) = st.try_send(s.id) else {
+            panic!("an agent should take steering")
+        };
+        assert_eq!(text, "look at src instead");
+        assert!(
+            matches!(st.try_send(s.id), SendAttempt::Busy),
+            "double press while in flight"
+        );
+        st.fold(ChatEvent::SteeringQueued {
+            session: s.id,
+            text,
+        });
+        assert_eq!(st.queued(s.id), ["look at src instead"]);
+        assert_eq!(st.draft(s.id), "", "the draft is cleared once queued");
+        // Applying it moves it into the transcript and out of the queue.
+        let mut after = s.clone();
+        let id = after.push_steering("look at src instead", 5);
+        let msg = after.messages.iter().find(|m| m.id == id).cloned().unwrap();
+        st.fold(ChatEvent::Appended {
+            session: s.id,
+            message: Box::new(msg),
+        });
+        assert!(st.queued(s.id).is_empty());
+
+        // A chat still refuses to send while it replies.
+        let (mut chat, cs, _t) = started();
+        *chat.draft_mut(cs.id) = "next".into();
+        assert!(matches!(chat.try_send(cs.id), SendAttempt::Busy));
+    }
+
+    #[test]
+    fn the_rail_for_each_tab_lists_only_its_own_kind_of_session() {
+        let mut st = ChatState::default();
+        let mut agent = row("Refactor plan", NOW);
+        agent.mode = SessionMode::Agent;
+        st.fold(ChatEvent::Rows(vec![row("A chat", NOW), agent]));
+        let titles = |mode| {
+            st.rail_for(mode, NOW, utc_day)
+                .today
+                .iter()
+                .map(|r| r.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(SessionMode::Chat), ["A chat"]);
+        assert_eq!(titles(SessionMode::Agent), ["Refactor plan"]);
+        assert_eq!(st.rail(NOW, utc_day).today.len(), 1);
+    }
+
+    #[test]
+    fn tool_support_is_remembered_per_model_and_refusals_are_explained() {
+        let mut st = ChatState::default();
+        assert_eq!(st.supports_tools("m:1"), None);
+        st.fold(ChatEvent::ModelCapabilities {
+            model: "m:1".into(),
+            tools: true,
+        });
+        st.fold(ChatEvent::ModelCapabilities {
+            model: "n:2".into(),
+            tools: false,
+        });
+        assert_eq!(st.supports_tools("m:1"), Some(true));
+        assert_eq!(st.supports_tools("n:2"), Some(false));
+        let id = Session::new_chat("n:2", SessionLifetime::Persisted, 1).id;
+        st.fold(ChatEvent::SendRejected {
+            session: id,
+            reason: SendRejection::NoToolSupport("n:2".into()),
+        });
+        assert!(st
+            .notice
+            .as_deref()
+            .unwrap()
+            .contains("does not support tools"));
+        st.fold(ChatEvent::SendRejected {
+            session: id,
+            reason: SendRejection::NoWorkspace("gone".into()),
+        });
+        assert!(st.notice.as_deref().unwrap().contains("folder"));
+    }
+
+    #[test]
+    fn an_interrupted_turn_is_kept_and_labelled() {
+        let (mut st, s, turn) = started();
+        st.fold(delta(&s, turn, "partial"));
+        st.fold(ended(&s, turn, TurnOutcome::Interrupted));
+        assert_eq!(
+            last_text(&st),
+            ("partial".into(), AssistantStatus::Interrupted)
+        );
+        assert_eq!(
+            status_label(AssistantStatus::Interrupted),
+            Some("Interrupted")
+        );
+    }
+
+    #[test]
+    fn running_out_of_steps_is_reported_to_the_user() {
+        let (mut st, s) = agent_state();
+        st.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        st.fold(run_ended(
+            &s,
+            RunOutcome::BudgetExhausted,
+            Some("Stopped after using all 20 steps."),
+        ));
+        assert_eq!(
+            st.notice.as_deref(),
+            Some("Stopped after using all 20 steps.")
+        );
+        assert!(!st.is_running(s.id));
     }
 }
