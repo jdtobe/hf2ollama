@@ -28,6 +28,21 @@ pub enum Error {
     UnsafePath(String),
     #[error("Ollama error: {0}")]
     Ollama(String),
+    #[error("model not found: {0}")]
+    ModelNotFound(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_not_found_displays_the_name() {
+        assert_eq!(
+            Error::ModelNotFound("llama3:8b".into()).to_string(),
+            "model not found: llama3:8b"
+        );
+    }
+}

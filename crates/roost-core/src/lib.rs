@@ -18,3 +18,5 @@ pub mod pipeline;
 pub mod secrets;
 pub mod session;
 pub mod staging;
+#[cfg(test)]
+pub(crate) mod test_server;
