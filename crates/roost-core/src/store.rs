@@ -8,8 +8,8 @@
 
 use crate::persistence::atomic_write;
 use crate::session::{
-    BranchOrigin, Session, SessionDocument, SessionId, SessionLifetime, SessionMode,
-    SESSION_SCHEMA_VERSION,
+    BranchOrigin, MessageContent, Session, SessionDocument, SessionId, SessionLifetime,
+    SessionMode, SESSION_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -51,6 +51,28 @@ pub struct IndexRow {
     pub status: RowStatus,
     pub file_mtime_ms: u64,
     pub file_len: u64,
+    /// The start of the first user message on one line, for chats that have
+    /// no title yet. `None` means an index written before previews existed.
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
+const PREVIEW_CHARS: usize = 80;
+
+/// The first user message squeezed onto one line and cut at 80 characters.
+fn preview_of(s: &Session) -> String {
+    let first = s.messages.iter().find_map(|m| match &m.content {
+        MessageContent::User { text, .. } => Some(text),
+        _ => None,
+    });
+    let line = first
+        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    if line.chars().count() <= PREVIEW_CHARS {
+        return line;
+    }
+    let cut: String = line.chars().take(PREVIEW_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 impl IndexRow {
@@ -181,6 +203,7 @@ fn row_of(s: &Session, st: Stamp) -> IndexRow {
         status: RowStatus::Ok,
         file_mtime_ms: st.mtime_ms,
         file_len: st.len,
+        preview: Some(preview_of(s)),
     }
 }
 
@@ -210,6 +233,7 @@ fn placeholder(id: SessionId, status: RowStatus, title: Option<String>, st: Stam
         status,
         file_mtime_ms: st.mtime_ms,
         file_len: st.len,
+        preview: Some(String::new()),
     }
 }
 
@@ -285,6 +309,7 @@ impl Store {
         for (id, st) in &live {
             let reusable = old.get(id).filter(|r| {
                 r.status == RowStatus::Ok
+                    && r.preview.is_some()
                     && !r.active
                     && r.file_mtime_ms == st.mtime_ms
                     && r.file_len == st.len
@@ -695,5 +720,60 @@ mod tests {
         let (st, w) = open(d.path());
         assert!(st.rows().is_empty());
         assert!(w.is_empty());
+    }
+
+    #[test]
+    fn rows_carry_a_one_line_preview_of_the_first_user_message() {
+        let d = TempDir::new().unwrap();
+        let (mut st, _) = open(d.path());
+        let mut s = Session::new_chat("m", SessionLifetime::Persisted, 1_000);
+        s.push_user("  How do I\n   make   sourdough?\n\nAlso rye.  ", 2_000);
+        s.push_user("a later message", 3_000);
+        st.save(&s).unwrap();
+        assert_eq!(
+            st.rows()[0].preview.as_deref(),
+            Some("How do I make sourdough? Also rye.")
+        );
+        let mut long = Session::new_chat("m", SessionLifetime::Persisted, 1_000);
+        long.push_user(&"word ".repeat(60), 2_000);
+        st.save(&long).unwrap();
+        let p = st
+            .rows()
+            .into_iter()
+            .find(|r| r.id == long.id)
+            .unwrap()
+            .preview
+            .unwrap();
+        assert_eq!(p.chars().count(), 80);
+        assert!(p.ends_with('…'));
+    }
+
+    #[test]
+    fn an_empty_chat_has_an_empty_preview() {
+        let d = TempDir::new().unwrap();
+        let (mut st, _) = open(d.path());
+        st.save(&chat("Empty")).unwrap();
+        assert_eq!(st.rows()[0].preview.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn index_rows_from_before_previews_existed_are_refreshed_on_open() {
+        let d = TempDir::new().unwrap();
+        let mut s = chat("Old");
+        s.push_user("what was asked", 2_000);
+        {
+            let (mut st, _) = open(d.path());
+            st.save(&s).unwrap();
+        }
+        // Strip the field, as an index written by an earlier build would be.
+        let path = d.path().join(INDEX_FILE);
+        let mut index: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for row in index["rows"].as_array_mut().unwrap() {
+            row.as_object_mut().unwrap().remove("preview");
+        }
+        fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
+        let (st, _) = open(d.path());
+        assert_eq!(st.rows()[0].preview.as_deref(), Some("what was asked"));
     }
 }

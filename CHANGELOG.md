@@ -31,6 +31,8 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - A delete control on every rail row: hover or select a row, click the ✕, then click "Delete?" after a short pause.
 - Loaded models: the chat header shows whether its model is in memory (and when Ollama will unload it) with an Unload button, and the rail has an "In memory" list with Unload for each loaded model. Ollama is asked every 10 seconds and whenever a reply starts or ends.
 
+- Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
+
 ### Added
 
 - A clear (✕) button in the Browse search field.

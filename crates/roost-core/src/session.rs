@@ -14,7 +14,8 @@ use uuid::Uuid;
 pub const SESSION_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_STEP_BUDGET: u32 = 20;
 const MAX_TITLE_CHARS: usize = 80;
-const UNTITLED: &str = "Untitled";
+/// The title every new session starts with.
+pub const UNTITLED: &str = "Untitled";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SessionError {

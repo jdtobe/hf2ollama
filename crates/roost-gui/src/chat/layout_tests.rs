@@ -33,6 +33,7 @@ fn row_for(s: &Session, title: &str) -> IndexRow {
         status: RowStatus::Ok,
         file_mtime_ms: 0,
         file_len: 0,
+        preview: Some(String::new()),
     }
 }
 
