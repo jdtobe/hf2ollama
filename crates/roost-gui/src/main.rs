@@ -187,7 +187,7 @@ fn main() -> eframe::Result<()> {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size(size_override().unwrap_or([1180.0, 820.0]))
-        .with_min_inner_size(MIN_WINDOW)
+        .with_min_inner_size(menu::bar::min_window(menu::Platform::current(), MIN_WINDOW))
         .with_title(identity::PRODUCT_NAME);
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);

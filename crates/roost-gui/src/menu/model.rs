@@ -386,6 +386,7 @@ impl MenuModel {
         out
     }
 
+    #[cfg(test)]
     pub fn menu(&self, title: &str) -> Option<&Menu> {
         self.menus.iter().find(|m| m.title == title)
     }

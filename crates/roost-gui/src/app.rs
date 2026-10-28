@@ -61,6 +61,8 @@ pub struct AppState {
     pub running: Vec<roost_core::ollama::RunningModel>,
     /// The About window is open.
     pub show_about: bool,
+    /// Which platform's menus to build (the real one, except in tests).
+    pub platform: crate::menu::Platform,
     pub chat: crate::chat::ChatState,
     pub chat_ui: crate::chat::view::ChatUi,
     pub dock: DockUi,
@@ -125,6 +127,12 @@ impl AppState {
             jobs: JobsState::new(),
             running: Vec::new(),
             show_about: false,
+            // Tests lay out the content alone; the bar is tested on its own.
+            platform: if cfg!(test) {
+                crate::menu::Platform::Mac
+            } else {
+                crate::menu::Platform::current()
+            },
             chat: crate::chat::ChatState::default(),
             chat_ui: crate::chat::view::ChatUi::default(),
             dock: DockUi::default(),
@@ -440,6 +448,7 @@ impl eframe::App for App {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events();
+        self.pump_menu(ctx);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         for cmd in self.process_close(close_requested, Instant::now()) {
             ctx.send_viewport_cmd(cmd);
@@ -468,6 +477,30 @@ impl App {
         now: Instant,
     ) -> Vec<egui::ViewportCommand> {
         crate::quit::process_close(&mut self.state, close_requested, now)
+    }
+
+    /// Runs the menu actions the platform's shortcuts produced this frame.
+    /// macOS dispatches shortcuts in its native menu, so nothing is read there.
+    pub(crate) fn pump_menu(&mut self, ctx: &egui::Context) {
+        let platform = self.state.platform;
+        if platform == crate::menu::Platform::Mac {
+            return;
+        }
+        let model = crate::menu::model::build(&self.state, platform);
+        let actions = crate::menu::bar::shortcuts(ctx, &model);
+        self.run_menu_actions(ctx, actions);
+    }
+
+    pub(crate) fn run_menu_actions(
+        &mut self,
+        ctx: &egui::Context,
+        actions: Vec<crate::menu::MenuAction>,
+    ) {
+        for action in actions {
+            for request in crate::menu::actions::handle(&mut self.state, ctx, action) {
+                let _ = self.tx.send(request);
+            }
+        }
     }
 
     /// Folds every waiting backend event into the state and sends the
@@ -524,6 +557,13 @@ impl App {
             .painter()
             .layout_no_wrap(label, egui::FontId::proportional(12.0), t.fg2);
         let pill_w = pill_size(galley.size().x).x;
+
+        let platform = self.state.platform;
+        if crate::menu::bar::uses_window_bar(platform) {
+            let model = crate::menu::model::build(&self.state, platform);
+            let bar = crate::menu::bar::show(ui, &model, platform);
+            self.run_menu_actions(ui.ctx(), bar.actions);
+        }
 
         egui::Panel::top("top")
             .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
@@ -755,6 +795,7 @@ impl App {
         // Whatever the nav click or a button queued in the Settings state.
         self.flush_settings_requests();
         crate::quit::show(ui, &mut self.state, &self.tx, Instant::now());
+        crate::menu::about::show(ui.ctx(), &mut self.state.show_about);
     }
 }
 
@@ -1706,6 +1747,76 @@ mod tests {
                     hi - lo
                 );
             }
+        }
+    }
+
+    fn shortcut_event(key: egui::Key, mods: egui::Modifiers) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn menu_app(platform: crate::menu::Platform) -> App {
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            &Settings::default(),
+            PathBuf::new(),
+            Machine {
+                ram_gb: 8.0,
+                vram_gb: None,
+            },
+            tx,
+            rx,
+        );
+        app.state.platform = platform;
+        app.state.view = View::Chat;
+        app
+    }
+
+    #[test]
+    fn shortcuts_switch_views_on_windows_and_linux() {
+        for platform in [crate::menu::Platform::Linux, crate::menu::Platform::Windows] {
+            let mut app = menu_app(platform);
+            let ctx = egui::Context::default();
+            let input = shortcut_event(egui::Key::Num2, egui::Modifiers::COMMAND);
+            ctx.run_ui(input, |ui| app.pump_menu(ui.ctx()))
+                .drop_without_applying_deltas();
+            assert_eq!(app.state.view, View::Browse, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn macos_leaves_shortcuts_to_its_native_menu() {
+        let mut app = menu_app(crate::menu::Platform::Mac);
+        let ctx = egui::Context::default();
+        let input = shortcut_event(egui::Key::Num2, egui::Modifiers::COMMAND);
+        ctx.run_ui(input, |ui| app.pump_menu(ui.ctx()))
+            .drop_without_applying_deltas();
+        assert_eq!(app.state.view, View::Chat, "egui must not also act on it");
+    }
+
+    #[test]
+    fn the_window_bar_shows_only_on_linux_and_pushes_nothing_off_screen() {
+        for (platform, bar) in [
+            (crate::menu::Platform::Linux, true),
+            (crate::menu::Platform::Mac, false),
+            (crate::menu::Platform::Windows, false),
+        ] {
+            let mut app = menu_app(platform);
+            let mut h = crate::browse::test_util::Harness::new(false);
+            for _ in 0..4 {
+                h.frame(vec2(900.0, 640.0), vec![], |ui| app.show(ui));
+            }
+            let texts = h.frame_texts(vec2(900.0, 640.0), vec![], |ui| app.show(ui));
+            assert_eq!(texts.iter().any(|t| t == "Models"), bar, "{platform:?}");
         }
     }
 }
