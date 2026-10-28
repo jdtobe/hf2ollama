@@ -14,7 +14,7 @@ use crate::widgets::toggle;
 use eframe::egui::{
     self, vec2, Align, Align2, CornerRadius, Layout, Margin, Rect, RichText, Sense, Stroke,
 };
-use roost_core::config::{AutoDismiss, Settings, ThemeFamily, ThemeMode};
+use roost_core::config::{AutoDismiss, KeepAlive, Settings, ThemeFamily, ThemeMode};
 use roost_core::fit::Machine;
 use state::{
     cached_total, connection_message, detected_line, has_clearable, token_badge, BadgeKind,
@@ -420,6 +420,26 @@ fn ollama_card(
                         }
                     }
                 });
+            },
+        );
+        row(
+            ui,
+            cx,
+            "Keep models in memory",
+            "How long Ollama holds a model in memory after you chat with it. Longer is faster to come back to and uses RAM or VRAM meanwhile. You can always unload a model from the status pill.",
+            FIELD_H,
+            false,
+            |ui, cx, _| {
+                let options = [
+                    (KeepAlive::OllamaDefault, "Ollama's default (5 minutes)"),
+                    (KeepAlive::FifteenMinutes, "15 minutes"),
+                    (KeepAlive::OneHour, "1 hour"),
+                    (KeepAlive::UntilQuit, "Until Ollama quits"),
+                ];
+                if let Some(v) = select(ui, cx, "select-keepalive", settings.keep_alive, &options)
+                {
+                    change.merge(state.set_keep_alive(settings, v));
+                }
             },
         );
         row(

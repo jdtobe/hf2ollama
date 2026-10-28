@@ -9,7 +9,7 @@ use super::validate::{
 use crate::browse::results::format_size;
 use crate::confirm::Confirm;
 use crate::runtime::{BackendRequest, CachedRow, HfToken, HfTokenStatus};
-use roost_core::config::{AutoDismiss, Settings, ThemeFamily, ThemeMode};
+use roost_core::config::{AutoDismiss, KeepAlive, Settings, ThemeFamily, ThemeMode};
 use roost_core::fit::Machine;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -34,6 +34,7 @@ pub struct SettingsChange {
     pub hf_endpoint: bool,
     pub hardware: bool,
     pub theme: bool,
+    pub keep_alive: bool,
 }
 
 impl SettingsChange {
@@ -51,6 +52,7 @@ impl SettingsChange {
         self.hf_endpoint |= other.hf_endpoint;
         self.hardware |= other.hardware;
         self.theme |= other.theme;
+        self.keep_alive |= other.keep_alive;
     }
 }
 
@@ -400,6 +402,13 @@ impl SettingsState {
         }
     }
 
+    pub fn set_keep_alive(&mut self, s: &mut Settings, v: KeepAlive) -> SettingsChange {
+        SettingsChange {
+            keep_alive: Self::flag(&mut s.keep_alive, v),
+            ..Default::default()
+        }
+    }
+
     pub fn set_theme(&mut self, s: &mut Settings, v: ThemeMode) -> SettingsChange {
         SettingsChange {
             theme: Self::flag(&mut s.theme_mode, v),
@@ -687,6 +696,7 @@ mod tests {
             (c.hf_endpoint, "hf_endpoint"),
             (c.hardware, "hardware"),
             (c.theme, "theme"),
+            (c.keep_alive, "keep_alive"),
         ] {
             if on {
                 v.push(name);
@@ -760,6 +770,11 @@ mod tests {
             flags(st.set_auto_dismiss(&mut s, AutoDismiss::OneHour)),
             ["auto_dismiss"]
         );
+        assert_eq!(
+            flags(st.set_keep_alive(&mut s, KeepAlive::OneHour)),
+            ["keep_alive"]
+        );
+        assert_eq!(s.keep_alive, KeepAlive::OneHour);
         assert_eq!(flags(st.set_theme(&mut s, ThemeMode::Dark)), ["theme"]);
         assert_eq!(
             flags(st.set_theme_family(&mut s, ThemeFamily::Plum)),

@@ -1,5 +1,6 @@
 //! Pure job bookkeeping for the downloads dock (no egui).
 
+use crate::browse::results::format_size;
 use roost_core::config::AutoDismiss;
 use roost_core::events::{JobEvent, JobId, Stage};
 use std::collections::VecDeque;
@@ -7,6 +8,11 @@ use std::time::{Duration, Instant};
 
 /// Speed is averaged over progress reports from the last five seconds.
 pub const RATE_WINDOW: Duration = Duration::from_secs(5);
+/// Time constant of the speed the estimate uses. Longer than `RATE_WINDOW`
+/// so one fast or slow burst barely moves it.
+const ETA_TAU: Duration = Duration::from_secs(20);
+/// No estimate is shown before this much downloading has been seen.
+const ETA_WARMUP: Duration = Duration::from_secs(5);
 
 /// Most log lines kept per row; older lines are dropped first.
 pub const MAX_LOG_LINES: usize = 2000;
@@ -47,6 +53,12 @@ pub struct JobRow {
     rate: Option<f64>,
     /// `(when, bytes done)` reports inside the rolling window.
     samples: VecDeque<(Instant, u64)>,
+    /// Speed smoothed over about `ETA_TAU`, for the estimate only.
+    smooth: Option<f64>,
+    /// When the first report of this stretch of downloading arrived.
+    first_report: Option<Instant>,
+    /// The estimate on screen, in seconds, already rounded.
+    eta: Option<u64>,
 }
 
 impl JobRow {
@@ -64,6 +76,9 @@ impl JobRow {
             paused: false,
             rate: None,
             samples: VecDeque::new(),
+            smooth: None,
+            first_report: None,
+            eta: None,
         }
     }
 
@@ -102,6 +117,69 @@ impl JobRow {
         }
     }
 
+    /// The stage pill: one or two words.
+    pub fn pill_text(&self) -> &'static str {
+        match self.status {
+            RowStatus::Queued => "Queued",
+            RowStatus::Paused => "Paused",
+            RowStatus::Finished => "Ready in Ollama",
+            RowStatus::Failed => "Failed",
+            RowStatus::Cancelled => "Cancelled",
+            RowStatus::Running => match self.stage {
+                Stage::Queued => "Queued",
+                Stage::Downloading => "Downloading",
+                Stage::Verifying => "Verifying",
+                Stage::Uploading => "Uploading",
+                Stage::Creating => "Creating",
+                Stage::CleaningUp => "Cleaning up",
+                Stage::Done => "Finishing",
+            },
+        }
+    }
+
+    /// The numbers line under the name, e.g.
+    /// `42% · 8.4 GB / 19.9 GB · 24.1 MB/s · ~7m 58s left`.
+    pub fn detail_text(&self) -> String {
+        let pct = (self.fraction() * 100.0).floor() as u32;
+        let bytes = || {
+            (self.total > 0 && self.done > 0).then(|| {
+                format!(
+                    "{} / {}",
+                    format_size(self.done.min(self.total)),
+                    format_size(self.total)
+                )
+            })
+        };
+        let join = |parts: Vec<Option<String>>| {
+            parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")
+        };
+        match self.status {
+            RowStatus::Queued => "Waiting to start".to_string(),
+            RowStatus::Paused => join(vec![
+                Some(format!("{pct}%")),
+                bytes(),
+                Some("paused".into()),
+            ]),
+            RowStatus::Finished => "Imported into Ollama".to_string(),
+            RowStatus::Failed => join(vec![Some(format!("Stopped at {pct}%")), bytes()]),
+            RowStatus::Cancelled => format!("Cancelled at {pct}%"),
+            RowStatus::Running => match self.stage {
+                Stage::Queued => "Waiting to start".to_string(),
+                Stage::Downloading => join(vec![
+                    Some(format!("{pct}%")),
+                    bytes(),
+                    self.rate.map(format_rate),
+                    self.eta_text(),
+                ]),
+                Stage::Verifying => "Checking sha256".to_string(),
+                Stage::Uploading => "Sending to Ollama".to_string(),
+                Stage::Creating => "Creating the model".to_string(),
+                Stage::CleaningUp => "Removing staging files".to_string(),
+                Stage::Done => "Finishing".to_string(),
+            },
+        }
+    }
+
     fn settle(&mut self, status: RowStatus, now: Instant) {
         if self.status.is_settled() {
             return;
@@ -115,6 +193,50 @@ impl JobRow {
     fn clear_rate(&mut self) {
         self.rate = None;
         self.samples.clear();
+        self.smooth = None;
+        self.first_report = None;
+        self.eta = None;
+    }
+
+    /// Seconds left, rounded; `None` until there is enough data.
+    #[cfg(test)]
+    pub fn eta_secs(&self) -> Option<u64> {
+        self.eta
+    }
+
+    /// `~7m 50s left`, `calculating…` while a download has no estimate yet,
+    /// and nothing at any other time.
+    pub fn eta_text(&self) -> Option<String> {
+        if let Some(secs) = self.eta {
+            return Some(format_eta(secs));
+        }
+        let downloading = self.status == RowStatus::Running && self.stage == Stage::Downloading;
+        downloading.then(|| "calculating…".to_string())
+    }
+
+    /// Folds the newest rate into the smoothed speed and refreshes the
+    /// estimate. The estimate needs `ETA_WARMUP` of data, is rounded, and a
+    /// single rounding step upward is ignored, so it counts down steadily.
+    fn update_eta(&mut self, now: Instant, previous: Option<Instant>) {
+        let (Some(rate), Some(first)) = (self.rate, self.first_report) else {
+            return;
+        };
+        let dt = previous.map_or(0.0, |p| now.saturating_duration_since(p).as_secs_f64());
+        let alpha = 1.0 - (-dt / ETA_TAU.as_secs_f64()).exp();
+        let smooth = match self.smooth {
+            Some(s) => s + alpha * (rate - s),
+            None => rate,
+        };
+        self.smooth = Some(smooth);
+        if now.saturating_duration_since(first) < ETA_WARMUP || smooth <= 0.0 {
+            return;
+        }
+        let left = self.total.saturating_sub(self.done) as f64;
+        let next = quantize_eta((left / smooth).ceil() as u64);
+        self.eta = match self.eta {
+            Some(prev) if next > prev && next - prev <= eta_step(prev) => Some(prev),
+            _ => Some(next),
+        };
     }
 
     /// Adds one progress report and recomputes the rate over the last
@@ -128,6 +250,8 @@ impl JobRow {
         {
             return;
         }
+        let previous = self.samples.back().map(|(at, _)| *at);
+        self.first_report.get_or_insert(now);
         self.samples.push_back((now, self.done));
         while let Some((at, _)) = self.samples.front() {
             if now.saturating_duration_since(*at) > RATE_WINDOW {
@@ -145,6 +269,7 @@ impl JobRow {
             }
             _ => None,
         };
+        self.update_eta(now, previous);
     }
 
     fn live_status(&self) -> RowStatus {
@@ -156,6 +281,33 @@ impl JobRow {
             RowStatus::Running
         }
     }
+}
+
+/// Rounding step for an estimate of `secs`: finer when it is short.
+fn eta_step(secs: u64) -> u64 {
+    match secs {
+        0..=59 => 5,
+        60..=599 => 10,
+        600..=3_599 => 60,
+        _ => 300,
+    }
+}
+
+/// Rounds an estimate so it does not flicker with every report.
+pub fn quantize_eta(secs: u64) -> u64 {
+    let step = eta_step(secs);
+    ((secs + step / 2) / step * step).max(step)
+}
+
+/// `~45 s left`, `~1m 30s left`, `~11m left`, `~1h 10m left`.
+pub fn format_eta(secs: u64) -> String {
+    let body = match secs {
+        0..=59 => format!("{secs} s"),
+        60..=599 => format!("{}m {}s", secs / 60, secs % 60),
+        600..=3_599 => format!("{}m", secs / 60),
+        _ => format!("{}h {}m", secs / 3_600, secs % 3_600 / 60),
+    };
+    format!("~{body} left")
 }
 
 /// Formats a transfer rate, e.g. `12.4 MB/s`.
@@ -707,6 +859,126 @@ mod tests {
             now + Duration::from_secs(8),
         );
         assert_eq!(row(&s, 1).status_text(), "Downloading 40% · 10.0 MB/s");
+    }
+
+    /// Feeds one report per second, `mb` megabytes more each time.
+    fn feed(s: &mut JobsState, start: Instant, secs: u64, per_sec: impl Fn(u64) -> u64) {
+        let mut done = 0;
+        for t in 0..secs {
+            done += per_sec(t) * 1_000_000;
+            s.apply(
+                &progress(1, done, 10_000_000_000),
+                start + Duration::from_secs(t),
+            );
+        }
+    }
+
+    #[test]
+    fn the_estimate_waits_for_five_seconds_of_data() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        feed(&mut s, now, 3, |_| 10);
+        assert_eq!(row(&s, 1).eta_text().as_deref(), Some("calculating…"));
+        feed(&mut s, now, 8, |_| 10);
+        let text = row(&s, 1).eta_text().expect("estimate");
+        assert!(text.starts_with('~') && text.ends_with(" left"), "{text}");
+    }
+
+    #[test]
+    fn the_estimate_stays_put_on_a_noisy_connection() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        let mut shown = Vec::new();
+        let mut done = 0u64;
+        for t in 0..60u64 {
+            // Alternating 6 and 14 MB/s around a 10 MB/s average.
+            done += if t % 2 == 0 { 6 } else { 14 } * 1_000_000;
+            s.apply(
+                &progress(1, done, 10_000_000_000),
+                now + Duration::from_secs(t),
+            );
+            if let Some(secs) = row(&s, 1).eta_secs() {
+                shown.push(secs);
+            }
+        }
+        assert!(shown.len() > 40, "{shown:?}");
+        // Swinging 6 to 14 MB/s, the figure on screen may be revised a few
+        // times as the average settles; it must not flicker with each report.
+        let changes = shown.windows(2).filter(|w| w[0] != w[1]).count();
+        assert!(changes <= 4, "{changes} changes: {shown:?}");
+    }
+
+    #[test]
+    fn the_estimate_is_forgotten_when_paused_or_past_the_download() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        feed(&mut s, now, 10, |_| 10);
+        assert!(row(&s, 1).eta_secs().is_some());
+        s.apply(
+            &JobEvent::Paused { id: id(1) },
+            now + Duration::from_secs(11),
+        );
+        assert_eq!(row(&s, 1).eta_text(), None);
+        s.apply(
+            &JobEvent::Resumed { id: id(1) },
+            now + Duration::from_secs(12),
+        );
+        assert_eq!(row(&s, 1).eta_text().as_deref(), Some("calculating…"));
+        s.apply(&stage(1, Stage::Verifying), now + Duration::from_secs(13));
+        assert_eq!(row(&s, 1).eta_text(), None);
+    }
+
+    #[test]
+    fn estimates_are_rounded_to_a_steady_precision() {
+        assert_eq!(quantize_eta(3), 5);
+        assert_eq!(quantize_eta(47), 45);
+        assert_eq!(quantize_eta(93), 90);
+        assert_eq!(quantize_eta(651), 660);
+        assert_eq!(quantize_eta(4_000), 3_900);
+        assert_eq!(format_eta(45), "~45 s left");
+        assert_eq!(format_eta(90), "~1m 30s left");
+        assert_eq!(format_eta(660), "~11m left");
+        assert_eq!(format_eta(4_200), "~1h 10m left");
+    }
+
+    #[test]
+    fn pill_and_detail_describe_each_state() {
+        let now = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, now);
+        assert_eq!(row(&s, 1).pill_text(), "Downloading");
+        assert_eq!(row(&s, 1).detail_text(), "0% · calculating…");
+        feed(&mut s, now, 10, |_| 10);
+        let d = row(&s, 1).detail_text();
+        assert!(
+            d.starts_with("1% · 100 MB / 10.00 GB · 10.0 MB/s · ~") && d.ends_with(" left"),
+            "{d}"
+        );
+        s.apply(
+            &JobEvent::Paused { id: id(1) },
+            now + Duration::from_secs(11),
+        );
+        assert_eq!(row(&s, 1).pill_text(), "Paused");
+        assert!(row(&s, 1).detail_text().ends_with("· paused"));
+        s.apply(
+            &JobEvent::Resumed { id: id(1) },
+            now + Duration::from_secs(12),
+        );
+        s.apply(&stage(1, Stage::Verifying), now + Duration::from_secs(13));
+        assert_eq!(row(&s, 1).pill_text(), "Verifying");
+        assert_eq!(row(&s, 1).detail_text(), "Checking sha256");
+        s.apply(
+            &JobEvent::Failed {
+                id: id(1),
+                error: "boom".into(),
+            },
+            now + Duration::from_secs(14),
+        );
+        assert_eq!(row(&s, 1).pill_text(), "Failed");
+        assert!(row(&s, 1).detail_text().starts_with("Stopped at 1%"));
     }
 
     #[test]

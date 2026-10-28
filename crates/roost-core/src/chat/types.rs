@@ -40,6 +40,8 @@ pub enum ChatCommand {
     },
     Stop(SessionId),
     Retry(SessionId),
+    /// Drop the last complete reply and ask again (chats only).
+    Regenerate(SessionId),
     ListSessions,
     /// The installed models changed: forget cached context lengths.
     InstalledChanged,

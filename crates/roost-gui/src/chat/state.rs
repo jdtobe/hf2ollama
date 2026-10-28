@@ -82,6 +82,8 @@ pub struct ChatState {
     rows: Vec<IndexRow>,
     pub open: Option<Session>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
+    /// Model steps taken so far in each session's current run.
+    steps: HashMap<SessionId, u32>,
     /// Sessions with a run in progress. A run spans several model turns for
     /// an agent, so this outlives `runs`, which tracks only the streaming turn.
     active: HashSet<SessionId>,
@@ -154,7 +156,10 @@ impl ChatState {
                     self.model_missing = None;
                 }
                 self.runs.insert(session, (turn, RunBadge::Running));
-                self.active.insert(session);
+                if self.active.insert(session) {
+                    self.steps.remove(&session);
+                }
+                *self.steps.entry(session).or_insert(0) += 1;
                 self.omitted.remove(&session);
                 self.sending.remove(&session);
                 self.notice = None;
@@ -239,6 +244,7 @@ impl ChatState {
             } => {
                 self.active.remove(&session);
                 self.runs.remove(&session);
+                self.steps.remove(&session);
                 self.sending.remove(&session);
                 self.queued.remove(&session);
                 if outcome == RunOutcome::BudgetExhausted {
@@ -365,6 +371,11 @@ impl ChatState {
             .unwrap_or(false)
     }
 
+    /// The step a running agent is on (1-based); 0 when it is not running.
+    pub fn step_of(&self, id: SessionId) -> u32 {
+        self.steps.get(&id).copied().unwrap_or(0)
+    }
+
     /// Steering messages still waiting to be applied to a running agent.
     pub fn queued(&self, id: SessionId) -> &[String] {
         self.queued.get(&id).map_or(&[], Vec::as_slice)
@@ -459,6 +470,15 @@ impl ChatState {
         SendAttempt::Sent(ChatCommand::Retry(id))
     }
 
+    /// Marks a regenerate as in flight, like `try_retry`.
+    pub fn try_regenerate(&mut self, id: SessionId) -> SendAttempt {
+        if self.is_running(id) {
+            return SendAttempt::Busy;
+        }
+        self.sending.insert(id);
+        SendAttempt::Sent(ChatCommand::Regenerate(id))
+    }
+
     /// The model for a new chat: the newest saved session's, if installed,
     /// else the first installed model alphabetically.
     pub fn default_model(&self, installed: &[String]) -> Option<String> {
@@ -479,14 +499,37 @@ impl ChatState {
     /// Groups rows for the rail. `day_of` maps a timestamp to a day number.
     #[cfg(test)]
     pub fn rail(&self, now_ms: u64, day_of: impl Fn(u64) -> i64) -> Rail {
-        self.rail_for(SessionMode::Chat, now_ms, day_of)
+        self.rail_for(SessionMode::Chat, "", now_ms, day_of)
     }
 
-    /// The rail for one tab: chats for Chat, agents for Work.
-    pub fn rail_for(&self, mode: SessionMode, now_ms: u64, day_of: impl Fn(u64) -> i64) -> Rail {
+    /// The rail for one tab: chats for Chat, agents for Work. A non-empty
+    /// `query` keeps the sessions whose title, first message or model
+    /// contains every word of it, ignoring case.
+    pub fn rail_for(
+        &self,
+        mode: SessionMode,
+        query: &str,
+        now_ms: u64,
+        day_of: impl Fn(u64) -> i64,
+    ) -> Rail {
         let today = day_of(now_ms);
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let matches = |r: &IndexRow| {
+            let hay = format!(
+                "{}\n{}\n{}",
+                display_title(r),
+                r.preview.as_deref().unwrap_or(""),
+                r.model
+            )
+            .to_lowercase();
+            words.iter().all(|w| hay.contains(w))
+        };
         let mut rail = Rail::default();
-        let mut sorted: Vec<&IndexRow> = self.rows.iter().filter(|r| r.mode == mode).collect();
+        let mut sorted: Vec<&IndexRow> = self
+            .rows
+            .iter()
+            .filter(|r| r.mode == mode && matches(r))
+            .collect();
         sorted.sort_by(|a, b| {
             b.updated_at_ms
                 .cmp(&a.updated_at_ms)
@@ -1067,7 +1110,7 @@ mod tests {
         agent.mode = SessionMode::Agent;
         st.fold(ChatEvent::Rows(vec![row("A chat", NOW), agent]));
         let titles = |mode| {
-            st.rail_for(mode, NOW, utc_day)
+            st.rail_for(mode, "", NOW, utc_day)
                 .today
                 .iter()
                 .map(|r| r.title.clone())
@@ -1076,6 +1119,30 @@ mod tests {
         assert_eq!(titles(SessionMode::Chat), ["A chat"]);
         assert_eq!(titles(SessionMode::Agent), ["Refactor plan"]);
         assert_eq!(st.rail(NOW, utc_day).today.len(), 1);
+    }
+
+    #[test]
+    fn the_rail_search_matches_every_word_in_title_first_message_or_model() {
+        let mut st = ChatState::default();
+        let mut a = row("Trip planning", NOW);
+        a.model = "llama3.2:3b".into();
+        let mut b = row("Untitled", NOW - 1);
+        b.preview = Some("Explain borrow checker errors".into());
+        let c = row("Recipes", NOW - 2);
+        st.fold(ChatEvent::Rows(vec![a, b, c]));
+        let titles = |q: &str| {
+            st.rail_for(SessionMode::Chat, q, NOW, utc_day)
+                .today
+                .iter()
+                .map(|r| r.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles("").len(), 3);
+        assert_eq!(titles("TRIP"), ["Trip planning"]);
+        assert_eq!(titles("borrow errors"), ["Explain borrow checker errors"]);
+        assert_eq!(titles("llama3.2"), ["Trip planning"]);
+        assert!(titles("trip borrow").is_empty(), "every word must match");
+        assert!(titles("zzz").is_empty());
     }
 
     #[test]

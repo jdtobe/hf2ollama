@@ -9,6 +9,8 @@ use std::time::Instant;
 #[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct Probe {
+    /// Rectangles of the import step chips.
+    pub chips: Vec<egui::Rect>,
     pub card: Option<egui::Rect>,
     pub selected_row: Option<egui::Rect>,
     pub viewport: Option<egui::Rect>,

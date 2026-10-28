@@ -22,9 +22,10 @@ const CARD_NAMES: [&str; 5] = [
     "Hugging Face",
     "Hardware and appearance",
 ];
-const CONTROLS: [&str; 16] = [
+const CONTROLS: [&str; 17] = [
     "ollama-url",
     "ollama-test",
+    "select-keepalive",
     "staging",
     "staging-browse",
     "toggle-delete",

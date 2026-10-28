@@ -203,8 +203,13 @@ fn every_theme_family_and_mode_keeps_chat_usable_at_minimum_size() {
                     inside(send, composer),
                     "{tag}: send {send:?} composer {composer:?}"
                 );
-                let (delete, _) = p.delete_button.clone().expect("delete");
-                assert!(inside(delete, pane), "{tag}: delete {delete:?}");
+                let more = p.more_button.expect("overflow menu button");
+                assert!(inside(more, header), "{tag}: {more:?} not in {header:?}");
+                let chip = p.model_chip.expect("model chip");
+                assert!(
+                    inside(chip, composer),
+                    "{tag}: {chip:?} not in {composer:?}"
+                );
                 assert!(!p.rows.is_empty(), "{tag}: no rail rows");
                 let mut last_bottom = f32::MIN;
                 for (_, r) in &p.rows {
@@ -281,13 +286,36 @@ fn send_becomes_stop_during_a_run() {
 }
 
 fn press_enter() -> Vec<egui::Event> {
+    press_enter_with(egui::Modifiers::NONE)
+}
+
+fn press_enter_with(modifiers: egui::Modifiers) -> Vec<egui::Event> {
     vec![egui::Event::Key {
         key: egui::Key::Enter,
         physical_key: Some(egui::Key::Enter),
         pressed: true,
         repeat: false,
-        modifiers: egui::Modifiers::NONE,
+        modifiers,
     }]
+}
+
+#[test]
+fn shift_enter_adds_a_line_instead_of_sending() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    let id = f.open.id;
+    *f.app.state_mut().chat.draft_mut(id) = "hello".into();
+    f.app.state_mut().chat_ui.focus_composer = true;
+    run(&mut f.app, &mut h, size, 3);
+    h.frame(
+        vec2(size.0, size.1),
+        press_enter_with(egui::Modifiers::SHIFT),
+        |ui| f.app.show(ui),
+    );
+    run(&mut f.app, &mut h, size, 2);
+    assert!(sent_chat_commands(&f.sent).is_empty());
+    assert_eq!(f.app.state_mut().chat.draft(id), "hello\n");
 }
 
 #[test]
@@ -326,41 +354,6 @@ fn enter_sends_when_idle_and_does_nothing_during_a_run() {
     run(&mut f.app, &mut h, size, 2);
     assert!(sent_chat_commands(&f.sent).is_empty());
     assert_eq!(f.app.state_mut().chat.draft(id), "next");
-}
-
-#[test]
-fn delete_needs_the_confirm_pause() {
-    let size = (1180.0, 820.0);
-    let mut f = fixture();
-    let mut h = Harness::new(false);
-    run(&mut f.app, &mut h, size, 3);
-    let (rect, label) = f
-        .app
-        .state_mut()
-        .chat_ui
-        .probe
-        .delete_button
-        .clone()
-        .unwrap();
-    assert_eq!(label, "Delete");
-    click(&mut f.app, &mut h, size, rect.center());
-    let (rect, label) = f
-        .app
-        .state_mut()
-        .chat_ui
-        .probe
-        .delete_button
-        .clone()
-        .unwrap();
-    assert_eq!(label, "Confirm delete");
-    // An immediate second click (inside the pause) must not delete.
-    click(&mut f.app, &mut h, size, rect.center());
-    assert!(
-        !sent_chat_commands(&f.sent)
-            .iter()
-            .any(|c| matches!(c, ChatCommand::Delete(_))),
-        "a quick double click must not delete"
-    );
 }
 
 #[test]
@@ -554,86 +547,6 @@ fn unload_requests(rx: &Receiver<BackendRequest>) -> Vec<String> {
 }
 
 #[test]
-fn the_header_shows_whether_the_chat_model_is_loaded_and_unloads_it() {
-    let size = (1180.0, 820.0);
-    let mut f = fixture_with(2);
-    let mut h = Harness::new(false);
-    run(&mut f.app, &mut h, size, 3);
-    assert!(
-        f.app.state_mut().chat_ui.probe.header_unload.is_none(),
-        "nothing loaded yet"
-    );
-    let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
-    assert!(texts.iter().any(|t| t.contains("Not loaded")), "{texts:?}");
-
-    f.app.state_mut().running = vec![loaded(LONG_MODEL, "2099-01-01T00:00:00Z")];
-    run(&mut f.app, &mut h, size, 3);
-    let button = f
-        .app
-        .state_mut()
-        .chat_ui
-        .probe
-        .header_unload
-        .expect("unload button");
-    let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
-    assert!(
-        texts
-            .iter()
-            .any(|t| t.contains("Loaded") && t.contains("stays loaded")),
-        "{texts:?}"
-    );
-
-    click(&mut f.app, &mut h, size, button.center());
-    assert_eq!(unload_requests(&f.sent), vec![LONG_MODEL.to_string()]);
-    assert!(
-        f.app.state_mut().running.is_empty(),
-        "optimistically marked unloaded"
-    );
-}
-
-#[test]
-fn the_rail_footer_lists_loaded_models_inside_the_rail_at_minimum_size() {
-    for size in SIZES {
-        let mut f = fixture();
-        f.app.state_mut().running = vec![
-            loaded(LONG_MODEL, "2099-01-01T00:00:00Z"),
-            loaded("llama3.2:3b", "2099-01-01T00:00:00Z"),
-        ];
-        let mut h = Harness::new(true);
-        run(&mut f.app, &mut h, size, 4);
-        let p = f.app.state_mut().chat_ui.probe.clone();
-        let (rail, footer) = (p.rail.unwrap(), p.loaded_footer.expect("footer"));
-        assert!(inside(footer, rail), "{size:?}: {footer:?} not in {rail:?}");
-        assert_eq!(p.footer_unload.len(), 2, "{size:?}");
-        for b in &p.footer_unload {
-            assert!(inside(*b, footer), "{size:?}: {b:?} not in {footer:?}");
-        }
-        assert!(
-            p.rows.iter().any(|(_, r)| r.bottom() <= footer.top() + 0.5),
-            "{size:?}"
-        );
-        let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
-        assert!(
-            texts.iter().any(|t| t.to_uppercase().contains("IN MEMORY")),
-            "{texts:?}"
-        );
-    }
-}
-
-#[test]
-fn the_rail_footer_says_when_nothing_is_loaded() {
-    let size = (1180.0, 820.0);
-    let mut f = fixture_with(2);
-    let mut h = Harness::new(false);
-    run(&mut f.app, &mut h, size, 3);
-    let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
-    assert!(
-        texts.iter().any(|t| t.contains("Nothing loaded")),
-        "{texts:?}"
-    );
-}
-
-#[test]
 fn unload_notes_read_naturally() {
     use super::view::unload_note;
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T12:00:00Z")
@@ -739,7 +652,7 @@ fn work_lists_only_agents_and_chat_lists_only_chats() {
         texts.contains("Config walkthrough") && !texts.contains("Just a chat"),
         "{texts}"
     );
-    assert!(texts.contains("New agent"), "{texts}");
+    assert!(texts.contains("+ New"), "{texts}");
     app.state_mut().view = View::Chat;
     run(&mut app, &mut h, size, 3);
     let texts = h
@@ -753,55 +666,6 @@ fn work_lists_only_agents_and_chat_lists_only_chats() {
         texts.contains("Start a chat"),
         "an agent open on Work is not shown on Chat: {texts}"
     );
-}
-
-#[test]
-fn the_work_tab_keeps_tool_steps_and_the_agent_bar_inside_the_pane_in_every_theme() {
-    for family in [
-        ThemeFamily::Meadow,
-        ThemeFamily::Ember,
-        ThemeFamily::Plum,
-        ThemeFamily::Tide,
-    ] {
-        for dark in [false, true] {
-            for size in SIZES {
-                let (mut app, _sent, s) = agent_fixture();
-                app.state_mut().chat.fold(ChatEvent::SteeringQueued {
-                    session: s.id,
-                    text: "Only look in the src folder please, and ignore the tests entirely"
-                        .into(),
-                });
-                let mut h = Harness::themed(family, dark);
-                run(&mut app, &mut h, size, 4);
-                let window = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
-                let p = app.state_mut().chat_ui.probe.clone();
-                let tag = format!("{family:?} dark={dark} {size:?}");
-                let (pane, bar, composer) = (
-                    p.pane.unwrap(),
-                    p.agent_bar.expect("agent bar"),
-                    p.composer.unwrap(),
-                );
-                assert!(inside(pane, window) && inside(composer, window), "{tag}");
-                assert!(inside(bar, pane), "{tag}: bar {bar:?} pane {pane:?}");
-                assert_eq!(p.tool_cards.len(), 3, "{tag}");
-                for c in &p.tool_cards {
-                    assert!(
-                        c.left() >= pane.left() - 0.5 && c.right() <= pane.right() + 0.5,
-                        "{tag}: card {c:?} pane {pane:?}"
-                    );
-                }
-                assert_eq!(p.queued_chips.len(), 1, "{tag}");
-                let texts = h
-                    .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
-                    .join("\n");
-                assert!(
-                    texts.contains("Running…") && texts.contains("Failed"),
-                    "{tag}: {texts}"
-                );
-                assert!(texts.contains("Waiting for the agent's next step"), "{tag}");
-            }
-        }
-    }
 }
 
 #[test]
@@ -919,4 +783,411 @@ fn the_work_nav_item_and_menu_exist() {
         .collect();
     assert!(labels.contains(&"Work".to_string()));
     assert!(labels.contains(&"New Agent…".to_string()));
+}
+
+// ----------------------------------------------------- the quieter chrome
+
+fn open_menu(app: &mut App, h: &mut Harness, size: (f32, f32), at: Rect) {
+    click(app, h, size, at.center());
+    run(app, h, size, 2);
+}
+
+fn texts_of(app: &mut App, h: &mut Harness, size: (f32, f32)) -> String {
+    h.frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+        .join("\n")
+}
+
+#[test]
+fn the_title_row_has_a_title_and_one_overflow_menu_and_deleting_takes_two_clicks() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(2);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let more = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .more_button
+        .expect("overflow button");
+    let shown = texts_of(&mut f.app, &mut h, size);
+    for gone in ["Rename", "Pin", "Delete", "Unload"] {
+        assert!(
+            !shown.lines().any(|l| l == gone),
+            "{gone} should be inside the menu: {shown}"
+        );
+    }
+    open_menu(&mut f.app, &mut h, size, more);
+    let opened = texts_of(&mut f.app, &mut h, size);
+    assert!(
+        opened.contains("Rename") && opened.contains("Pin"),
+        "{opened}"
+    );
+    let (del, label) = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .delete_button
+        .clone()
+        .expect("delete item");
+    assert_eq!(label, "Delete…");
+    click(&mut f.app, &mut h, size, del.center());
+    let (del, label) = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .delete_button
+        .clone()
+        .unwrap();
+    assert_eq!(label, "Click again to delete");
+    click(&mut f.app, &mut h, size, del.center());
+    assert!(
+        !sent_chat_commands(&f.sent)
+            .iter()
+            .any(|c| matches!(c, ChatCommand::Delete(_))),
+        "a quick second click must not delete"
+    );
+}
+
+#[test]
+fn the_model_chip_shows_whether_the_model_is_in_memory_and_unloads_it() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(2);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(
+        texts.contains("○ ") && !texts.contains("● "),
+        "not loaded yet: {texts}"
+    );
+    f.app.state_mut().running = vec![loaded(LONG_MODEL, "2099-01-01T00:00:00Z")];
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("● "), "{texts}");
+    let chip = f.app.state_mut().chat_ui.probe.model_chip.unwrap();
+    open_menu(&mut f.app, &mut h, size, chip);
+    let opened = texts_of(&mut f.app, &mut h, size);
+    assert!(
+        opened.contains("In memory") && opened.contains("stays loaded"),
+        "{opened}"
+    );
+    let unload = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .model_unload
+        .expect("Unload in the popover");
+    click(&mut f.app, &mut h, size, unload.center());
+    assert_eq!(unload_requests(&f.sent), vec![LONG_MODEL.to_string()]);
+    assert!(f.app.state_mut().running.is_empty());
+}
+
+#[test]
+fn the_status_pill_lists_what_is_in_memory_and_says_when_nothing_is() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(2);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let pill = f.app.state_mut().pill_rect.expect("pill");
+    open_menu(&mut f.app, &mut h, size, pill);
+    let empty = texts_of(&mut f.app, &mut h, size);
+    assert!(empty.contains("Nothing loaded"), "{empty}");
+    click(&mut f.app, &mut h, size, egui::pos2(5.0, 5.0)); // closes it
+    f.app.state_mut().running = vec![loaded(LONG_MODEL, "2099-01-01T00:00:00Z")];
+    run(&mut f.app, &mut h, size, 3);
+    open_menu(&mut f.app, &mut h, size, pill);
+    let listed = texts_of(&mut f.app, &mut h, size);
+    assert!(
+        listed.contains("In memory") && listed.contains(LONG_MODEL) && listed.contains("Unload"),
+        "{listed}"
+    );
+}
+
+#[test]
+fn the_rail_has_one_new_button_and_no_footer() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(2);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("+ New chat"), "{texts}");
+    for gone in ["New incognito", "IN MEMORY", "In memory"] {
+        assert!(
+            !texts
+                .to_uppercase()
+                .lines()
+                .any(|l| l == gone.to_uppercase()),
+            "{gone}: {texts}"
+        );
+    }
+    let new = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .new_button
+        .expect("+ New button");
+    let rail = f.app.state_mut().chat_ui.probe.rail.unwrap();
+    assert!(inside(new, rail), "{new:?} {rail:?}");
+}
+
+#[test]
+fn the_rail_search_filters_the_list_and_stays_inside_the_rail() {
+    let size = (900.0, 640.0);
+    let mut f = fixture_with(3);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let search = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .rail_search
+        .expect("search field");
+    let rail = f.app.state_mut().chat_ui.probe.rail.unwrap();
+    assert!(inside(search, rail), "{search:?} {rail:?}");
+    f.app.state_mut().chat_ui.rail_query = "no-such-session-anywhere".into();
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("No matches."), "{texts}");
+}
+
+#[test]
+fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
+    for family in [
+        ThemeFamily::Meadow,
+        ThemeFamily::Ember,
+        ThemeFamily::Plum,
+        ThemeFamily::Tide,
+    ] {
+        for dark in [false, true] {
+            for size in SIZES {
+                let (mut app, _sent, s) = agent_fixture();
+                app.state_mut().chat.fold(ChatEvent::TurnStarted {
+                    session: s.id,
+                    turn: TurnId::new(),
+                });
+                app.state_mut().chat.fold(ChatEvent::SteeringQueued {
+                    session: s.id,
+                    text: "Only look in the src folder please, and ignore the tests entirely"
+                        .into(),
+                });
+                let mut h = Harness::themed(family, dark);
+                run(&mut app, &mut h, size, 4);
+                let window = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+                let p = app.state_mut().chat_ui.probe.clone();
+                let tag = format!("{family:?} dark={dark} {size:?}");
+                let (pane, composer, header) =
+                    (p.pane.unwrap(), p.composer.unwrap(), p.header.unwrap());
+                assert!(inside(pane, window) && inside(composer, window), "{tag}");
+                let chip = p.agent_chip.expect("agent chip");
+                let more = p.more_button.expect("overflow");
+                assert!(
+                    inside(chip, header) && inside(more, header),
+                    "{tag}: {chip:?} {more:?} {header:?}"
+                );
+                assert!(
+                    chip.right() <= more.left() + 0.5,
+                    "{tag}: chip overlaps the menu button"
+                );
+                assert_eq!(
+                    p.tool_groups.len(),
+                    1,
+                    "{tag}: three tool calls fold into one line"
+                );
+                assert!(
+                    p.tool_cards.is_empty(),
+                    "{tag}: cards stay folded until opened"
+                );
+                assert!(
+                    p.queued_chips.is_empty(),
+                    "{tag}: waiting messages live in the status line"
+                );
+                let texts = h
+                    .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+                    .join("\n");
+                assert!(
+                    texts.contains("Used 3 tools: search_text ×3"),
+                    "{tag}: {texts}"
+                );
+                assert!(
+                    texts.contains("1 failed") && texts.contains("search_text running…"),
+                    "{tag}: {texts}"
+                );
+                assert!(texts.contains("Step 1 of 20"), "{tag}: {texts}");
+                assert!(
+                    texts.contains("1 message waiting for the next step"),
+                    "{tag}: {texts}"
+                );
+                assert!(texts.contains("Folder: "), "{tag}: {texts}");
+            }
+        }
+    }
+}
+
+#[test]
+fn opening_the_tool_summary_shows_the_cards_inside_the_pane() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let group = app.state_mut().chat_ui.probe.tool_groups[0];
+    click(
+        &mut app,
+        &mut h,
+        size,
+        egui::pos2(group.left() + 12.0, group.center().y),
+    );
+    run(&mut app, &mut h, size, 3);
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert_eq!(p.tool_cards.len(), 3, "{:?}", p.tool_cards);
+    let pane = p.pane.unwrap();
+    for c in &p.tool_cards {
+        assert!(
+            c.left() >= pane.left() - 0.5 && c.right() <= pane.right() + 0.5,
+            "{c:?} {pane:?}"
+        );
+    }
+}
+
+#[test]
+fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+    open_menu(&mut app, &mut h, size, chip);
+    let texts = texts_of(&mut app, &mut h, size);
+    for want in [
+        "Folder",
+        "Change folder…",
+        "Step budget",
+        "Tools",
+        "Files · Read",
+        "list_dir",
+        "read_file",
+        "find_files",
+        "search_text",
+    ] {
+        assert!(texts.contains(want), "{want}: {texts}");
+    }
+    assert!(!texts.contains("Locked while a run is active."));
+    let _ = (sent, s);
+}
+
+fn open_markdown_reply(f: &mut Fixture, reply: &str) {
+    let now = now_ms();
+    let mut s = Session::new_chat("llama3.2:3b", SessionLifetime::Persisted, now);
+    s.push_user("Show me", now);
+    let a = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(a, reply, "");
+    s.finish_assistant(a, AssistantStatus::Complete, None, now);
+    f.app.state_mut().chat.fold(ChatEvent::Opened(Box::new(s)));
+}
+
+#[test]
+fn assistant_replies_are_drawn_as_markdown_and_user_text_is_not() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(
+        &mut f,
+        "Here is **bold** text:\n\n- first item\n- second item\n\n```\nlet x = 1;\n```",
+    );
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(!texts.contains("**"), "{texts}");
+    assert!(!texts.contains("```"), "{texts}");
+    assert!(
+        texts.contains("bold") && texts.contains("first item"),
+        "{texts}"
+    );
+    assert!(texts.contains("let x = 1;"), "{texts}");
+}
+
+#[test]
+fn every_message_has_a_copy_button_inside_the_pane() {
+    for size in SIZES {
+        let mut f = fixture_with(1);
+        let mut h = Harness::new(false);
+        open_markdown_reply(&mut f, "A short answer.");
+        run(&mut f.app, &mut h, size, 3);
+        let probe = f.app.state_mut().chat_ui.probe.clone();
+        let pane = probe.pane.expect("pane");
+        assert_eq!(probe.copy_buttons.len(), 2, "{size:?}: one per message");
+        for b in &probe.copy_buttons {
+            assert!(inside(*b, pane), "{size:?}: {b:?} outside {pane:?}");
+        }
+    }
+}
+
+#[test]
+fn headings_tables_quotes_and_rules_in_a_reply_are_not_shown_as_markup() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(
+        &mut f,
+        "# Title\n\n## Section\n\n> quoted words\n\n---\n\n| Name | Size |\n|------|------|\n| a | 1 |\n| b | 2 |\n\n1. one\n2. two",
+    );
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    for markup in [
+        "# Title",
+        "## Section",
+        "> quoted",
+        "|------|",
+        "| Name",
+        "---",
+    ] {
+        assert!(!texts.contains(markup), "{markup:?} shown raw in:\n{texts}");
+    }
+    for words in [
+        "Title",
+        "Section",
+        "quoted words",
+        "Name",
+        "Size",
+        "one",
+        "two",
+    ] {
+        assert!(texts.contains(words), "{words:?} missing in:\n{texts}");
+    }
+}
+
+#[test]
+fn a_finished_reply_offers_regenerate_and_clicking_it_sends_the_command() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "A short answer.");
+    let id = f.app.state_mut().chat.open.as_ref().unwrap().id;
+    run(&mut f.app, &mut h, size, 3);
+    let _ = sent_chat_commands(&f.sent);
+    let button = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .regenerate
+        .expect("Regenerate button");
+    click(&mut f.app, &mut h, size, button.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Regenerate(s)] if *s == id),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn a_failed_reply_offers_retry_and_not_regenerate() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    assert!(f.app.state_mut().chat_ui.probe.regenerate.is_none());
 }

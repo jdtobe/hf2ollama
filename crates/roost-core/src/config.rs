@@ -50,6 +50,31 @@ pub enum ThemeFamily {
     Tide,
 }
 
+/// How long Ollama keeps a model in memory after a chat request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeepAlive {
+    /// Send nothing; Ollama uses its own default (five minutes).
+    #[default]
+    OllamaDefault,
+    FifteenMinutes,
+    OneHour,
+    /// Until Ollama itself stops or the model is unloaded.
+    UntilQuit,
+}
+
+impl KeepAlive {
+    /// The `keep_alive` value for a request, or `None` to leave it out.
+    pub fn wire(self) -> Option<serde_json::Value> {
+        match self {
+            KeepAlive::OllamaDefault => None,
+            KeepAlive::FifteenMinutes => Some(serde_json::json!("15m")),
+            KeepAlive::OneHour => Some(serde_json::json!("1h")),
+            KeepAlive::UntilQuit => Some(serde_json::json!(-1)),
+        }
+    }
+}
+
 /// User settings, persisted as TOML.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,6 +91,7 @@ pub struct Settings {
     #[serde(alias = "theme")]
     pub theme_mode: ThemeMode,
     pub theme_family: ThemeFamily,
+    pub keep_alive: KeepAlive,
 }
 
 impl Default for Settings {
@@ -81,6 +107,7 @@ impl Default for Settings {
             hardware_override: None,
             theme_mode: ThemeMode::System,
             theme_family: ThemeFamily::Meadow,
+            keep_alive: KeepAlive::OllamaDefault,
         }
     }
 }
@@ -131,6 +158,38 @@ mod tests {
         assert_eq!(s.hardware_override, None);
         assert_eq!(s.theme_mode, ThemeMode::System);
         assert_eq!(s.theme_family, ThemeFamily::Meadow);
+        assert_eq!(s.keep_alive, KeepAlive::OllamaDefault);
+    }
+
+    #[test]
+    fn keep_alive_maps_to_what_ollama_expects() {
+        assert_eq!(KeepAlive::OllamaDefault.wire(), None);
+        assert_eq!(
+            KeepAlive::FifteenMinutes.wire(),
+            Some(serde_json::json!("15m"))
+        );
+        assert_eq!(KeepAlive::OneHour.wire(), Some(serde_json::json!("1h")));
+        assert_eq!(KeepAlive::UntilQuit.wire(), Some(serde_json::json!(-1)));
+    }
+
+    #[test]
+    fn keep_alive_survives_a_save_and_an_old_file_without_it_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roost.toml");
+        let s = Settings {
+            keep_alive: KeepAlive::OneHour,
+            ..Settings::default()
+        };
+        s.save(&path).unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().keep_alive,
+            KeepAlive::OneHour
+        );
+        std::fs::write(&path, "max_parallel = 3\n").unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().keep_alive,
+            KeepAlive::OllamaDefault
+        );
     }
 
     #[test]
@@ -151,6 +210,7 @@ mod tests {
             }),
             theme_mode: ThemeMode::Dark,
             theme_family: ThemeFamily::Tide,
+            keep_alive: KeepAlive::FifteenMinutes,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

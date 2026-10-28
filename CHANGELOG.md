@@ -33,6 +33,29 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### A quieter window
+
+Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mockups.html`); the busiest screen went from about 25 visible controls to about 13.
+
+- **Tabs:** Chat, Work and Models, plus a settings gear. Browse and Installed are the two views inside Models (a small switch next to the tabs). The menu shortcuts still reach each of them.
+- **Title row:** the title, a folder chip for agents, and one “···” menu holding Rename, Pin and Delete (delete asks for a second click). Incognito is a small badge instead of a banner.
+- **Folder chip (Work):** the folder, step budget and tools are one popover instead of a second bar. It locks while a run is active.
+- **Composer:** the model chip sits under the input and shows whether the model is in memory; its popover changes the model and unloads it. One status line above the input shows an agent's step (“Step 3 of 20”), messages waiting for its next step, and notices.
+- **Tool steps** of an agent fold into one line (“Used 3 tools: search_text ×2, read_file”) with live “running…” and failure counts; open it for the cards.
+- **Sidebar:** one “+ New” menu replaces the two buttons; the “In memory” footer moved into the Ollama status pill's popover, which lists loaded models with Unload.
+
+### Fixes and polish after first use
+
+- **+ New** is a split button: the main half starts a chat (or agent), the arrow offers the incognito variant.
+- Shift+Enter adds a line in the message box; Enter sends.
+- On narrow windows the status pill shows only the Ollama version (the address is in its hover text), so the Browse search field keeps its room.
+- The import plan card shows its steps as one line (`Download › Verify › Upload › Create`) that never wraps.
+- A search field in the Chat and Work sidebars (matches the title, first message and model).
+- Assistant replies are drawn as Markdown (bold, lists, code blocks, tables, safe links) and every message has a Copy button.
+- **Regenerate** under the last finished chat reply replaces it with a new one (the old reply is not kept; branches are planned).
+- **Settings ▸ Ollama ▸ Keep models in memory:** Ollama's default, 15 minutes, 1 hour, or until Ollama quits. Sent as `keep_alive` with chat requests only when you choose something other than the default.
+- **Downloads panel:** each job is two lines. The name (cut in the middle so the tag stays visible), size, a stage pill and the buttons; then a progress bar of the same width for every job with percent, bytes, speed and an estimate of the time left. The estimate uses a smoothed speed, waits for five seconds of data, is rounded, and does not jump about. The log drawer gained a Copy button.
+
 ### Agents (Work tab)
 
 - A **Work** tab (between Chat and Browse) for read-only agents. An agent works inside a folder you choose and can list, find, search and read files there; it cannot change anything. Start one with New agent: pick a folder and a model that supports tools (Roost checks with Ollama first).

@@ -57,6 +57,8 @@ struct Wire<'a> {
     think: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -234,6 +236,7 @@ impl OllamaClient {
             },
             think: body.think,
             tools: body.tools.as_ref(),
+            keep_alive: self.keep_alive.wire(),
         };
         let url = self.url("/api/chat")?;
         let resp = tokio::time::timeout(self.first_event, self.http.post(url).json(&wire).send())
@@ -418,6 +421,24 @@ mod tests {
         assert!(sent["options"].get("seed").is_none());
         assert!(sent.get("think").is_none());
         assert_eq!(sent["messages"][0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn keep_alive_is_sent_only_when_chosen() {
+        use crate::config::KeepAlive;
+        for (choice, expected) in [
+            (KeepAlive::OllamaDefault, None),
+            (KeepAlive::OneHour, Some(json!("1h"))),
+            (KeepAlive::UntilQuit, Some(json!(-1))),
+        ] {
+            let srv =
+                TcpScript::start("200 OK", "", vec![Step::Write(done_line()), Step::Close]).await;
+            let client = fast(&srv.base_url()).with_keep_alive(choice);
+            let s = client.chat_stream(&body()).await.unwrap();
+            let _ = drain(s).await;
+            let sent: serde_json::Value = serde_json::from_str(&srv.request_body().await).unwrap();
+            assert_eq!(sent.get("keep_alive").cloned(), expected, "{choice:?}");
+        }
     }
 
     #[tokio::test]

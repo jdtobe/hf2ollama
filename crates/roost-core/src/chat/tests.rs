@@ -1600,3 +1600,46 @@ async fn changing_an_idle_agents_settings_reports_them() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn regenerate_replaces_the_last_complete_reply_and_resends_the_question() {
+    let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    h.cmd(ChatCommand::Regenerate(id));
+    h.wait_ended(2).await;
+    h.wait("saved", |_| {
+        texts(&h.read(id))
+            == [
+                ("user".into(), "ask".into()),
+                ("assistant:Complete".into(), "two".into()),
+            ]
+    })
+    .await;
+    let second = &chat_bodies(&srv)[1]["messages"];
+    assert_eq!(second.as_array().unwrap().len(), 2, "{second}");
+    assert_eq!(second[1]["content"], "ask");
+}
+
+#[tokio::test]
+async fn regenerate_does_nothing_when_the_last_reply_did_not_complete() {
+    let srv = fake(vec![chat_route(vec![
+        Step::Write(line("half")),
+        Step::Close,
+    ])])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    h.cmd(ChatCommand::Regenerate(id));
+    h.wait("refused", |evs| {
+        evs.iter()
+            .any(|e| matches!(e, ChatEvent::SessionError { .. }))
+    })
+    .await;
+    assert_eq!(chat_bodies(&srv).len(), 1, "no second request");
+    assert_eq!(texts(&h.read(id)).len(), 2, "the failed reply is kept");
+}

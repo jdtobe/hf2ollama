@@ -104,3 +104,8 @@ Taking a screenshot on macOS (the display must be unlocked): run the release bin
 ## Agents (stage 3): done, 2026-10-28
 
 PR #10: engine plus the Work tab, menu entries and docs. Verified by tests only. Still owed by hand: a real model with tool support (do the models you use call tools sensibly?), the look of the Work tab, and Windows (the jail relies on cap-std for junctions). Not built: tool approval prompts (Ask), write/shell/network tools, `/btw`, branches, auto-title, the Models tab merge.
+
+## UI declutter (2026-10-28 night)
+
+The user asked for mockups and five design rounds, then to proceed with the best. The rounds and the reasoning are in `docs/design/ui-declutter-mockups.html` (also published as an artifact). Round 5 was built. The user may ask for another round: rounds 2 (title only, all chips in the composer) and 3 (right-hand details panel) are the plausible alternatives. Switching is mostly moving controls between the same places (`chat::chrome` functions, the composer strip, popovers); sessions, events and tests underneath do not change.
+Not done: a real look at the result on screen; the Models tab is still the old Browse and Installed views behind a switch (the VS Code-style merge is future work).
