@@ -164,6 +164,10 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 - **Store** (`store`). `sessions/<id>.json` per session plus `index-v1.json`, which is derived data: it is reconciled with the files on every start (file time and size), so a crash between the two writes loses nothing. A damaged file is renamed `.corrupt-<time>` and kept, a newer-schema file is left untouched, a read error changes nothing. A `.lock` file allows one Roost per history. All disk work runs on one writer thread; deleting a session tombstones its id so a late save cannot bring the file back.
 - **GUI** (`roost-gui::chat`). `state` folds events into plain data (rail grouping, drafts, run badges); `view` renders. Incognito never reaches the store or the logs, and a test fails if eframe persistence is ever enabled.
 
+## Menu bar
+
+`roost-gui::menu` describes the menus as data (`model`), handles a click in one place (`actions`) and renders the description three ways: native on macOS and Windows (`native`, `muda`), and in the window on Linux (`bar`, also used by tests). Notes that cost time to learn: the macOS menu must be attached on the first frame, not in the window creator, because macOS calls back into the event loop and aborts from inside winit's launch callback; `muda` honors only one event handler per process, so events are read from its channel by a small forwarding thread; macOS dispatches shortcuts in the menu while Windows and Linux dispatch them through egui, so a shortcut never fires twice; the Edit items use egui's clipboard commands and a synthesized ⌘A so text fields keep working.
+
 ## What is intentionally not done
 
 
