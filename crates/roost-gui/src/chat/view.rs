@@ -36,6 +36,8 @@ pub struct ChatUi {
     pub focus_composer: bool,
     /// The New agent form on the Work tab.
     pub new_agent: NewAgent,
+    /// What the rail's search field holds.
+    pub rail_query: String,
     #[cfg(test)]
     pub probe: ChatProbe,
 }
@@ -56,6 +58,7 @@ pub struct NewAgent {
 #[derive(Debug, Clone, Default)]
 pub struct ChatProbe {
     pub rail: Option<egui::Rect>,
+    pub rail_search: Option<egui::Rect>,
     pub pane: Option<egui::Rect>,
     pub composer: Option<egui::Rect>,
     pub header: Option<egui::Rect>,
@@ -231,6 +234,19 @@ fn rail(
     let model = app.chat.default_model(installed);
     rail_new_menu(ui, app, out, t, &model, mode);
     ui.add_space(8.0);
+    if app.chat.rows().iter().any(|r| r.mode == mode) {
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut app.chat_ui.rail_query)
+                .hint_text("Search")
+                .desired_width(ui.available_width()),
+        );
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.rail_search = Some(field.rect);
+        }
+        let _ = field;
+        ui.add_space(6.0);
+    }
     rail_list(ui, app, out, t, mode);
 }
 
@@ -337,7 +353,9 @@ fn rail_list(
     mode: SessionMode,
 ) {
     let now = Instant::now();
-    let rail = app.chat.rail_for(mode, now_ms(), local_day);
+    let rail = app
+        .chat
+        .rail_for(mode, &app.chat_ui.rail_query, now_ms(), local_day);
     let selected = app.chat.open.as_ref().map(|s| s.id).or(app.chat_ui.inspect);
     let mut open_id = None;
     egui::ScrollArea::vertical()
@@ -382,6 +400,14 @@ fn rail_list(
                         open_id = Some(row.id);
                     }
                 }
+            }
+            let nothing_shown = [&rail.pinned, &rail.today, &rail.yesterday, &rail.earlier]
+                .iter()
+                .all(|g| g.is_empty())
+                && rail.incognito.is_empty();
+            if nothing_shown && !app.chat_ui.rail_query.trim().is_empty() {
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(RichText::new("No matches.").color(t.fg3)).wrap());
             }
             if app.chat.loaded && !app.chat.rows().iter().any(|r| r.mode == mode) {
                 ui.add_space(8.0);

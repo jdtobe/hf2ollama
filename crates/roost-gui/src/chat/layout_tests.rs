@@ -935,6 +935,27 @@ fn the_rail_has_one_new_button_and_no_footer() {
 }
 
 #[test]
+fn the_rail_search_filters_the_list_and_stays_inside_the_rail() {
+    let size = (900.0, 640.0);
+    let mut f = fixture_with(3);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let search = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .rail_search
+        .expect("search field");
+    let rail = f.app.state_mut().chat_ui.probe.rail.unwrap();
+    assert!(inside(search, rail), "{search:?} {rail:?}");
+    f.app.state_mut().chat_ui.rail_query = "no-such-session-anywhere".into();
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("No matches."), "{texts}");
+}
+
+#[test]
 fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
     for family in [
         ThemeFamily::Meadow,
