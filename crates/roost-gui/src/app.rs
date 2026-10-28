@@ -343,6 +343,12 @@ const PILL_GAP: f32 = 6.0;
 
 pub struct App {
     state: AppState,
+    /// The native menu bar (macOS and Windows).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    native: Option<crate::menu::native::NativeMenu>,
+    /// The native menu has been attempted (it is installed on the first frame).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    native_tried: bool,
     tx: Sender<BackendRequest>,
     rx: Receiver<UiEvent>,
 }
@@ -371,7 +377,15 @@ impl App {
         state.settings_view = SettingsView::new(settings, state.default_staging.clone(), detected);
         state.browse = BrowseState::new(machine.clone());
         state.machine = machine;
-        App { state, tx, rx }
+        App {
+            state,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            native: None,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            native_tried: false,
+            tx,
+            rx,
+        }
     }
 }
 
@@ -446,7 +460,14 @@ impl eframe::App for App {
         }
     }
 
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if !self.native_tried {
+            self.native_tried = true;
+            self.install_native_menu(ctx, frame);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = frame;
         self.pump_events();
         self.pump_menu(ctx);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
@@ -483,12 +504,38 @@ impl App {
     /// macOS dispatches shortcuts in its native menu, so nothing is read there.
     pub(crate) fn pump_menu(&mut self, ctx: &egui::Context) {
         let platform = self.state.platform;
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(native) = &mut self.native {
+            let model = crate::menu::model::build(&self.state, platform);
+            native.sync(&model);
+            let actions = native.poll();
+            self.run_menu_actions(ctx, actions);
+        }
         if platform == crate::menu::Platform::Mac {
             return;
         }
         let model = crate::menu::model::build(&self.state, platform);
         let actions = crate::menu::bar::shortcuts(ctx, &model);
         self.run_menu_actions(ctx, actions);
+    }
+
+    /// Creates the native menu bar on the first frame. It must not happen in
+    /// the window creator: macOS calls back into the event loop while the
+    /// menu is attached, which aborts the process from inside that callback.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    fn install_native_menu(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        #[cfg(target_os = "windows")]
+        let hwnd = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            match frame.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+                _ => None,
+            }
+        };
+        #[cfg(not(target_os = "windows"))]
+        let hwnd = None;
+        self.native = crate::menu::native::NativeMenu::install(ctx, self.state.platform, hwnd);
     }
 
     pub(crate) fn run_menu_actions(

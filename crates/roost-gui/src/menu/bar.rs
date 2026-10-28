@@ -97,7 +97,7 @@ pub fn shortcuts(ctx: &egui::Context, model: &MenuModel) -> Vec<MenuAction> {
             let s = a.shortcut?;
             let mut mods = Modifiers::COMMAND;
             if s.shift {
-                mods = mods | Modifiers::SHIFT;
+                mods |= Modifiers::SHIFT;
             }
             Some((a, KeyboardShortcut::new(mods, s.key)))
         })

@@ -33,6 +33,12 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### Menu bar
+
+- A real menu bar: native on macOS (app menu with About, Settings…, Quit; File, Edit, View, Models, Window, Help) and Windows, and an in-window bar on Linux. File: New Chat and New Incognito Chat. View: Chat, Browse, Installed, Settings and a Theme submenu (four colour families and System/Light/Dark). Models: Unload for each loaded model, or Unload All. Edit: Cut, Copy, Paste, Select All. Help: GitHub and issue links. An About window shows the version.
+- Standard shortcuts (⌘N, ⇧⌘N, ⌘, , ⌘1–3, ⌘Q on macOS; the same with Ctrl on Windows and Linux). Quit still goes through the close confirmation.
+- On Linux the window's minimum height grows by the bar so the content keeps its tested minimum size.
+
 ### Added
 
 - A clear (✕) button in the Browse search field.
