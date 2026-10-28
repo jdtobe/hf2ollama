@@ -457,6 +457,46 @@ pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui:
         .stroke(Stroke::new(1.0, line))
 }
 
+/// What Ollama holds in memory, opened from the status pill.
+fn memory_popover(
+    pill: &egui::Response,
+    state: &mut AppState,
+    requests: &mut Vec<BackendRequest>,
+    t: &crate::theme::Tokens,
+) {
+    egui::Popup::menu(pill)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(260.0);
+            ui.label(RichText::new("In memory").font(semibold(11.0)).color(t.fg3));
+            if state.running.is_empty() {
+                ui.label(RichText::new("Nothing loaded").size(12.5).color(t.fg2));
+                return;
+            }
+            let names: Vec<(String, u64)> = state
+                .running
+                .iter()
+                .map(|m| (m.name.clone(), m.size))
+                .collect();
+            for (name, size) in names {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&name).size(12.5).color(t.fg)).truncate(),
+                    );
+                    ui.label(
+                        RichText::new(crate::browse::results::format_size(size))
+                            .size(11.5)
+                            .color(t.fg3),
+                    );
+                    if crate::widgets::small_button(ui, "Unload") {
+                        requests.push(BackendRequest::UnloadModel(name.clone()));
+                        state.running.retain(|m| m.name != name);
+                    }
+                });
+            }
+        });
+}
+
 /// Width of the settings gear in the top bar.
 const GEAR_W: f32 = 28.0;
 
@@ -674,6 +714,7 @@ impl App {
             self.run_menu_actions(ui.ctx(), bar.actions);
         }
 
+        let mut pill_requests: Vec<BackendRequest> = Vec::new();
         egui::Panel::top("top")
             .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
             .show(ui, |ui| {
@@ -807,9 +848,12 @@ impl App {
                             self.state.select(View::Settings);
                         }
                         // Hand-painted at an exact size so no layout can stretch it.
-                        let (rect, _) =
-                            ui.allocate_exact_size(pill_size(galley.size().x), Sense::hover());
+                        let (rect, pill_resp) =
+                            ui.allocate_exact_size(pill_size(galley.size().x), Sense::click());
                         self.state.pill_rect = Some(rect);
+                        let pill_resp = pill_resp
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Models in memory");
                         let p = ui.painter();
                         p.rect_filled(rect, 12.0, t.surface2);
                         p.rect_stroke(
@@ -827,9 +871,13 @@ impl App {
                             galley,
                             t.fg2,
                         );
+                        memory_popover(&pill_resp, &mut self.state, &mut pill_requests, &t);
                     });
                 });
             });
+        for r in pill_requests {
+            let _ = self.tx.send(r);
+        }
 
         // Free space of the staging folder is not exposed by the core, so the
         // status bar leaves it out. The Ollama store path is omitted until the

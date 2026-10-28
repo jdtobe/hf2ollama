@@ -171,6 +171,10 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 - **Loop** (`chat::agent_loop`, inside the manager). A run is steps: stream one reply, run its tool calls one at a time on the blocking pool, repeat until the model answers without tools, Stop, a failure or the budget. Each reply is its own turn; `RunEnded` closes the run. Steering waits in an inbox and is applied at the next safe point; a streaming reply is interrupted and kept. Settings cannot change under a running agent.
 - **Context** (`chat::context::build_agent_request`). Tool calls and their results are one group; the request always starts with a user message and keeps the newest user message; interrupted replies stay as the text they had.
 
+## Window layout
+
+`app.rs` draws the top bar (Chat, Work, Models with a Browse/Installed sub-switch, search on Browse, the Ollama pill with its in-memory popover, the settings gear). `chat::view` lays out the rail and panes for the Chat and Work tabs; `chat::chrome` holds the small controls around a conversation (title row, overflow and folder menus, status line, model chip, folded tool steps). Controls that act rarely live in popovers that stay open while used (`CloseOnClickOutside`).
+
 ## Menu bar
 
 `roost-gui::menu` describes the menus as data (`model`), handles a click in one place (`actions`) and renders the description three ways: native on macOS and Windows (`native`, `muda`), and in the window on Linux (`bar`, also used by tests). Notes that cost time to learn: the macOS menu must be attached on the first frame, not in the window creator, because macOS calls back into the event loop and aborts from inside winit's launch callback; `muda` honors only one event handler per process, so events are read from its channel by a small forwarding thread; macOS dispatches shortcuts in the menu while Windows and Linux dispatch them through egui, so a shortcut never fires twice; the Edit items use egui's clipboard commands and a synthesized ⌘A so text fields keep working.

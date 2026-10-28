@@ -33,6 +33,17 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### A quieter window
+
+Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mockups.html`); the busiest screen went from about 25 visible controls to about 13.
+
+- **Tabs:** Chat, Work and Models, plus a settings gear. Browse and Installed are the two views inside Models (a small switch next to the tabs). The menu shortcuts still reach each of them.
+- **Title row:** the title, a folder chip for agents, and one “···” menu holding Rename, Pin and Delete (delete asks for a second click). Incognito is a small badge instead of a banner.
+- **Folder chip (Work):** the folder, step budget and tools are one popover instead of a second bar. It locks while a run is active.
+- **Composer:** the model chip sits under the input and shows whether the model is in memory; its popover changes the model and unloads it. One status line above the input shows an agent's step (“Step 3 of 20”), messages waiting for its next step, and notices.
+- **Tool steps** of an agent fold into one line (“Used 3 tools: search_text ×2, read_file”) with live “running…” and failure counts; open it for the cards.
+- **Sidebar:** one “+ New” menu replaces the two buttons; the “In memory” footer moved into the Ollama status pill's popover, which lists loaded models with Unload.
+
 ### Agents (Work tab)
 
 - A **Work** tab (between Chat and Browse) for read-only agents. An agent works inside a folder you choose and can list, find, search and read files there; it cannot change anything. Start one with New agent: pick a folder and a model that supports tools (Roost checks with Ollama first).

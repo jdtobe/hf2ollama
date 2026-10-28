@@ -1,6 +1,7 @@
 //! The Chat view: a history rail and a conversation pane. `state` is the
 //! view-model (events folded into plain data); rendering lives in `view`.
 
+mod chrome;
 pub mod state;
 pub mod view;
 

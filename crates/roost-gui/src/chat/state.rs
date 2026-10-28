@@ -82,6 +82,8 @@ pub struct ChatState {
     rows: Vec<IndexRow>,
     pub open: Option<Session>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
+    /// Model steps taken so far in each session's current run.
+    steps: HashMap<SessionId, u32>,
     /// Sessions with a run in progress. A run spans several model turns for
     /// an agent, so this outlives `runs`, which tracks only the streaming turn.
     active: HashSet<SessionId>,
@@ -154,7 +156,10 @@ impl ChatState {
                     self.model_missing = None;
                 }
                 self.runs.insert(session, (turn, RunBadge::Running));
-                self.active.insert(session);
+                if self.active.insert(session) {
+                    self.steps.remove(&session);
+                }
+                *self.steps.entry(session).or_insert(0) += 1;
                 self.omitted.remove(&session);
                 self.sending.remove(&session);
                 self.notice = None;
@@ -239,6 +244,7 @@ impl ChatState {
             } => {
                 self.active.remove(&session);
                 self.runs.remove(&session);
+                self.steps.remove(&session);
                 self.sending.remove(&session);
                 self.queued.remove(&session);
                 if outcome == RunOutcome::BudgetExhausted {
@@ -363,6 +369,11 @@ impl ChatState {
                     .map(|s| s.mode == SessionMode::Agent)
             })
             .unwrap_or(false)
+    }
+
+    /// The step a running agent is on (1-based); 0 when it is not running.
+    pub fn step_of(&self, id: SessionId) -> u32 {
+        self.steps.get(&id).copied().unwrap_or(0)
     }
 
     /// Steering messages still waiting to be applied to a running agent.

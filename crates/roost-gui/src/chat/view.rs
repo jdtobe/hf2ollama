@@ -11,7 +11,6 @@ use crate::widgets::{primary_button, small_button, tag};
 use eframe::egui::{
     self, vec2, Align, Color32, FontId, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke,
 };
-use roost_core::agent::registry;
 use roost_core::chat::ChatCommand;
 use roost_core::session::{
     AssistantStatus, Message, MessageContent, Session, SessionId, SessionLifetime, SessionMode,
@@ -64,13 +63,15 @@ pub struct ChatProbe {
     pub send_button: Option<(egui::Rect, &'static str)>,
     /// The delete control of each rail row that shows one, and whether it is armed.
     pub rail_delete: Vec<(SessionId, egui::Rect, bool)>,
-    pub header_unload: Option<egui::Rect>,
+    pub more_button: Option<egui::Rect>,
+    pub new_button: Option<egui::Rect>,
+    pub agent_chip: Option<egui::Rect>,
+    pub model_chip: Option<egui::Rect>,
+    pub model_unload: Option<egui::Rect>,
+    pub tool_groups: Vec<egui::Rect>,
     pub start_agent: Option<egui::Rect>,
-    pub agent_bar: Option<egui::Rect>,
     pub tool_cards: Vec<egui::Rect>,
     pub queued_chips: Vec<egui::Rect>,
-    pub loaded_footer: Option<egui::Rect>,
-    pub footer_unload: Vec<egui::Rect>,
     pub delete_button: Option<(egui::Rect, String)>,
 }
 
@@ -98,7 +99,7 @@ fn truncated(
     ui.painter().layout_job(job)
 }
 
-fn secondary(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+pub(super) fn secondary(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     let t = tokens(ui);
     ui.add_enabled(
         enabled,
@@ -191,7 +192,7 @@ fn show_mode(
                 {
                     app.chat_ui.probe.composer = Some(ui.max_rect());
                 }
-                composer(ui, app, out, &t, s);
+                composer(ui, app, out, &t, s, &installed);
             });
     }
     egui::CentralPanel::default()
@@ -227,65 +228,70 @@ fn rail(
     installed: &[String],
     mode: SessionMode,
 ) {
-    if app.ollama.as_ref().is_some_and(|o| o.is_some()) {
-        egui::Panel::bottom("chat_loaded")
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(egui::Frame::new().inner_margin(Margin::symmetric(0, 6)))
-            .show(ui, |ui| {
-                #[cfg(test)]
-                {
-                    app.chat_ui.probe.loaded_footer = Some(ui.max_rect());
-                }
-                loaded_footer(ui, app, out, t);
-            });
-    }
     let model = app.chat.default_model(installed);
-    if mode == SessionMode::Agent {
-        ui.horizontal(|ui| {
-            let ready = model.is_some();
-            let hint = "Install a model first (Browse), then start an agent.";
-            let new_agent = primary_button(ui, "New agent", ready).on_disabled_hover_text(hint);
-            let incognito = secondary(ui, "Incognito agent", ready).on_disabled_hover_text(hint);
-            for (clicked, incog) in [(new_agent.clicked(), false), (incognito.clicked(), true)] {
-                if clicked {
-                    open_new_agent(app, model.clone(), incog, out);
-                }
-            }
-        });
-    } else {
-        rail_chat_buttons(ui, app, out, &model);
-    }
+    rail_new_menu(ui, app, out, t, &model, mode);
     ui.add_space(8.0);
     rail_list(ui, app, out, t, mode);
 }
 
-fn rail_chat_buttons(
+/// One “+ New” button; its menu offers the kinds of session for this tab.
+fn rail_new_menu(
     ui: &mut egui::Ui,
     app: &mut AppState,
     out: &mut Vec<BackendRequest>,
+    t: &Tokens,
     model: &Option<String>,
+    mode: SessionMode,
 ) {
-    ui.horizontal(|ui| {
-        let ready = model.is_some();
-        let new_chat = primary_button(ui, "New chat", ready)
-            .on_disabled_hover_text("Install a model first (Browse), then start a chat.");
-        let incognito = secondary(ui, "New incognito", ready)
-            .on_disabled_hover_text("Install a model first (Browse), then start a chat.");
-        for (clicked, lifetime) in [
-            (new_chat.clicked(), SessionLifetime::Persisted),
-            (incognito.clicked(), SessionLifetime::Incognito),
+    let ready = model.is_some();
+    let (button, _) = egui::containers::menu::MenuButton::from_button(
+        egui::Button::new(
+            RichText::new("+ New")
+                .font(semibold(13.0))
+                .color(t.accent_fg),
+        )
+        .fill(t.accent)
+        .min_size(vec2(96.0, 30.0)),
+    )
+    .ui(ui, |ui| {
+        let (plain, incognito) = if mode == SessionMode::Agent {
+            ("New agent…", "New incognito agent…")
+        } else {
+            ("New chat", "New incognito chat")
+        };
+        for (label, lifetime) in [
+            (plain, SessionLifetime::Persisted),
+            (incognito, SessionLifetime::Incognito),
         ] {
-            if let (true, Some(model)) = (clicked, model.clone()) {
-                app.chat_ui.focus_composer = true;
-                app.chat_ui.inspect = None;
-                out.push(BackendRequest::Chat(ChatCommand::Create {
-                    lifetime,
-                    model,
-                }));
+            let hint = "Install a model first (Models), then start one.";
+            let item = ui.add_enabled(ready, egui::Button::new(label));
+            if !ready {
+                item.clone().on_disabled_hover_text(hint);
+            }
+            if item.clicked() {
+                if mode == SessionMode::Agent {
+                    open_new_agent(
+                        app,
+                        model.clone(),
+                        lifetime == SessionLifetime::Incognito,
+                        out,
+                    );
+                } else if let Some(model) = model.clone() {
+                    app.chat_ui.focus_composer = true;
+                    app.chat_ui.inspect = None;
+                    out.push(BackendRequest::Chat(ChatCommand::Create {
+                        lifetime,
+                        model,
+                    }));
+                }
             }
         }
     });
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.new_button = Some(button.rect);
+    }
+    let _ = button;
 }
 
 /// Opens the New agent form with a default model, and asks whether it can use tools.
@@ -614,18 +620,7 @@ fn pane(
         }
         return;
     };
-    header(ui, app, out, t, s, installed, now);
-    if s.mode == SessionMode::Agent {
-        agent_bar(ui, app, out, t, s);
-    }
-    if s.lifetime == SessionLifetime::Incognito {
-        banner(
-            ui,
-            t.warn,
-            t.warn_soft,
-            "Incognito: this chat exists only in memory. It disappears when you close it or quit Roost.",
-        );
-    }
+    super::chrome::header(ui, app, out, t, s, now);
     if let Some((id, model)) = app.chat.model_missing.clone() {
         if id == s.id {
             banner(
@@ -653,43 +648,25 @@ fn pane(
         .stick_to_bottom(true)
         .show(ui, |ui| {
             let last = s.messages.len().saturating_sub(1);
-            for (i, m) in s.messages.iter().enumerate() {
+            let mut i = 0;
+            while i < s.messages.len() {
+                let m = &s.messages[i];
                 if matches!(m.content, MessageContent::Tool { .. }) {
-                    tool_card(ui, t, m, app);
-                } else {
-                    message_card(ui, t, m, &model, badge);
+                    let mut end = i;
+                    while end < s.messages.len()
+                        && matches!(s.messages[end].content, MessageContent::Tool { .. })
+                    {
+                        end += 1;
+                    }
+                    super::chrome::tool_group(ui, t, &s.messages[i..end], app);
+                    i = end;
+                    continue;
                 }
+                message_card(ui, t, m, &model, badge);
                 if i == last && s.mode == SessionMode::Chat {
                     retry_row(ui, app, out, s, m);
                 }
-            }
-            for text in app.chat.queued(s.id) {
-                #[cfg(test)]
-                let before = ui.cursor().min.y;
-                egui::Frame::new()
-                    .fill(t.accent_soft)
-                    .corner_radius(10.0)
-                    .inner_margin(Margin::symmetric(14, 8))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(format!("Waiting for the agent's next step: {text}"))
-                                    .size(13.0)
-                                    .color(t.fg2),
-                            )
-                            .wrap(),
-                        );
-                    });
-                #[cfg(test)]
-                app.chat_ui
-                    .probe
-                    .queued_chips
-                    .push(egui::Rect::from_min_max(
-                        egui::pos2(ui.min_rect().left(), before),
-                        egui::pos2(ui.min_rect().right(), ui.cursor().min.y),
-                    ));
-                ui.add_space(8.0);
+                i += 1;
             }
         });
 }
@@ -830,95 +807,8 @@ fn new_agent_panel(
     });
 }
 
-/// Under the title of an agent: its folder, step budget and tools.
-fn agent_bar(
-    ui: &mut egui::Ui,
-    app: &mut AppState,
-    out: &mut Vec<BackendRequest>,
-    t: &Tokens,
-    s: &Session,
-) {
-    let running = app.chat.is_running(s.id);
-    let id = s.id;
-    #[cfg(test)]
-    let top = ui.cursor().min.y;
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.menu_button(RichText::new("Tools").size(12.0), |ui| {
-                ui.add_enabled_ui(!running, |ui| {
-                    let mut allowed = !matches!(
-                        s.effective_tools.capabilities.get("files.read"),
-                        Some(roost_core::session::Permission::Off)
-                    );
-                    if ui.checkbox(&mut allowed, "Files · Read").changed() {
-                        let permission = if allowed {
-                            roost_core::session::Permission::Auto
-                        } else {
-                            roost_core::session::Permission::Off
-                        };
-                        out.push(BackendRequest::Chat(ChatCommand::SetCapability(
-                            id,
-                            "files.read".into(),
-                            permission,
-                        )));
-                    }
-                    ui.separator();
-                    for spec in registry::specs() {
-                        let mut on = registry::tool_enabled(&s.effective_tools, &spec);
-                        if ui
-                            .checkbox(&mut on, spec.name)
-                            .on_hover_text(spec.description)
-                            .changed()
-                        {
-                            out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
-                                id,
-                                spec.name.into(),
-                                on,
-                            )));
-                        }
-                    }
-                });
-            });
-            let mut steps = s.step_budget;
-            let drag = ui.add_enabled(
-                !running,
-                egui::DragValue::new(&mut steps)
-                    .range(1..=100)
-                    .prefix("Steps "),
-            );
-            if drag.changed() {
-                out.push(BackendRequest::Chat(ChatCommand::SetStepBudget(id, steps)));
-            }
-            if secondary(ui, "Change folder…", !running).clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Choose the agent's folder")
-                    .pick_folder()
-                {
-                    out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
-                }
-            }
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.label(RichText::new("Folder").size(12.0).color(t.fg3));
-                let path = s
-                    .workspace
-                    .as_ref()
-                    .map_or(String::new(), |p| p.display().to_string());
-                ui.add(egui::Label::new(RichText::new(path).size(12.0).color(t.fg2)).truncate());
-            });
-        });
-    });
-    #[cfg(test)]
-    {
-        app.chat_ui.probe.agent_bar = Some(egui::Rect::from_min_max(
-            egui::pos2(ui.max_rect().left(), top),
-            egui::pos2(ui.max_rect().right(), ui.cursor().min.y),
-        ));
-    }
-    ui.add_space(6.0);
-}
-
 /// One tool step of an agent: what it called, how it went, and the result.
-fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut AppState) {
+pub(super) fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut AppState) {
     let MessageContent::Tool {
         name,
         arguments,
@@ -1018,123 +908,7 @@ fn retry_row(
     }
 }
 
-fn header(
-    ui: &mut egui::Ui,
-    app: &mut AppState,
-    out: &mut Vec<BackendRequest>,
-    t: &Tokens,
-    s: &Session,
-    installed: &[String],
-    now: Instant,
-) {
-    let row = app.chat.rows().iter().find(|r| r.id == s.id).cloned();
-    let title = row.as_ref().map_or(s.title.clone(), |r| r.title.clone());
-    let shown_title = row
-        .as_ref()
-        .map_or(s.title.clone(), super::state::display_title);
-    let pinned = row.as_ref().is_some_and(|r| r.pinned);
-    let model = row.as_ref().map_or(s.model.clone(), |r| r.model.clone());
-    let running = app.chat.is_running(s.id);
-    let incognito = s.lifetime == SessionLifetime::Incognito;
-    let top = ui.cursor().min.y;
-    ui.horizontal(|ui| {
-        // Right-aligned controls first so the title takes what is left.
-        let mut title_room = ui.available_width();
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let delete_key = s.id.to_string();
-            let armed = app.chat_ui.confirm.is_armed(&delete_key, now);
-            let delete_label = if armed { "Confirm delete" } else { "Delete" };
-            let del = secondary(ui, delete_label, true);
-            #[cfg(test)]
-            {
-                app.chat_ui.probe.delete_button = Some((del.rect, delete_label.to_string()));
-            }
-            if del.clicked() && app.chat_ui.confirm.click(&delete_key, now) {
-                out.push(BackendRequest::Chat(ChatCommand::Delete(s.id)));
-            }
-            if !incognito && secondary(ui, if pinned { "Unpin" } else { "Pin" }, true).clicked() {
-                out.push(BackendRequest::Chat(ChatCommand::SetPinned(s.id, !pinned)));
-            }
-            if secondary(ui, "Rename", true).clicked() {
-                app.chat_ui.renaming = Some((s.id, title.clone()));
-            }
-            let current = model.clone();
-            let mut choice = None;
-            ui.add_enabled_ui(!running, |ui| {
-                egui::ComboBox::from_id_salt(("chat-model", s.id))
-                    .width(180.0)
-                    .selected_text(truncate_chars(&current, 26))
-                    .show_ui(ui, |ui| {
-                        let mut names: Vec<&str> = installed.iter().map(String::as_str).collect();
-                        if !names.contains(&current.as_str()) {
-                            names.insert(0, &current);
-                        }
-                        for name in names {
-                            if ui.selectable_label(name == current, name).clicked() {
-                                choice = Some(name.to_string());
-                            }
-                        }
-                    });
-            });
-            if let Some(m) = choice.filter(|m| *m != current) {
-                out.push(BackendRequest::Chat(ChatCommand::SetModel(s.id, m)));
-            }
-            title_room = ui.available_width();
-        });
-        let _ = title_room;
-    });
-    // The title gets its own line so nothing can overlap it.
-    ui.add_space(2.0);
-    match app.chat_ui.renaming.clone() {
-        Some((id, mut text)) if id == s.id => {
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .desired_width(ui.available_width())
-                    .font(semibold(16.0)),
-            );
-            if !edit.has_focus() && !edit.lost_focus() {
-                edit.request_focus();
-            }
-            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-            let escape = ui.input(|i| i.key_pressed(Key::Escape));
-            if enter {
-                out.push(BackendRequest::Chat(ChatCommand::Rename(id, text.clone())));
-                app.chat_ui.renaming = None;
-            } else if escape || edit.lost_focus() {
-                app.chat_ui.renaming = None;
-            } else {
-                app.chat_ui.renaming = Some((id, text));
-            }
-        }
-        _ => {
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    loaded_status(ui, app, out, t, &model);
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&shown_title).font(semibold(16.0)).color(t.fg),
-                            )
-                            .truncate(),
-                        );
-                    });
-                });
-            });
-        }
-    }
-    #[cfg(test)]
-    {
-        let bottom = ui.cursor().min.y;
-        app.chat_ui.probe.header = Some(egui::Rect::from_min_max(
-            egui::pos2(ui.max_rect().left(), top),
-            egui::pos2(ui.max_rect().right(), bottom),
-        ));
-    }
-    let _ = top;
-    ui.add_space(8.0);
-}
-
-fn truncate_chars(text: &str, max: usize) -> String {
+pub(super) fn truncate_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }
@@ -1263,7 +1037,7 @@ fn inspect(
 // ------------------------------------------------------------ loaded models
 
 /// Ollama lists `llama3` and `llama3:latest` for the same model.
-fn same_model(a: &str, b: &str) -> bool {
+pub(super) fn same_model(a: &str, b: &str) -> bool {
     a.strip_suffix(":latest").unwrap_or(a) == b.strip_suffix(":latest").unwrap_or(b)
 }
 
@@ -1287,91 +1061,6 @@ pub(super) fn unload_note(expires_at: &str, now: chrono::DateTime<chrono::Utc>) 
     })
 }
 
-/// Right end of the conversation title line: whether this chat's model is in
-/// memory, and a button to unload it.
-fn loaded_status(
-    ui: &mut egui::Ui,
-    app: &mut AppState,
-    out: &mut Vec<BackendRequest>,
-    t: &Tokens,
-    model: &str,
-) {
-    if !app.ollama.as_ref().is_some_and(|o| o.is_some()) {
-        return;
-    }
-    let found = app
-        .running
-        .iter()
-        .find(|m| same_model(&m.name, model))
-        .cloned();
-    match found {
-        Some(m) => {
-            let note = m
-                .expires_at
-                .as_deref()
-                .and_then(|e| unload_note(e, chrono::Utc::now()));
-            let r = secondary(ui, "Unload", true).on_hover_text("Free this model's memory now");
-            #[cfg(test)]
-            {
-                app.chat_ui.probe.header_unload = Some(r.rect);
-            }
-            if r.clicked() {
-                out.push(BackendRequest::UnloadModel(m.name.clone()));
-                app.running.retain(|x| x.name != m.name);
-            }
-            let text = match note {
-                Some(n) => format!("● Loaded · {n}"),
-                None => "● Loaded".to_string(),
-            };
-            ui.label(RichText::new(text).size(12.0).color(t.ok));
-        }
-        None => {
-            ui.label(RichText::new("○ Not loaded").size(12.0).color(t.fg3))
-                .on_hover_text("Ollama loads it when you send a message");
-        }
-    }
-}
-
-/// "In memory" at the bottom of the rail: what Ollama holds, with Unload.
-fn loaded_footer(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>, t: &Tokens) {
-    section_label(ui, t, "In memory");
-    if app.running.is_empty() {
-        ui.label(RichText::new("Nothing loaded").size(12.0).color(t.fg3));
-        return;
-    }
-    let shown: Vec<_> = app.running.iter().take(3).cloned().collect();
-    for m in &shown {
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let r = secondary(ui, "Unload", true);
-                #[cfg(test)]
-                app.chat_ui.probe.footer_unload.push(r.rect);
-                if r.clicked() {
-                    out.push(BackendRequest::UnloadModel(m.name.clone()));
-                    app.running.retain(|x| x.name != m.name);
-                }
-                ui.label(
-                    RichText::new(crate::browse::results::format_size(m.size))
-                        .size(11.5)
-                        .color(t.fg3),
-                );
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(RichText::new(&m.name).size(12.0).color(t.fg2)).truncate(),
-                    );
-                });
-            });
-        });
-    }
-    if app.running.len() > shown.len() {
-        ui.label(
-            RichText::new(format!("and {} more", app.running.len() - shown.len()))
-                .size(11.5)
-                .color(t.fg3),
-        );
-    }
-}
-
 // ------------------------------------------------------------- the composer
 
 fn composer(
@@ -1380,13 +1069,11 @@ fn composer(
     out: &mut Vec<BackendRequest>,
     t: &Tokens,
     s: &Session,
+    installed: &[String],
 ) {
     let id = s.id;
     let running = app.chat.is_running(id);
-    if let Some(n) = app.chat.notice.clone() {
-        ui.label(RichText::new(n).size(12.5).color(t.warn));
-        ui.add_space(4.0);
-    }
+    super::chrome::status_line(ui, app, t, s);
     let eid = composer_id(id);
     if std::mem::take(&mut app.chat_ui.focus_composer) {
         ui.memory_mut(|m| m.request_focus(eid));
@@ -1402,18 +1089,17 @@ fn composer(
     } else {
         "Message (Enter to send, Shift+Enter for a new line)"
     };
+    ui.add(
+        egui::TextEdit::multiline(app.chat.draft_mut(id))
+            .id(eid)
+            .desired_rows(COMPOSER_ROWS)
+            .desired_width(ui.available_width())
+            .hint_text(hint),
+    );
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let button_w = 76.0;
-        let edit_w = (ui.available_width() - button_w - 10.0).max(80.0);
-        ui.add(
-            egui::TextEdit::multiline(app.chat.draft_mut(id))
-                .id(eid)
-                .desired_rows(COMPOSER_ROWS)
-                .desired_width(edit_w)
-                .hint_text(hint),
-        );
-        ui.vertical(|ui| {
-            ui.set_width(button_w);
+        super::chrome::model_chip(ui, app, out, t, s, installed);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let has_text = !app.chat.draft(id).trim().is_empty();
             if running {
                 let r = secondary(ui, "Stop", true);
