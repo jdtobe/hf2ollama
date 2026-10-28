@@ -17,6 +17,9 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+mod writer;
+pub use writer::Writer;
+
 const INDEX_FILE: &str = "index-v1.json";
 const INDEX_VERSION: u32 = 1;
 const LOCK_FILE: &str = ".lock";
