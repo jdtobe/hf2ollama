@@ -39,6 +39,8 @@ pub struct ChatUi {
     pub new_agent: NewAgent,
     /// What the rail's search field holds.
     pub rail_query: String,
+    /// What the side-question field holds.
+    pub btw_input: String,
     /// The "Branch with another model" dialog, while open.
     pub branch_dialog: Option<BranchDialog>,
     /// A message to scroll into view once its chat is shown.
@@ -86,6 +88,9 @@ pub struct ChatProbe {
     pub cards: Vec<egui::Rect>,
     pub edit_icon: Option<egui::Rect>,
     pub branch_icon: Option<egui::Rect>,
+    pub btw_icon: Option<egui::Rect>,
+    pub btw_ask: Option<egui::Rect>,
+    pub btw_add: Option<egui::Rect>,
     pub branch_plain: Option<egui::Rect>,
     pub branch_pick: Option<egui::Rect>,
     pub branch_create: Option<egui::Rect>,
@@ -1188,8 +1193,10 @@ fn message_actions(
     }
     let details_id = egui::Id::unique("details").with(m.id);
     let branch_popup = egui::Id::unique("branch").with(m.id).with("popup");
+    let btw_popup = egui::Id::unique("btw").with(m.id).with("popup");
     let popup_open = egui::Popup::is_id_open(ui.ctx(), details_id.with("popup"))
-        || egui::Popup::is_id_open(ui.ctx(), branch_popup);
+        || egui::Popup::is_id_open(ui.ctx(), branch_popup)
+        || egui::Popup::is_id_open(ui.ctx(), btw_popup);
     if !(is_latest || popup_open || ui.rect_contains_pointer(card.union(row))) {
         return;
     }
@@ -1291,6 +1298,21 @@ fn message_actions(
                 model: s.model.clone(),
             });
         }
+        let btw_r = action_icon(
+            ui,
+            t,
+            next(),
+            egui::Id::unique("btw").with(m.id),
+            Icon::Btw,
+            "Side question (BTW)",
+        );
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.btw_icon = Some(btw_r.rect);
+        }
+        egui::Popup::from_toggle_button_response(&btw_r)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| btw_panel(ui, t, app, out, s, m));
         let r = action_icon(ui, t, next(), details_id, Icon::Details, "Details");
         #[cfg(test)]
         {
@@ -1299,6 +1321,132 @@ fn message_actions(
         egui::Popup::from_toggle_button_response(&r)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| details_card(ui, t, model, stats));
+    }
+}
+
+/// The side-question popover under a reply.
+fn btw_panel(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+    m: &Message,
+) {
+    ui.set_min_width(360.0);
+    ui.set_max_width(480.0);
+    ui.label(
+        RichText::new("Side question. Not added to this chat.")
+            .font(mono(11.0))
+            .color(t.warn),
+    );
+    ui.add_space(4.0);
+    let pending = app.chat.btw_pending(s.id).map(str::to_string);
+    let idle = !app.chat.is_running(s.id) && s.mode == SessionMode::Chat;
+    ui.horizontal(|ui| {
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut app.chat_ui.btw_input)
+                .hint_text("Ask about this reply…")
+                .desired_width(ui.available_width() - 64.0),
+        );
+        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        let can = pending.is_none() && !app.chat_ui.btw_input.trim().is_empty();
+        let ask = primary_button(ui, "Ask", can);
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.btw_ask = Some(ask.rect);
+        }
+        if (ask.clicked() || enter) && can {
+            let question = std::mem::take(&mut app.chat_ui.btw_input);
+            out.push(BackendRequest::Chat(ChatCommand::Btw {
+                session: s.id,
+                message: m.id,
+                question,
+            }));
+        }
+    });
+    if let Some(q) = &pending {
+        ui.add_space(6.0);
+        ui.label(RichText::new(q).size(12.5).color(t.fg3));
+        ui.label(RichText::new("Thinking…").color(t.fg2));
+    } else if let Some(e) = app.chat.btw_error(s.id) {
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(RichText::new(e).size(12.5).color(t.bad)).wrap());
+    }
+    let shown = s.btw.iter().find(|e| e.at == m.id).map(|e| e.id);
+    if let (Some(entry), None) = (s.btw.iter().find(|e| e.at == m.id), &pending) {
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(RichText::new(&entry.question).size(12.5).color(t.fg3));
+        let blocks = markdown::parse_capped(&entry.answer).0;
+        crate::browse::about::render(ui, t, &blocks, t.fg);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let add = ui.add_enabled(
+                idle && !entry.added,
+                egui::Button::new(RichText::new("Add to chat").size(12.0)),
+            );
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.btw_add = Some(add.rect);
+            }
+            if add.clicked() {
+                out.push(BackendRequest::Chat(ChatCommand::BtwAdd {
+                    session: s.id,
+                    id: entry.id,
+                }));
+            }
+            if entry.added {
+                ui.label(RichText::new("Added").size(12.0).color(t.fg3));
+            }
+            if ui.button(RichText::new("Dismiss").size(12.0)).clicked() {
+                ui.close();
+            }
+        });
+    }
+    let earlier: Vec<_> = s.btw.iter().filter(|e| Some(e.id) != shown).collect();
+    if !earlier.is_empty() {
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new(
+            RichText::new(format!("Earlier side questions ({})", earlier.len()))
+                .size(12.0)
+                .color(t.fg3),
+        )
+        .id_salt(("btw-history", s.id))
+        .show(ui, |ui| {
+            for e in earlier {
+                ui.label(RichText::new(&e.question).font(semibold(12.5)).color(t.fg2));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(truncate_chars(&e.answer, 160))
+                            .size(12.0)
+                            .color(t.fg3),
+                    )
+                    .wrap(),
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            idle && !e.added,
+                            egui::Button::new(RichText::new("Add to chat").size(11.5)),
+                        )
+                        .clicked()
+                    {
+                        out.push(BackendRequest::Chat(ChatCommand::BtwAdd {
+                            session: s.id,
+                            id: e.id,
+                        }));
+                    }
+                    if ui.button(RichText::new("Delete").size(11.5)).clicked() {
+                        out.push(BackendRequest::Chat(ChatCommand::BtwDelete {
+                            session: s.id,
+                            id: e.id,
+                        }));
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        });
     }
 }
 
