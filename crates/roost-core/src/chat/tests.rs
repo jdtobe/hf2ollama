@@ -1019,30 +1019,39 @@ async fn opening_a_running_session_flushes_pending_text_before_the_snapshot() {
         srv.requests().iter().any(|(p, _)| p == "/api/chat")
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    h.cmd(ChatCommand::Open(id));
-    h.wait("reopened", |e| opened(e).len() == 2).await;
-    let events = h.events();
-    let at = events
-        .iter()
-        .rposition(|e| matches!(e, ChatEvent::Opened(_)))
-        .unwrap();
-    let ChatEvent::Opened(snapshot) = &events[at] else {
-        unreachable!()
-    };
-    let snap_text = texts(snapshot).last().unwrap().1.clone();
-    assert_eq!(snap_text, "ab");
-    let flushed_before: String = events[..at]
-        .iter()
-        .filter_map(|e| match e {
-            ChatEvent::Delta { content, .. } => Some(content.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        flushed_before, "ab",
-        "pending text must be sent before the snapshot"
-    );
+    // At every Open, the text flushed before the snapshot must equal the
+    // snapshot's text. Keep opening until both chunks have arrived.
+    let mut reached = false;
+    for round in 1..=100 {
+        h.cmd(ChatCommand::Open(id));
+        h.wait("reopened", |e| opened(e).len() == round + 1).await;
+        let events = h.events();
+        let at = events
+            .iter()
+            .rposition(|e| matches!(e, ChatEvent::Opened(_)))
+            .unwrap();
+        let ChatEvent::Opened(snapshot) = &events[at] else {
+            unreachable!()
+        };
+        let snap_text = texts(snapshot).last().unwrap().1.clone();
+        let flushed_before: String = events[..at]
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Delta { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            flushed_before, snap_text,
+            "pending text must be sent before the snapshot"
+        );
+        if snap_text == "ab" {
+            reached = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(reached, "both chunks should have arrived");
 }
 
 #[tokio::test]
@@ -1100,4 +1109,475 @@ async fn an_unchanged_transcript_is_not_rewritten_on_every_flush() {
     );
     release.send(()).unwrap();
     h.wait_ended(1).await;
+}
+
+// ------------------------------------------------------------------ agents
+
+const SHOW_TOOLS: &str = r#"{"details":{"family":"llama"},"model_info":{"llama.context_length":8192},"capabilities":["completion","tools"],"digest":"sha256:abc"}"#;
+
+fn show_tools_route() -> Route {
+    Route::new(
+        "/api/show",
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        vec![Step::Write(SHOW_TOOLS.as_bytes().to_vec()), Step::Close],
+    )
+}
+
+async fn fake_agent(routes: Vec<Route>) -> TcpScript {
+    let mut all = vec![show_tools_route()];
+    all.extend(routes);
+    TcpScript::start_routes(all).await
+}
+
+fn tool_call(name: &str, args: serde_json::Value) -> Vec<u8> {
+    format!(
+        "{}\n",
+        serde_json::json!({
+            "message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": name, "arguments": args}}]},
+            "done": false
+        })
+    )
+    .into_bytes()
+}
+
+/// A model step that asks for one tool.
+fn calls(name: &str, args: serde_json::Value) -> Vec<Step> {
+    vec![
+        Step::Write(tool_call(name, args)),
+        Step::Write(done()),
+        Step::Close,
+    ]
+}
+
+fn run_ends(e: &[ChatEvent]) -> Vec<(super::types::RunOutcome, Option<String>)> {
+    e.iter()
+        .filter_map(|e| match e {
+            ChatEvent::RunEnded {
+                outcome, message, ..
+            } => Some((*outcome, message.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn workspace() -> TempDir {
+    let w = TempDir::new().unwrap();
+    std::fs::write(w.path().join("a.txt"), "hello\nworld\n").unwrap();
+    std::fs::write(w.path().join(".env"), "TOKEN=1").unwrap();
+    w
+}
+
+impl H {
+    async fn create_agent(&self, ws: &TempDir, lifetime: SessionLifetime) -> SessionId {
+        let before = self.opened().len();
+        self.cmd(ChatCommand::CreateAgent {
+            lifetime,
+            model: "llama3:8b".into(),
+            workspace: ws.path().to_path_buf(),
+        });
+        self.wait("agent opened", |e| opened(e).len() > before)
+            .await;
+        *self.opened().last().unwrap()
+    }
+
+    async fn wait_run_ended(&self, n: usize) {
+        self.wait("RunEnded", |e| run_ends(e).len() >= n).await;
+    }
+}
+
+#[tokio::test]
+async fn an_agent_reads_a_file_and_answers() {
+    let ws = workspace();
+    let srv = fake_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("It says hello.")),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(
+        run_ends(&events),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+    let started: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ChatEvent::ToolStarted {
+                name, arguments, ..
+            } => Some((name.clone(), arguments.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        started,
+        [(
+            "read_file".to_string(),
+            serde_json::json!({"path": "a.txt"})
+        )]
+    );
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolFinished { ok: true, output, .. } if output == "1| hello\n2| world")));
+    assert_eq!(ended(&events).len(), 2, "one turn per model step");
+
+    // What the model saw.
+    let bodies = chat_bodies(&srv);
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 4);
+    let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("read-only agent"), "{system}");
+    assert!(
+        system.contains(&ws.path().display().to_string()),
+        "{system}"
+    );
+    assert!(system.contains("Steps remaining: 20"), "{system}");
+    let second = bodies[1]["messages"].as_array().unwrap();
+    let roles: Vec<_> = second.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, ["system", "user", "assistant", "tool"]);
+    assert_eq!(second[2]["tool_calls"][0]["function"]["name"], "read_file");
+    assert_eq!(second[3]["tool_name"], "read_file");
+    assert_eq!(second[3]["content"], "1| hello\n2| world");
+
+    // What was saved.
+    h.wait("saved", |_| {
+        let t = texts(&h.read(id));
+        t.last().is_some_and(|m| m.1 == "It says hello.")
+    })
+    .await;
+    let s = h.read(id);
+    assert_eq!(s.mode, crate::session::SessionMode::Agent);
+    assert_eq!(s.workspace.as_deref(), Some(ws.path()));
+    let kinds: Vec<_> = texts(&s).iter().map(|m| m.0.clone()).collect();
+    assert_eq!(
+        kinds,
+        ["user", "assistant:Complete", "tool", "assistant:Complete"]
+    );
+    assert!(s.is_idle());
+}
+
+#[tokio::test]
+async fn a_model_without_tool_support_cannot_run_an_agent() {
+    let ws = workspace();
+    let srv = fake(vec![chat_route(reply("never"))]).await; // show without "tools"
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "hello").await;
+    h.wait("rejected", |e| {
+        e.iter().any(|e| matches!(e, ChatEvent::SendRejected { reason: SendRejection::NoToolSupport(m), .. } if m == "llama3:8b"))
+    })
+    .await;
+    assert!(chat_bodies(&srv).is_empty());
+    assert!(h.read(id).messages.is_empty());
+}
+
+#[tokio::test]
+async fn check_model_reports_whether_tools_are_supported() {
+    let srv = fake_agent(vec![]).await;
+    let h = start(&srv).await;
+    h.cmd(ChatCommand::CheckModel("llama3:8b".into()));
+    h.wait("capabilities", |e| {
+        e.iter().any(|e| matches!(e, ChatEvent::ModelCapabilities { model, tools: true } if model == "llama3:8b"))
+    })
+    .await;
+    let plain = fake(vec![]).await;
+    let h2 = start(&plain).await;
+    h2.cmd(ChatCommand::CheckModel("llama3:8b".into()));
+    h2.wait("capabilities", |e| {
+        e.iter()
+            .any(|e| matches!(e, ChatEvent::ModelCapabilities { tools: false, .. }))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn tool_failures_go_back_to_the_model_and_the_run_continues() {
+    let ws = workspace();
+    let srv = fake_agent(vec![
+        chat_route(calls(
+            "read_file",
+            serde_json::json!({"path": "../etc/passwd"}),
+        )),
+        chat_route(calls("read_file", serde_json::json!({"path": ".env"}))),
+        chat_route(reply("I could not read those.")),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "read secrets").await;
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(run_ends(&events)[0].0, super::types::RunOutcome::Completed);
+    let failures: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            ChatEvent::ToolFinished {
+                ok: false, output, ..
+            } => Some(output.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failures.len(), 2);
+    assert!(
+        failures[0].starts_with("Error: ") && failures[0].contains("parent directory"),
+        "{failures:?}"
+    );
+    assert!(failures[1].contains("protected"), "{failures:?}");
+    let last = &chat_bodies(&srv)[2]["messages"];
+    assert!(last
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["role"] == "tool" && m["content"].as_str().unwrap().contains("protected")));
+}
+
+#[tokio::test]
+async fn the_step_budget_ends_a_run_that_keeps_calling_tools() {
+    let ws = workspace();
+    let srv = fake_agent(vec![
+        chat_route(calls("list_dir", serde_json::json!({}))),
+        chat_route(calls("list_dir", serde_json::json!({}))),
+        chat_route(reply("unreachable")),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.cmd(ChatCommand::SetStepBudget(id, 2));
+    h.send(id, "list forever").await;
+    h.wait_run_ended(1).await;
+    let (outcome, msg) = run_ends(&h.events())[0].clone();
+    assert_eq!(outcome, super::types::RunOutcome::BudgetExhausted);
+    assert!(msg.unwrap().contains("all 2 steps"));
+    assert_eq!(chat_bodies(&srv).len(), 2, "no third request");
+    let first_system = chat_bodies(&srv)[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(first_system.contains("Steps remaining: 2"));
+    assert!(chat_bodies(&srv)[1]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Steps remaining: 1"));
+}
+
+#[tokio::test]
+async fn stop_ends_a_streaming_agent_run_once() {
+    let ws = workspace();
+    let (_keep, hold) = oneshot::channel::<()>();
+    let srv = fake_agent(vec![chat_route(vec![
+        Step::Write(line("thinking")),
+        Step::WaitFor(hold),
+    ])])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait("streaming", |_| h.deltas(id) == "thinking").await;
+    h.cmd(ChatCommand::Stop(id));
+    h.wait_run_ended(1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let events = h.events();
+    assert_eq!(
+        run_ends(&events),
+        vec![(super::types::RunOutcome::Cancelled, None)]
+    );
+    assert_eq!(ended(&events), vec![(TurnOutcome::Cancelled, None)]);
+    h.wait("saved", |_| {
+        texts(&h.read(id))
+            .last()
+            .is_some_and(|m| m.0 == "assistant:Cancelled")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn steering_interrupts_the_reply_keeps_it_and_continues_the_same_run() {
+    let ws = workspace();
+    let (_keep, hold) = oneshot::channel::<()>();
+    let srv = fake_agent(vec![
+        chat_route(vec![Step::Write(line("partial")), Step::WaitFor(hold)]),
+        chat_route(reply("ok, switching")),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "do the first thing").await;
+    h.wait("streaming", |_| h.deltas(id) == "partial").await;
+    h.send(id, "do the other thing instead").await;
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(
+        run_ends(&events),
+        vec![(super::types::RunOutcome::Completed, None)],
+        "one run, one end"
+    );
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::SteeringQueued { text, .. } if text == "do the other thing instead")));
+    assert_eq!(
+        ended(&events).iter().map(|e| e.0).collect::<Vec<_>>(),
+        [TurnOutcome::Interrupted, TurnOutcome::Completed]
+    );
+    h.wait("saved", |_| {
+        texts(&h.read(id))
+            .last()
+            .is_some_and(|m| m.1 == "ok, switching")
+    })
+    .await;
+    assert_eq!(
+        texts(&h.read(id)),
+        vec![
+            ("user".into(), "do the first thing".into()),
+            ("assistant:Interrupted".into(), "partial".into()),
+            ("user".into(), "do the other thing instead".into()),
+            ("assistant:Complete".into(), "ok, switching".into()),
+        ]
+    );
+    let s = h.read(id);
+    assert!(matches!(
+        &s.messages[2].content,
+        MessageContent::User {
+            delivery: crate::session::UserDelivery::Steering,
+            ..
+        }
+    ));
+    let second = chat_bodies(&srv)[1]["messages"].as_array().unwrap().clone();
+    let roles: Vec<_> = second.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, ["system", "user", "assistant", "user"]);
+    assert_eq!(second[2]["content"], "partial");
+    assert_eq!(second[3]["content"], "do the other thing instead");
+}
+
+#[tokio::test]
+async fn the_workspace_tools_and_budget_cannot_change_under_a_running_agent() {
+    let ws = workspace();
+    let other = workspace();
+    let (release, hold) = oneshot::channel();
+    let srv = fake_agent(vec![chat_route(vec![
+        Step::Write(line("x")),
+        Step::WaitFor(hold),
+        Step::Write(done()),
+        Step::Close,
+    ])])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait("streaming", |_| !h.deltas(id).is_empty()).await;
+    h.cmd(ChatCommand::SetWorkspace(id, other.path().to_path_buf()));
+    h.cmd(ChatCommand::SetToolEnabled(id, "search_text".into(), false));
+    h.cmd(ChatCommand::SetStepBudget(id, 3));
+    h.wait("three refusals", |e| {
+        e.iter()
+            .filter(|e| matches!(e, ChatEvent::SessionError { message, .. } if message.contains("Stop the current run")))
+            .count()
+            >= 3
+    })
+    .await;
+    release.send(()).unwrap();
+    h.wait_run_ended(1).await;
+    // Idle again: the same changes now apply.
+    h.cmd(ChatCommand::SetWorkspace(id, other.path().to_path_buf()));
+    h.cmd(ChatCommand::SetToolEnabled(id, "search_text".into(), false));
+    h.wait("applied", |_| {
+        let s = h.read(id);
+        s.workspace.as_deref() == Some(other.path())
+            && s.effective_tools.tools.get("search_text") == Some(&false)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn switched_off_tools_are_not_offered_to_the_model() {
+    let ws = workspace();
+    let srv = fake_agent(vec![chat_route(reply("done"))]).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.cmd(ChatCommand::SetToolEnabled(id, "search_text".into(), false));
+    h.cmd(ChatCommand::SetCapability(
+        id,
+        "files.read".into(),
+        crate::session::Permission::Auto,
+    ));
+    h.send(id, "hi").await;
+    h.wait_run_ended(1).await;
+    let names: Vec<_> = chat_bodies(&srv)[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["list_dir", "read_file", "find_files"]);
+}
+
+#[tokio::test]
+async fn an_agent_needs_a_real_workspace_folder() {
+    let srv = fake_agent(vec![]).await;
+    let h = start(&srv).await;
+    let nowhere = TempDir::new().unwrap().path().join("missing");
+    h.cmd(ChatCommand::CreateAgent {
+        lifetime: SessionLifetime::Persisted,
+        model: "m".into(),
+        workspace: nowhere,
+    });
+    h.cmd(ChatCommand::CreateAgent {
+        lifetime: SessionLifetime::Persisted,
+        model: "m".into(),
+        workspace: std::path::PathBuf::from("relative/dir"),
+    });
+    h.wait("two refusals", |e| {
+        e.iter()
+            .filter(|e| matches!(e, ChatEvent::SessionError { session: None, .. }))
+            .count()
+            >= 2
+    })
+    .await;
+    assert!(h.opened().is_empty());
+}
+
+#[tokio::test]
+async fn an_incognito_agent_run_leaves_the_data_dir_untouched() {
+    let ws = workspace();
+    let srv = fake_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("secret findings")),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let before = dir_snapshot(h.dir.path());
+    let id = h.create_agent(&ws, SessionLifetime::Incognito).await;
+    h.send(id, "secret task").await;
+    h.wait_run_ended(1).await;
+    h.cmd(ChatCommand::ClearIncognito);
+    h.handle.shutdown().await;
+    let after = dir_snapshot(h.dir.path());
+    assert_eq!(after, before);
+    for (name, bytes) in &after {
+        assert!(!String::from_utf8_lossy(bytes).contains("secret"), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn deleting_a_session_in_the_middle_of_a_tool_run_leaves_nothing_behind() {
+    let ws = workspace();
+    let (_keep, hold) = oneshot::channel::<()>();
+    let srv = fake_agent(vec![chat_route(vec![
+        Step::Write(line("x")),
+        Step::WaitFor(hold),
+    ])])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait("streaming", |_| !h.deltas(id).is_empty()).await;
+    h.cmd(ChatCommand::Delete(id));
+    h.wait("gone", |e| {
+        e.iter()
+            .rev()
+            .take(4)
+            .any(|e| matches!(e, ChatEvent::Rows(r) if r.iter().all(|x| x.id != id)))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!h.file(id).exists());
+    assert!(run_ends(&h.events()).is_empty());
 }

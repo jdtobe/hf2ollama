@@ -3,14 +3,15 @@
 //! commands and receives ordered events; all disk work goes through the store
 //! writer and all HTTP through run tasks.
 
+use super::agent_loop::{AgentRun, ToolRun};
 use super::context::{build_request, window};
 use super::run::{drive, RunMsg};
-use super::types::{ChatCommand, ChatEvent, EventSink, SendRejection, TurnOutcome};
+use super::types::{ChatCommand, ChatEvent, EventSink, RunOutcome, SendRejection, TurnOutcome};
 use crate::error::Error;
 use crate::ollama::{ChatRequestBody, OllamaClient, StreamEvent};
 use crate::session::{
     AssistantStatus, MessageContent, MessageId, RunId, Session, SessionError, SessionId,
-    SessionLifetime, TurnId,
+    SessionLifetime, SessionMode, TurnId,
 };
 use crate::store::{live_row, IndexRow, LoadError, StoreWarning, Writer};
 use std::collections::HashMap;
@@ -100,69 +101,85 @@ impl ChatManager {
     }
 }
 
+/// What `/api/show` told us about a model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ModelInfo {
+    pub context: Option<u64>,
+    pub tools: bool,
+}
+
 #[derive(Clone)]
-enum Intent {
+pub(super) enum Intent {
     Send(String),
     Retry,
 }
 
-struct Run {
-    turn: TurnId,
-    assistant: MessageId,
-    stop: watch::Sender<bool>,
-    join: JoinHandle<()>,
-    content: String,
-    thinking: String,
-    pending_since: Option<Instant>,
+pub(super) struct Run {
+    pub(super) turn: TurnId,
+    pub(super) assistant: MessageId,
+    pub(super) stop: watch::Sender<bool>,
+    pub(super) join: JoinHandle<()>,
+    pub(super) content: String,
+    pub(super) thinking: String,
+    pub(super) pending_since: Option<Instant>,
 }
 
-enum Slot {
+pub(super) enum Slot {
     Idle,
-    Preparing { token: u64, intent: Intent },
+    Preparing {
+        token: u64,
+        intent: Intent,
+    },
+    /// A model reply is streaming.
     Running(Box<Run>),
+    /// An agent's tool call is running.
+    Tools(Box<ToolRun>),
 }
 
-struct Live {
-    s: Session,
-    slot: Slot,
-    close_when_idle: bool,
-    last_flush: Instant,
+pub(super) struct Live {
+    pub(super) s: Session,
+    pub(super) slot: Slot,
+    pub(super) close_when_idle: bool,
+    pub(super) last_flush: Instant,
     /// Text arrived since the last write to disk.
-    dirty: bool,
+    pub(super) dirty: bool,
+    /// The loop state while an agent run is active.
+    pub(super) agent: Option<AgentRun>,
 }
 
 impl Live {
-    fn new(s: Session) -> Live {
+    pub(super) fn new(s: Session) -> Live {
         Live {
             s,
             slot: Slot::Idle,
             close_when_idle: false,
             last_flush: Instant::now(),
             dirty: false,
+            agent: None,
         }
     }
 }
 
-struct Manager {
-    writer: Writer,
-    client: OllamaClient,
-    flush_interval: Duration,
-    coalesce: Duration,
-    sink: EventSink,
-    sessions: HashMap<SessionId, Live>,
-    /// Model name to context length from `/api/show`.
-    ctx_cache: HashMap<String, Option<u64>>,
-    run_tx: mpsc::UnboundedSender<RunMsg>,
-    next_token: u64,
+pub(super) struct Manager {
+    pub(super) writer: Writer,
+    pub(super) client: OllamaClient,
+    pub(super) flush_interval: Duration,
+    pub(super) coalesce: Duration,
+    pub(super) sink: EventSink,
+    pub(super) sessions: HashMap<SessionId, Live>,
+    /// Model name to what `/api/show` said.
+    pub(super) ctx_cache: HashMap<String, ModelInfo>,
+    pub(super) run_tx: mpsc::UnboundedSender<RunMsg>,
+    pub(super) next_token: u64,
 }
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-fn error_text(e: &Error) -> String {
+pub(super) fn error_text(e: &Error) -> String {
     match e {
         Error::OllamaUnreachable => {
             "Ollama is not reachable. Make sure it is running, then retry.".into()
@@ -190,6 +207,14 @@ fn warning_text(w: &StoreWarning) -> String {
     }
 }
 
+/// The parts of `/api/show` the manager uses.
+fn model_info(d: crate::ollama::ModelDetails) -> ModelInfo {
+    ModelInfo {
+        context: d.context,
+        tools: d.capabilities.iter().any(|c| c == "tools"),
+    }
+}
+
 fn load_error_text(e: &LoadError) -> String {
     e.to_string()
 }
@@ -202,11 +227,11 @@ async fn sleep_until_opt(deadline: Option<Instant>) {
 }
 
 impl Manager {
-    fn emit(&self, ev: ChatEvent) {
+    pub(super) fn emit(&self, ev: ChatEvent) {
         (self.sink)(ev);
     }
 
-    async fn emit_rows(&self) {
+    pub(super) async fn emit_rows(&self) {
         let mut rows: Vec<IndexRow> = self.writer.snapshot().await;
         rows.extend(
             self.sessions
@@ -217,7 +242,7 @@ impl Manager {
         self.emit(ChatEvent::Rows(rows));
     }
 
-    fn save(&self, s: &Session) {
+    pub(super) fn save(&self, s: &Session) {
         if s.lifetime == SessionLifetime::Persisted {
             self.writer.save(s.clone());
         }
@@ -286,12 +311,40 @@ impl Manager {
             ChatCommand::Send { session, text } => self.begin(session, Intent::Send(text)).await,
             ChatCommand::Retry(id) => self.begin(id, Intent::Retry).await,
             ChatCommand::Stop(id) => self.stop(id).await,
+            ChatCommand::CreateAgent {
+                lifetime,
+                model,
+                workspace,
+            } => self.create_agent(lifetime, &model, workspace).await,
+            ChatCommand::CheckModel(model) => self.check_model(model),
+            ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
+            ChatCommand::SetStepBudget(id, steps) => {
+                self.edit_idle(id, move |s| {
+                    s.step_budget = steps.clamp(1, 100);
+                    Ok(())
+                })
+                .await;
+            }
+            ChatCommand::SetToolEnabled(id, name, on) => {
+                self.edit_idle(id, move |s| {
+                    s.set_tool_enabled(&name, on);
+                    Ok(())
+                })
+                .await;
+            }
+            ChatCommand::SetCapability(id, key, permission) => {
+                self.edit_idle(id, move |s| {
+                    s.set_capability(&key, permission);
+                    Ok(())
+                })
+                .await;
+            }
             ChatCommand::ListSessions => self.emit_rows().await,
             ChatCommand::InstalledChanged => self.ctx_cache.clear(),
         }
     }
 
-    fn session_error(&self, id: Option<SessionId>, message: String) {
+    pub(super) fn session_error(&self, id: Option<SessionId>, message: String) {
         self.emit(ChatEvent::SessionError {
             session: id,
             message,
@@ -299,7 +352,7 @@ impl Manager {
     }
 
     /// Loads a saved session into memory if it is not there already.
-    async fn ensure(&mut self, id: SessionId) -> Result<(), LoadError> {
+    pub(super) async fn ensure(&mut self, id: SessionId) -> Result<(), LoadError> {
         if self.sessions.contains_key(&id) {
             return Ok(());
         }
@@ -385,7 +438,7 @@ impl Manager {
     }
 
     /// Edits a session (loading it if needed), saves it and refreshes rows.
-    async fn edit<F>(&mut self, id: SessionId, f: F)
+    pub(super) async fn edit<F>(&mut self, id: SessionId, f: F)
     where
         F: FnOnce(&mut Session) -> Result<(), SessionError>,
     {
@@ -447,9 +500,13 @@ impl Manager {
     async fn halt(&self, live: Live) {
         // The run task owns no session state and the manager ignores
         // anything it sends later, so it can simply be cut off.
-        if let Slot::Running(run) = live.slot {
-            let _ = run.stop.send(true);
-            run.join.abort();
+        match live.slot {
+            Slot::Running(run) => {
+                let _ = run.stop.send(true);
+                run.join.abort();
+            }
+            Slot::Tools(tool) => tool.join.abort(),
+            _ => {}
         }
     }
 
@@ -465,6 +522,15 @@ impl Manager {
             return;
         };
         if !matches!(live.slot, Slot::Idle) {
+            // A running agent takes new messages as steering.
+            let steerable =
+                live.agent.is_some() && matches!(live.slot, Slot::Running(_) | Slot::Tools(_));
+            if let (true, Intent::Send(text)) = (steerable, &intent) {
+                if !text.trim().is_empty() {
+                    self.steer(id, text.trim().to_string()).await;
+                    return;
+                }
+            }
             self.emit(ChatEvent::SendRejected {
                 session: id,
                 reason: SendRejection::Busy,
@@ -497,8 +563,8 @@ impl Manager {
             Intent::Send(_) => {}
         }
         let model = live.s.model.clone();
-        if let Some(ctx) = self.ctx_cache.get(&model).copied() {
-            self.proceed(id, intent, ctx).await;
+        if let Some(info) = self.ctx_cache.get(&model).copied() {
+            self.proceed(id, intent, Some(info)).await;
             return;
         }
         self.next_token += 1;
@@ -508,18 +574,27 @@ impl Manager {
         }
         let (client, tx) = (self.client.clone(), self.run_tx.clone());
         tokio::spawn(async move {
-            let context = client.show(&model).await.map(|d| d.context);
+            let info = client.show(&model).await.map(model_info);
             let _ = tx.send(RunMsg::Shown {
                 session: id,
                 token,
-                context,
+                info,
             });
         });
     }
 
     /// The model's context length is known (or unknown): trim, record the
     /// user message, and start the reply.
-    async fn proceed(&mut self, id: SessionId, intent: Intent, show_ctx: Option<u64>) {
+    pub(super) async fn proceed(&mut self, id: SessionId, intent: Intent, info: Option<ModelInfo>) {
+        if self
+            .sessions
+            .get(&id)
+            .is_some_and(|l| l.s.mode == SessionMode::Agent)
+        {
+            self.agent_proceed(id, intent, info).await;
+            return;
+        }
+        let show_ctx = info.and_then(|i| i.context);
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -607,7 +682,7 @@ impl Manager {
         let others_running = self
             .sessions
             .iter()
-            .any(|(k, l)| *k != id && matches!(l.slot, Slot::Running(_)));
+            .any(|(k, l)| *k != id && matches!(l.slot, Slot::Running(_) | Slot::Tools(_)));
         if others_running {
             self.emit(ChatEvent::WaitingForModel { session: id, turn });
         }
@@ -619,7 +694,7 @@ impl Manager {
             return;
         };
         match live.slot {
-            Slot::Running(_) => self.finalize(id, TurnOutcome::Cancelled, None, None).await,
+            Slot::Running(_) | Slot::Tools(_) => self.stop_run(id).await,
             Slot::Preparing { .. } => {
                 live.slot = Slot::Idle;
                 self.emit(ChatEvent::SendRejected {
@@ -636,7 +711,7 @@ impl Manager {
             RunMsg::Shown {
                 session,
                 token,
-                context,
+                info,
             } => {
                 let Some(live) = self.sessions.get_mut(&session) else {
                     return;
@@ -654,15 +729,30 @@ impl Manager {
                 let intent = intent.clone();
                 live.slot = Slot::Idle;
                 let model = live.s.model.clone();
-                let ctx = match context {
-                    Ok(c) => {
-                        self.ctx_cache.insert(model, c);
-                        c
+                let info = match info {
+                    Ok(i) => {
+                        self.ctx_cache.insert(model, i);
+                        Some(i)
                     }
                     Err(_) => None,
                 };
-                self.proceed(session, intent, ctx).await;
+                self.proceed(session, intent, info).await;
             }
+            RunMsg::Capabilities { model, info } => {
+                if let Ok(i) = info {
+                    self.ctx_cache.insert(model.clone(), i);
+                    self.emit(ChatEvent::ModelCapabilities {
+                        model,
+                        tools: i.tools,
+                    });
+                }
+            }
+            RunMsg::ToolDone {
+                session,
+                run,
+                call_id,
+                result,
+            } => self.tool_done(session, run, call_id, result).await,
             RunMsg::Event {
                 session,
                 turn,
@@ -688,8 +778,11 @@ impl Manager {
                         live.s.append_assistant(run.assistant, "", &t);
                         run.thinking.push_str(&t);
                     }
-                    // Chat sessions offer no tools; agents handle these below.
-                    StreamEvent::ToolCall { .. } => {}
+                    StreamEvent::ToolCall { name, arguments } => {
+                        if let Some(agent) = live.agent.as_mut() {
+                            agent.collect(name, arguments);
+                        }
+                    }
                     StreamEvent::Done {
                         prompt_eval_count,
                         done_reason,
@@ -708,8 +801,17 @@ impl Manager {
                         } else {
                             (TurnOutcome::Completed, None)
                         };
-                        self.finalize(session, outcome, message, prompt_eval_count)
-                            .await;
+                        if self
+                            .sessions
+                            .get(&session)
+                            .is_some_and(|l| l.agent.is_some())
+                        {
+                            self.agent_step_done(session, outcome, message, prompt_eval_count)
+                                .await;
+                        } else {
+                            self.finalize(session, outcome, message, prompt_eval_count)
+                                .await;
+                        }
                         return;
                     }
                 }
@@ -741,7 +843,7 @@ impl Manager {
         }
     }
 
-    fn flush_pending(&self, id: SessionId, run: &mut Run) {
+    pub(super) fn flush_pending(&self, id: SessionId, run: &mut Run) {
         if run.content.is_empty() && run.thinking.is_empty() {
             run.pending_since = None;
             return;
@@ -755,30 +857,53 @@ impl Manager {
         run.pending_since = None;
     }
 
-    /// Records the turn's single terminal outcome. Anything the run task
-    /// sends afterwards is ignored because the slot is no longer running.
-    async fn finalize(
+    /// Ends a chat reply: the turn's outcome is also the run's.
+    pub(super) async fn finalize(
         &mut self,
         id: SessionId,
         outcome: TurnOutcome,
         message: Option<String>,
         prompt_eval_count: Option<u64>,
     ) {
-        let Some(live) = self.sessions.get_mut(&id) else {
+        if !self
+            .finalize_turn(id, outcome, message.clone(), prompt_eval_count)
+            .await
+        {
             return;
+        }
+        let run = match outcome {
+            TurnOutcome::Completed => RunOutcome::Completed,
+            TurnOutcome::Failed => RunOutcome::Failed,
+            TurnOutcome::Cancelled | TurnOutcome::Interrupted => RunOutcome::Cancelled,
+        };
+        self.end_run(id, run, message).await;
+    }
+
+    /// Records one model turn's single terminal outcome. Anything the run
+    /// task sends afterwards is ignored because the slot is no longer
+    /// running. False if there was no streaming turn to end.
+    pub(super) async fn finalize_turn(
+        &mut self,
+        id: SessionId,
+        outcome: TurnOutcome,
+        message: Option<String>,
+        prompt_eval_count: Option<u64>,
+    ) -> bool {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return false;
         };
         let Slot::Running(mut run) = std::mem::replace(&mut live.slot, Slot::Idle) else {
-            return;
+            return false;
         };
         let _ = run.stop.send(true);
         let (status, error) = match outcome {
             TurnOutcome::Completed => (AssistantStatus::Complete, None),
             TurnOutcome::Failed => (AssistantStatus::Failed, message.clone()),
             TurnOutcome::Cancelled => (AssistantStatus::Cancelled, None),
+            TurnOutcome::Interrupted => (AssistantStatus::Interrupted, None),
         };
         live.s
             .finish_assistant(run.assistant, status, error, now_ms());
-        let close = live.close_when_idle;
         let s = live.s.clone();
         self.flush_pending(id, &mut run);
         self.save(&s);
@@ -788,6 +913,27 @@ impl Manager {
             outcome,
             message,
             prompt_eval_count,
+        });
+        true
+    }
+
+    /// Ends a run: one `RunEnded`, then the session may be unloaded.
+    pub(super) async fn end_run(
+        &mut self,
+        id: SessionId,
+        outcome: RunOutcome,
+        message: Option<String>,
+    ) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        live.slot = Slot::Idle;
+        live.agent = None;
+        let close = live.close_when_idle;
+        self.emit(ChatEvent::RunEnded {
+            session: id,
+            outcome,
+            message,
         });
         if close {
             self.sessions.remove(&id);
@@ -854,11 +1000,11 @@ impl Manager {
         let running: Vec<SessionId> = self
             .sessions
             .iter()
-            .filter(|(_, l)| matches!(l.slot, Slot::Running(_)))
+            .filter(|(_, l)| matches!(l.slot, Slot::Running(_) | Slot::Tools(_)))
             .map(|(id, _)| *id)
             .collect();
         for id in running {
-            self.finalize(id, TurnOutcome::Cancelled, None, None).await;
+            self.stop_run(id).await;
         }
         self.sessions
             .retain(|_, l| l.s.lifetime != SessionLifetime::Incognito);

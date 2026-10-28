@@ -461,6 +461,36 @@ impl Session {
         )
     }
 
+    /// Marks a recorded tool call as running.
+    pub fn start_tool(&mut self, id: MessageId) {
+        if let Some(Message {
+            content: MessageContent::Tool { status, .. },
+            ..
+        }) = self.messages.iter_mut().find(|m| m.id == id)
+        {
+            *status = ToolStatus::Running;
+        }
+    }
+
+    /// Ends every tool call that has not finished (a stopped run).
+    pub fn cancel_open_tools(&mut self, now_ms: u64) {
+        let open: Vec<MessageId> = self
+            .messages
+            .iter()
+            .filter(|m| {
+                matches!(
+                    &m.content,
+                    MessageContent::Tool { status, .. }
+                        if matches!(status, ToolStatus::Pending | ToolStatus::Running)
+                )
+            })
+            .map(|m| m.id)
+            .collect();
+        for id in open {
+            self.finish_tool(id, "cancelled", ToolStatus::Cancelled, now_ms);
+        }
+    }
+
     pub fn finish_tool(
         &mut self,
         id: MessageId,
@@ -1091,5 +1121,31 @@ mod tests {
             Some(&Permission::Off)
         );
         assert_eq!(s.effective_tools.revision, r0 + 2);
+    }
+
+    #[test]
+    fn open_tool_calls_can_be_started_and_cancelled_together() {
+        let mut s = chat();
+        let run = RunId::new();
+        let a = s.push_tool_call(run, "c1", "list_dir", serde_json::json!({}), T0 + 1);
+        let b = s.push_tool_call(run, "c2", "read_file", serde_json::json!({}), T0 + 1);
+        let done = s.push_tool_call(run, "c3", "find_files", serde_json::json!({}), T0 + 1);
+        s.finish_tool(done, "ok", ToolStatus::Complete, T0 + 1);
+        s.start_tool(a);
+        let status =
+            |s: &Session, id| match &s.messages.iter().find(|m| m.id == id).unwrap().content {
+                MessageContent::Tool { status, .. } => *status,
+                _ => panic!(),
+            };
+        assert_eq!(status(&s, a), ToolStatus::Running);
+        s.cancel_open_tools(T0 + 5);
+        assert_eq!(status(&s, a), ToolStatus::Cancelled);
+        assert_eq!(status(&s, b), ToolStatus::Cancelled);
+        assert_eq!(
+            status(&s, done),
+            ToolStatus::Complete,
+            "finished calls are left alone"
+        );
+        assert!(s.is_idle());
     }
 }
