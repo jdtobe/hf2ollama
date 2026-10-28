@@ -87,75 +87,81 @@ fn shorten(s: &str, max: usize) -> String {
 
 const ROW_H: f32 = 88.0;
 
-/// The results column.
-pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+/// A small caption row that starts a section of the list.
+pub fn section_header(ui: &mut egui::Ui, left: &str, right: &str) {
     let t = tokens(ui);
-    egui::Panel::left("results")
-        .default_size(350.0)
-        .size_range(300.0..=420.0)
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface)
-                .stroke(Stroke::new(1.0, t.line)),
-        )
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let visible = app.browse.visible_len();
-            let loaded = app.browse.loaded_len();
-            let head = match (&app.browse.search, visible == loaded) {
-                (SearchStatus::Loading, _) if loaded == 0 => "Searching…".to_string(),
-                (_, true) => format!("{visible} results"),
-                (_, false) => format!("{visible} of {loaded} results"),
-            };
-            egui::Frame::new()
-                .inner_margin(Margin::symmetric(16, 10))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(head).size(12.0).color(t.fg3));
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, t.surface2);
+    p.hline(rect.x_range(), rect.top(), Stroke::new(1.0, t.line));
+    p.hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, t.line));
+    p.text(
+        rect.left_center() + vec2(14.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        left.to_uppercase(),
+        semibold(11.0),
+        t.fg3,
+    );
+    p.text(
+        rect.right_center() - vec2(14.0, 0.0),
+        egui::Align2::RIGHT_CENTER,
+        right,
+        crate::theme::mono(11.5),
+        t.fg3,
+    );
+}
+
+/// The Hugging Face section of the Models list: its header, then the
+/// loading, error and empty states, or the result rows.
+pub fn section(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+    let t = tokens(ui);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let visible = app.browse.visible_len();
+    let loaded = app.browse.loaded_len();
+    let count = match (&app.browse.search, visible == loaded) {
+        (SearchStatus::Loading, _) if loaded == 0 => "searching".to_string(),
+        (_, true) => visible.to_string(),
+        (_, false) => format!("{visible} of {loaded}"),
+    };
+    section_header(ui, "Hugging Face", &count);
+    match app.browse.search.clone() {
+        SearchStatus::Loading if loaded == 0 => {
+            message_box(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Searching Hugging Face…").color(t.fg3));
                 });
-            ui.painter().hline(
-                ui.min_rect().x_range(),
-                ui.min_rect().bottom(),
-                Stroke::new(1.0, t.line),
-            );
-            match app.browse.search.clone() {
-                SearchStatus::Loading if loaded == 0 => {
-                    message_box(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(RichText::new("Searching Hugging Face…").color(t.fg3));
-                        });
-                    });
+            });
+        }
+        SearchStatus::Failed(msg) => {
+            message_box(ui, |ui| {
+                ui.label(RichText::new("The search did not work").font(semibold(14.0)));
+                ui.label(RichText::new(msg).size(13.0).color(t.fg2));
+                if small_button(ui, "Retry") {
+                    let q = app.browse.search_now(&app.query);
+                    out.push(BackendRequest::Search(q));
                 }
-                SearchStatus::Failed(msg) => {
-                    message_box(ui, |ui| {
-                        ui.label(RichText::new("The search did not work").font(semibold(14.0)));
-                        ui.label(RichText::new(msg).size(13.0).color(t.fg2));
-                        if small_button(ui, "Retry") {
-                            let q = app.browse.search_now(&app.query);
-                            out.push(BackendRequest::Search(q));
-                        }
-                    });
-                }
-                _ if visible == 0 => {
-                    let text = if loaded > 0 {
-                        format!(
-                            "{loaded} results are hidden by your filters. Loosen the filters on the left to see them."
-                        )
-                    } else if app.query.trim().is_empty() {
-                        "No models came back from Hugging Face.".to_string()
-                    } else {
-                        format!("No models found for “{}”. Try different words.", app.query.trim())
-                    };
-                    if app.browse.search != SearchStatus::Idle {
-                        message_box(ui, |ui| {
-                            ui.label(RichText::new(text).size(13.0).color(t.fg2));
-                        });
-                    }
-                }
-                _ => rows(ui, app),
+            });
+        }
+        _ if visible == 0 => {
+            let text = if loaded > 0 {
+                format!("{loaded} results are hidden by your filters. Loosen them with the Filters button above.")
+            } else if app.query.trim().is_empty() {
+                "No models came back from Hugging Face.".to_string()
+            } else {
+                format!(
+                    "No models found for “{}”. Try different words.",
+                    app.query.trim()
+                )
+            };
+            if app.browse.search != SearchStatus::Idle {
+                message_box(ui, |ui| {
+                    ui.label(RichText::new(text).size(13.0).color(t.fg2));
+                });
             }
-        });
+        }
+        _ => rows(ui, app),
+    }
 }
 
 fn message_box(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -179,9 +185,8 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
         .collect();
     let selected = app.browse.selected_id().map(str::to_string);
     let mut picked = None;
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
+    {
+        {
             ui.spacing_mut().item_spacing.y = 0.0;
             for (i, m) in list.iter().enumerate() {
                 let (rect, resp) =
@@ -189,6 +194,8 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
                 if ui.is_rect_visible(rect) {
                     app.browse.want_info(&m.id);
                 }
+                #[cfg(test)]
+                app.browse.probe.result_rows.push(rect);
                 let on = selected.as_deref() == Some(m.id.as_str());
                 if on {
                     ui.painter().rect_filled(rect, 0.0, t.accent_soft);
@@ -247,9 +254,11 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
                     picked = Some(i);
                 }
             }
-        });
+        }
+    }
     if let Some(i) = picked {
         app.browse.select_model(i);
+        app.models_installed = None;
     }
 }
 

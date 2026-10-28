@@ -203,7 +203,7 @@ mod tests {
         );
         assert_eq!(
             fired(&m, key(Key::Num3, Modifiers::COMMAND)),
-            [MenuAction::ShowView(crate::app::View::Browse)]
+            [MenuAction::ShowView(crate::app::View::Models)]
         );
         assert_eq!(
             fired(&m, key(Key::Comma, Modifiers::COMMAND)),

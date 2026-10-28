@@ -542,7 +542,7 @@ fn start_chat(
         }
         Err(StoreError::Locked) => {
             out.emit(UiEvent::ChatUnavailable(
-                "Another Roost is using this history. Close it to chat here; Browse, Installed and Settings still work.".into(),
+                "Another Roost is using this history. Close it to chat here; Models and Settings still work.".into(),
             ));
             None
         }
@@ -863,7 +863,6 @@ mod tests {
         let history = History::load(&file).unwrap();
 
         assert_eq!(source_for(&history, "qwen:latest"), Some("org/qwen".into()));
-        assert_eq!(crate::installed::IMPORTED_LABEL, "Imported with Roost");
     }
 
     /// Next event matching `pick`, skipping others; panics after `WAIT`.

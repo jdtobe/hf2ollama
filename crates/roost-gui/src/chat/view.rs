@@ -693,10 +693,10 @@ fn pane(
             ui,
             t.warn,
             t.warn_soft,
-            "No models are installed yet. Open Browse to import one, then come back to chat.",
+            "No models are installed yet. Open Models to import one, then come back to chat.",
         );
-        if small_button(ui, "Open Browse") {
-            app.select(View::Browse);
+        if small_button(ui, "Open Models") {
+            app.select(View::Models);
         }
     }
     if mode == SessionMode::Agent && app.chat_ui.new_agent.open && open.is_none() {

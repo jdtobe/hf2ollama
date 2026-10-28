@@ -4,7 +4,7 @@
 use crate::app::AppState;
 use crate::theme::tokens;
 use crate::widgets::caption;
-use eframe::egui::{self, Margin, RichText, Stroke};
+use eframe::egui::{self, RichText};
 use roost_core::fit::Machine;
 use roost_core::hf::{FormatFilter, ModelSummary, SortKey};
 
@@ -202,84 +202,103 @@ fn sort_label(s: SortKey) -> &'static str {
     }
 }
 
-/// The left filter rail.
-pub fn show(ui: &mut egui::Ui, app: &mut AppState) {
+/// How many filters differ from the defaults, for the badge on the button.
+fn active_count(f: &Filters) -> usize {
+    let d = Filters::default();
+    [
+        f.gguf != d.gguf || f.safetensors != d.safetensors || f.other != d.other,
+        f.params != d.params,
+        f.only_fit != d.only_fit,
+        f.text != d.text || f.embeddings != d.embeddings || f.vision != d.vision,
+    ]
+    .into_iter()
+    .filter(|on| *on)
+    .count()
+}
+
+/// One selectable choice drawn as a small pill.
+fn choice(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
+    ui.selectable_label(on, RichText::new(label).size(12.5))
+}
+
+/// All filter controls, laid out for a popover (no combo boxes, so a click
+/// never lands in a second popup).
+fn controls(ui: &mut egui::Ui, f: &mut Filters, machine: &Machine) {
+    let t = tokens(ui);
+    ui.set_min_width(250.0);
+    caption(ui, "Format");
+    ui.checkbox(&mut f.gguf, "GGUF");
+    ui.checkbox(&mut f.safetensors, "Safetensors");
+    ui.checkbox(&mut f.other, "PyTorch / other");
+    ui.add_space(8.0);
+
+    caption(ui, "Parameters");
+    ui.horizontal_wrapped(|ui| {
+        for p in ParamRange::ALL {
+            if choice(ui, f.params == p, p.label()).clicked() {
+                f.params = p;
+            }
+        }
+    });
+    ui.add_space(8.0);
+
+    caption(ui, "Fits my machine");
+    ui.checkbox(&mut f.only_fit, "Only models that fit");
+    ui.add(egui::Label::new(RichText::new(machine_line(machine)).size(12.0).color(t.fg3)).wrap());
+    ui.add_space(8.0);
+
+    caption(ui, "Task");
+    ui.checkbox(&mut f.text, "Text generation");
+    ui.checkbox(&mut f.embeddings, "Embeddings");
+    ui.checkbox(&mut f.vision, "Vision / multimodal");
+}
+
+/// The chips row above the Models list: a Filters popover, a quick
+/// "Fits my machine" toggle and the sort order.
+pub fn chips(ui: &mut egui::Ui, app: &mut AppState) {
     let t = tokens(ui);
     let before = app.browse.filters.clone();
     let machine = app.machine.clone();
     let f = &mut app.browse.filters;
-    let panel = egui::Panel::left("filters")
-        .exact_size(200.0)
-        .resizable(false)
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface2)
-                .inner_margin(Margin::same(16))
-                .stroke(Stroke::new(1.0, t.line)),
-        )
-        .show(ui, |ui| {
-            // The rail never grows past the room it is given, so a tall
-            // dock cannot push it over the downloads.
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    caption(ui, "Format");
-                    ui.checkbox(&mut f.gguf, "GGUF");
-                    ui.checkbox(&mut f.safetensors, "Safetensors");
-                    ui.checkbox(&mut f.other, "PyTorch / other");
-                    ui.add_space(10.0);
-
-                    caption(ui, "Parameters");
-                    egui::ComboBox::from_id_salt("params")
-                        .selected_text(f.params.label())
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            for p in ParamRange::ALL {
-                                ui.selectable_value(&mut f.params, p, p.label());
-                            }
-                        });
-                    ui.add_space(10.0);
-
-                    caption(ui, "Fits my machine");
-                    ui.checkbox(&mut f.only_fit, "Only models that fit");
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(machine_line(&machine))
-                                .size(12.0)
-                                .color(t.fg3),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(10.0);
-
-                    caption(ui, "Task");
-                    ui.checkbox(&mut f.text, "Text generation");
-                    ui.checkbox(&mut f.embeddings, "Embeddings");
-                    ui.checkbox(&mut f.vision, "Vision / multimodal");
-                    ui.add_space(10.0);
-
-                    caption(ui, "Sort by");
-                    egui::ComboBox::from_id_salt("sort")
-                        .selected_text(sort_label(f.sort))
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            for s in [
-                                SortKey::Downloads,
-                                SortKey::Trending,
-                                SortKey::Updated,
-                                SortKey::Likes,
-                            ] {
-                                ui.selectable_value(&mut f.sort, s, sort_label(s));
-                            }
-                        });
-                });
-        });
+    let mut chip = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        let n = active_count(f);
+        let label = if n == 0 {
+            "Filters ▾".to_string()
+        } else {
+            format!("Filters ({n}) ▾")
+        };
+        let r = ui.selectable_label(n > 0, RichText::new(label).size(12.5));
+        egui::Popup::from_toggle_button_response(&r)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| controls(ui, f, &machine));
+        chip = Some(r.rect);
+        if ui
+            .selectable_label(f.only_fit, RichText::new("Fits my machine").size(12.5))
+            .on_hover_text(machine_line(&machine))
+            .clicked()
+        {
+            f.only_fit = !f.only_fit;
+        }
+        egui::ComboBox::from_id_salt("sort")
+            .selected_text(RichText::new(sort_label(f.sort)).size(12.5).color(t.fg2))
+            .show_ui(ui, |ui| {
+                for s in [
+                    SortKey::Downloads,
+                    SortKey::Trending,
+                    SortKey::Updated,
+                    SortKey::Likes,
+                ] {
+                    ui.selectable_value(&mut f.sort, s, sort_label(s));
+                }
+            });
+    });
     #[cfg(test)]
     {
-        app.browse.probe.rail = Some(panel.response.rect);
+        app.browse.probe.filters_chip = chip;
     }
-    #[cfg(not(test))]
-    let _ = panel;
+    let _ = chip;
     if app.browse.filters != before {
         app.browse.apply_filters();
     }

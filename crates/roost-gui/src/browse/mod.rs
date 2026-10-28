@@ -1,14 +1,28 @@
-//! The Browse view: search Hugging Face, inspect a repository, import it.
+//! Hugging Face browsing: search state, filters, result rows, the repository
+//! detail and the import plan. The Models tab (`crate::models`) lays them out.
 
-use crate::app::AppState;
-use crate::runtime::BackendRequest;
+#[cfg(test)]
 use eframe::egui;
-use std::time::Instant;
 
 /// Painted rectangles recorded for the headless layout tests.
 #[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct Probe {
+    /// The painted Hugging Face result rows of the Models list.
+    pub result_rows: Vec<egui::Rect>,
+    /// The delete/confirmation toast of the Models tab.
+    pub toast: Option<egui::Rect>,
+    /// The detail pane of an installed model, and its buttons.
+    pub detail: Option<egui::Rect>,
+    pub chat_button: Option<egui::Rect>,
+    pub work_button: Option<egui::Rect>,
+    pub delete_button: Option<egui::Rect>,
+    /// The left column of the Models tab.
+    pub list: Option<egui::Rect>,
+    /// The painted installed rows: name and rectangle.
+    pub installed_rows: Vec<(String, egui::Rect)>,
+    /// The Filters chip above the Models list.
+    pub filters_chip: Option<egui::Rect>,
     /// Rectangles of the import step chips.
     pub chips: Vec<egui::Rect>,
     pub card: Option<egui::Rect>,
@@ -30,7 +44,6 @@ pub struct Probe {
     /// The options table header as painted (in place, or stuck at the top).
     pub table_header: Option<egui::Rect>,
     /// The left filter rail panel.
-    pub rail: Option<egui::Rect>,
     /// The metadata strip and the `Files | About` switch below it.
     pub meta_strip: Option<egui::Rect>,
     pub switch: Option<egui::Rect>,
@@ -60,30 +73,6 @@ pub mod options;
 pub mod plan_card;
 pub mod results;
 pub mod state;
-
-/// Draws the whole Browse view (rail, results, detail) and collects the
-/// backend requests it wants sent.
-pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
-    let now = Instant::now();
-    if let Some(q) = app.browse.tick(&app.query, now) {
-        out.push(BackendRequest::Search(q));
-    }
-    if let Some(wait) = app.browse.debounce_remaining(now) {
-        ui.ctx().request_repaint_after(wait);
-    }
-    filters::show(ui, app);
-    results::show(ui, app, out);
-    detail::show(ui, app, out);
-    if let Some(q) = app.browse.next_related_request() {
-        out.push(BackendRequest::Search(q));
-    }
-    for id in app.browse.next_info_requests() {
-        out.push(BackendRequest::ModelInfo(id));
-    }
-    for id in app.browse.next_card_requests() {
-        out.push(BackendRequest::ModelCard(id));
-    }
-}
 
 #[cfg(test)]
 pub(crate) mod test_util {

@@ -237,7 +237,7 @@ fn unavailable_history_moves_the_app_to_browse() {
     st.on_event(&crate::runtime::UiEvent::ChatUnavailable(
         "Another Roost".into(),
     ));
-    assert_eq!(st.view, View::Browse);
+    assert_eq!(st.view, View::Models);
 }
 
 #[test]

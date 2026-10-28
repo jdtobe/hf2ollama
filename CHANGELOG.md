@@ -33,6 +33,12 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### One Models tab
+
+- **Models** is one view instead of Browse and Installed behind a switch: a list with the models Ollama has (with a usage bar) above the Hugging Face results, one search box that narrows both, and one detail pane. Filters are chips above the list (a Filters popover, Fits my machine, and the sort order) instead of a side rail.
+- Selecting an installed model shows **Chat**, **Work** and **Delete…** (two clicks, with the usual pause), then its details and where it came from; the source repository is a link that opens it in the same list.
+- The View menu has one Models entry (⌘3); ⌘4 and the separate Browse and Installed entries are gone.
+
 ### A quieter window
 
 Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mockups.html`); the busiest screen went from about 25 visible controls to about 13.

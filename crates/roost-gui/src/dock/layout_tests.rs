@@ -463,15 +463,15 @@ fn browse_scroll_area_keeps_min_height_with_dock_open() {
 }
 
 #[test]
-fn filter_rail_stays_above_the_dock() {
+fn the_models_list_stays_above_the_dock() {
     for size in SIZES {
         for dark in [false, true] {
             let mut app = laid_out(many_jobs_app(), dark, size);
-            let rail = app.state_mut().browse.probe.rail.expect("filter rail");
+            let rail = app.state_mut().browse.probe.list.expect("models list");
             let dock = app.state_mut().dock.probe.panel.expect("dock panel");
             assert!(
                 rail.bottom() <= dock.top() + 0.5,
-                "{size:?} dark={dark}: filter rail {rail:?} reaches into the dock {dock:?}"
+                "{size:?} dark={dark}: models list {rail:?} reaches into the dock {dock:?}"
             );
         }
     }

@@ -11,7 +11,7 @@ The workspace has two crates. The core is a library with no UI dependencies; the
 ```mermaid
 flowchart TB
     subgraph gui["roost-gui (binary, egui/eframe)"]
-        views["Views: Browse, Installed, Settings, downloads dock"]
+        views["Views: Chat, Work, Models, Settings, downloads dock"]
         theme["theme + theme_tokens: 4 families x light/dark, fonts, widgets"]
         rt["tokio runtime + channel bridge"]
     end
@@ -126,7 +126,8 @@ The GUI owns a tokio runtime. The UI thread sends `Command`s and drains `JobEven
 - **App state** (`app.rs`). `AppState` is plain data that folds `UiEvent`s in `on_event` and may answer with a follow-up request (for example a fresh installed list after a job finishes). Views read it and push requests; tests drive it without a window.
 - **Browse** (`browse/`). Filters, result list, lazy details, option tables, the import plan card, and the model card tab (`markdown.rs` and `about.rs`).
 - **Downloads dock** (`dock/`). `JobsState` in `dock/jobs.rs` is a pure reducer: it turns `JobEvent`s into rows (status, progress, step, log capped at 2000 lines, auto-dismiss deadline). `dock/mod.rs` only draws rows and reports button clicks as actions.
-- **Installed and Settings** (`installed/`, `settings/`, `confirm.rs`). Pure state plus drawing; destructive buttons share the two-step confirm in `confirm.rs` (4 s window, 600 ms minimum delay, held keys never confirm). Settings validators live in `settings/validate.rs`.
+- **Models** (`models/`). One list (filter chips, usage bar, an Installed section, a Hugging Face section) and one detail pane that shows either an installed model (Chat, Work, Delete, then details) or a repository (the Browse detail). `installed/state.rs` is the pure model behind the Installed section.
+- **Settings** (`settings/`, `confirm.rs`). Pure state plus drawing; destructive buttons share the two-step confirm in `confirm.rs` (4 s window, 600 ms minimum delay, held keys never confirm). Settings validators live in `settings/validate.rs`.
 - **Closing the window** (`quit.rs`). `QuitState` (`Idle`, `Confirming`, `Cancelling`, `Closing`) is a pure state machine. A close request with unsettled jobs is cancelled and a confirmation is shown ("Keep running", the default, or "Quit and cancel"); the latter sends `Cancel` for every unsettled job and closes once they settle or after 3 seconds. Held Enter or Space never confirms.
 - **Import names** (`app.rs`, `dock/jobs.rs`). The Download button is disabled while an unsettled job, or a click not yet answered by `JobAccepted`, uses the same normalized name.
 - **Layout tests.** Each view has tests that run real egui frames at 900 by 640 and 1180 by 820 and check rectangles (nothing clipped, buttons fully visible).
@@ -173,7 +174,7 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 
 ## Window layout
 
-`app.rs` draws the top bar (Chat, Work, Models with a Browse/Installed sub-switch, search on Browse, the Ollama pill with its in-memory popover, the settings gear). `chat::view` lays out the rail and panes for the Chat and Work tabs; `chat::chrome` holds the small controls around a conversation (title row, overflow and folder menus, status line, model chip, folded tool steps). Controls that act rarely live in popovers that stay open while used (`CloseOnClickOutside`).
+`app.rs` draws the top bar (Chat, Work, Models, search on Models, the Ollama pill with its in-memory popover, the settings gear). `chat::view` lays out the rail and panes for the Chat and Work tabs; `chat::chrome` holds the small controls around a conversation (title row, overflow and folder menus, status line, model chip, folded tool steps). Controls that act rarely live in popovers that stay open while used (`CloseOnClickOutside`).
 
 ## Menu bar
 

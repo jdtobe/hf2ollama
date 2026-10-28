@@ -307,14 +307,9 @@ pub fn build(app: &AppState, platform: Platform) -> MenuModel {
                 Some(Shortcut::primary(Key::Num2)),
             ),
             action(
-                "Browse",
-                MenuAction::ShowView(View::Browse),
+                "Models",
+                MenuAction::ShowView(View::Models),
                 Some(Shortcut::primary(Key::Num3)),
-            ),
-            action(
-                "Installed",
-                MenuAction::ShowView(View::Installed),
-                Some(Shortcut::primary(Key::Num4)),
             ),
             action("Settings", MenuAction::ShowView(View::Settings), None),
             Item::Separator,

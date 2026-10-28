@@ -10,20 +10,6 @@ use std::time::{Duration, Instant, SystemTime};
 /// How long the toast stays.
 pub const TOAST_TIME: Duration = Duration::from_secs(4);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceFilter {
-    All,
-    Imported,
-    Library,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortKey {
-    Size,
-    Name,
-    Modified,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledRow {
     pub model: InstalledModel,
@@ -35,17 +21,17 @@ impl InstalledRow {
         &self.model.name
     }
 
-    /// The Hugging Face page of the source repo; only imported rows have one.
-    pub fn source_url(&self) -> Option<String> {
+    /// The source repository, only when it is a plain `owner/name`. History
+    /// is a file on disk, so anything else is shown but never followed.
+    pub fn linkable_repo(&self) -> Option<&str> {
         let repo = self.source_repo.as_deref()?;
-        // History is a file on disk: only a plain `owner/name` becomes a link.
         let plain = |p: &str| {
             !p.is_empty()
                 && p.chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         };
         let (owner, name) = repo.split_once('/')?;
-        (plain(owner) && plain(name)).then(|| format!("https://huggingface.co/{repo}"))
+        (plain(owner) && plain(name)).then_some(repo)
     }
 }
 
@@ -86,8 +72,6 @@ pub struct InstalledState {
     rows: Vec<InstalledRow>,
     pub status: ListStatus,
     pub filter_text: String,
-    pub source: SourceFilter,
-    pub sort: SortKey,
     armed: Confirm,
     expanded: BTreeSet<String>,
     details: HashMap<String, DetailsState>,
@@ -100,8 +84,6 @@ impl InstalledState {
             rows: Vec::new(),
             status: ListStatus::Loading,
             filter_text: String::new(),
-            source: SourceFilter::All,
-            sort: SortKey::Size,
             armed: Confirm::default(),
             expanded: BTreeSet::new(),
             details: HashMap::new(),
@@ -210,16 +192,9 @@ impl InstalledState {
         })
     }
 
-    pub fn is_expanded(&self, name: &str) -> bool {
-        self.expanded.contains(name)
-    }
-
-    /// Opens or closes a row's details. Returns the model name to ask the
-    /// backend about when nothing usable is cached yet.
-    pub fn toggle_expanded(&mut self, name: &str) -> Option<String> {
-        if self.expanded.remove(name) {
-            return None;
-        }
+    /// Makes sure a row's details are loaded or loading. Returns the model
+    /// name to ask the backend about when nothing usable is cached yet.
+    pub fn want_details(&mut self, name: &str) -> Option<String> {
         self.expanded.insert(name.to_string());
         match self.details.get(name) {
             Some(DetailsState::Loaded(_) | DetailsState::Loading) => None,
@@ -266,126 +241,39 @@ impl InstalledState {
         self.toast.as_ref().filter(|t| now < t.until)
     }
 
-    /// Rows after the text filter, the source filter and the sort.
+    /// Rows after the text filter, most recently modified first.
     pub fn visible(&self) -> Vec<&InstalledRow> {
-        let needle = self.filter_text.trim().to_lowercase();
+        let words: Vec<String> = self
+            .filter_text
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
         let mut rows: Vec<&InstalledRow> = self
             .rows
             .iter()
-            .filter(|r| needle.is_empty() || r.name().to_lowercase().contains(&needle))
-            .filter(|r| match self.source {
-                SourceFilter::All => true,
-                SourceFilter::Imported => r.source_repo.is_some(),
-                SourceFilter::Library => r.source_repo.is_none(),
+            .filter(|r| {
+                let hay = format!(
+                    "{} {} {}",
+                    r.name(),
+                    r.source_repo.as_deref().unwrap_or(""),
+                    r.model.quant.as_deref().unwrap_or("")
+                )
+                .to_lowercase();
+                words.iter().all(|w| hay.contains(w))
             })
             .collect();
-        match self.sort {
-            SortKey::Size => rows.sort_by(|a, b| {
-                b.model
-                    .size
-                    .cmp(&a.model.size)
-                    .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
-            }),
-            SortKey::Name => rows.sort_by_key(|r| r.name().to_lowercase()),
-            SortKey::Modified => rows.sort_by(|a, b| {
-                let (ta, tb) = (
-                    parse_rfc3339(&a.model.modified),
-                    parse_rfc3339(&b.model.modified),
-                );
-                // `Some` beats `None`, and a later time beats an earlier one.
-                tb.cmp(&ta)
-                    .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
-            }),
-        }
+        // Most recently modified first, then by name.
+        rows.sort_by(|a, b| {
+            let (ta, tb) = (
+                parse_rfc3339(&a.model.modified),
+                parse_rfc3339(&b.model.modified),
+            );
+            // `Some` beats `None`, and a later time beats an earlier one.
+            tb.cmp(&ta)
+                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
+        });
         rows
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Column {
-    Model,
-    Params,
-    Quant,
-    Size,
-    Source,
-    Modified,
-    Actions,
-}
-
-/// Fixed width of a column; Model takes whatever is left.
-pub const fn column_width(c: Column) -> f32 {
-    match c {
-        Column::Model => 220.0,
-        Column::Params => 64.0,
-        Column::Quant => 84.0,
-        Column::Size => 84.0,
-        Column::Source => 190.0,
-        Column::Modified => 110.0,
-        Column::Actions => 190.0,
-    }
-}
-
-/// Space between columns.
-pub const COLUMN_GAP: f32 = 12.0;
-
-/// Columns that fit in `width`: Modified, Quant, Params and Source are
-/// dropped in that order before Model, Size or the actions lose room.
-pub fn visible_columns(width: f32) -> Vec<Column> {
-    const ORDER: [Column; 7] = [
-        Column::Model,
-        Column::Params,
-        Column::Quant,
-        Column::Size,
-        Column::Source,
-        Column::Modified,
-        Column::Actions,
-    ];
-    // Dropped first to last.
-    const DROP: [Column; 4] = [
-        Column::Modified,
-        Column::Quant,
-        Column::Params,
-        Column::Source,
-    ];
-    let need = |cols: &[Column]| -> f32 {
-        cols.iter()
-            .map(|c| column_width(*c) + if *c == Column::Model { 0.0 } else { COLUMN_GAP })
-            .sum()
-    };
-    let mut cols = ORDER.to_vec();
-    for d in DROP {
-        // `!(need <= width)` also drops columns for a NaN width.
-        if need(&cols) <= width {
-            break;
-        }
-        cols.retain(|c| *c != d);
-    }
-    cols
-}
-
-/// Horizontal extent `(column, left, right)` of each column in a row
-/// `width` wide: fixed widths, gaps between, and Model taking the rest.
-pub fn column_spans(cols: &[Column], width: f32) -> Vec<(Column, f32, f32)> {
-    let others: f32 = cols
-        .iter()
-        .filter(|c| **c != Column::Model)
-        .map(|c| column_width(*c) + COLUMN_GAP)
-        .sum();
-    let model = (width - others).max(0.0);
-    let mut x = 0.0;
-    cols.iter()
-        .map(|c| {
-            let w = if *c == Column::Model {
-                model
-            } else {
-                x += COLUMN_GAP;
-                column_width(*c)
-            };
-            let span = (*c, x, x + w);
-            x += w;
-            span
-        })
-        .collect()
 }
 
 /// What to paste in a terminal to chat with a model. Names with anything
@@ -519,6 +407,67 @@ pub fn relative_time(modified: &str, now: SystemTime) -> String {
 }
 
 #[cfg(test)]
+mod search_tests {
+    use super::*;
+    use roost_core::ollama::InstalledModel;
+
+    fn entry(name: &str, repo: Option<&str>, quant: &str) -> crate::runtime::InstalledEntry {
+        crate::runtime::InstalledEntry {
+            model: InstalledModel {
+                name: name.into(),
+                size: 1,
+                params: None,
+                quant: Some(quant.into()),
+                family: None,
+                modified: String::new(),
+                digest: String::new(),
+            },
+            source_repo: repo.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_search_words_must_all_appear_in_the_name_repo_or_quant() {
+        let mut st = InstalledState::new();
+        st.on_installed_loaded(&Ok(vec![
+            entry(
+                "qwen2.5-coder:32b",
+                Some("bartowski/Qwen2.5-Coder-32B"),
+                "Q4_K_M",
+            ),
+            entry("llama3.2:3b", None, "Q4_K_M"),
+        ]));
+        let names = |st: &InstalledState| {
+            st.visible()
+                .iter()
+                .map(|r| r.name().to_string())
+                .collect::<Vec<_>>()
+        };
+        st.filter_text = "coder q4".into();
+        assert_eq!(names(&st), ["qwen2.5-coder:32b"]);
+        st.filter_text = "bartowski".into();
+        assert_eq!(names(&st), ["qwen2.5-coder:32b"]);
+        st.filter_text = "  ".into();
+        assert_eq!(names(&st).len(), 2);
+        st.filter_text = "coder llama".into();
+        assert!(names(&st).is_empty());
+    }
+
+    #[test]
+    fn wanting_details_asks_once_and_keeps_the_row_open() {
+        let mut st = InstalledState::new();
+        assert_eq!(st.want_details("m:1"), Some("m:1".to_string()));
+        assert_eq!(st.want_details("m:1"), None, "already loading");
+        st.on_details("m:1", &Err("boom".into()));
+        assert_eq!(
+            st.want_details("m:1"),
+            Some("m:1".to_string()),
+            "retry after an error"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::confirm::{ARM_MIN_DELAY, ARM_WINDOW};
@@ -631,42 +580,6 @@ mod tests {
         assert_eq!(names(&s).len(), 4);
     }
 
-    #[test]
-    fn source_filter_separates_imported_from_library() {
-        let mut s = sample();
-        s.sort = SortKey::Name;
-        s.source = SourceFilter::Imported;
-        assert_eq!(names(&s), ["beta:3b", "Qwen2.5:7b"]);
-        s.source = SourceFilter::Library;
-        assert_eq!(names(&s), ["alpha:1b", "llama3:8b"]);
-        s.source = SourceFilter::All;
-        assert_eq!(names(&s).len(), 4);
-        s.source = SourceFilter::Imported;
-        s.filter_text = "beta".into();
-        assert_eq!(names(&s), ["beta:3b"]);
-    }
-
-    #[test]
-    fn sort_size_desc_name_asc_modified_recent_first() {
-        let mut s = sample();
-        s.sort = SortKey::Size;
-        assert_eq!(
-            names(&s),
-            ["llama3:8b", "Qwen2.5:7b", "beta:3b", "alpha:1b"]
-        );
-        s.sort = SortKey::Name;
-        assert_eq!(
-            names(&s),
-            ["alpha:1b", "beta:3b", "llama3:8b", "Qwen2.5:7b"]
-        );
-        s.sort = SortKey::Modified;
-        assert_eq!(
-            names(&s),
-            ["alpha:1b", "beta:3b", "Qwen2.5:7b", "llama3:8b"],
-            "unparsable dates sort last"
-        );
-    }
-
     // ---- delete arming, usage, source link ----
 
     #[test]
@@ -768,77 +681,23 @@ mod tests {
         assert_eq!(InstalledState::new().usage(), UsageSplit::default());
     }
 
-    #[test]
-    fn source_link_is_huggingface_url_for_imported_only() {
-        let s = sample();
-        let url = |n: &str| {
-            s.rows()
-                .iter()
-                .find(|r| r.name() == n)
-                .and_then(|r| r.source_url())
-        };
-        assert_eq!(
-            url("Qwen2.5:7b"),
-            Some("https://huggingface.co/o/qwen".to_string())
-        );
-        assert_eq!(url("alpha:1b"), None);
-    }
-
     // ---- details, delete results, toast ----
-
-    fn details(family: &str) -> ModelDetails {
-        ModelDetails {
-            family: family.into(),
-            context: Some(32768),
-            capabilities: vec!["completion".into(), "tools".into()],
-            digest: "sha256:abc".into(),
-            template: None,
-        }
-    }
-
-    #[test]
-    fn details_requested_once_and_cached() {
-        let mut s = sample();
-        assert_eq!(s.toggle_expanded("alpha:1b"), Some("alpha:1b".to_string()));
-        assert!(s.is_expanded("alpha:1b"));
-        assert_eq!(s.details_of("alpha:1b"), Some(&DetailsState::Loading));
-        s.on_details("alpha:1b", &Ok(details("llama")));
-        assert_eq!(
-            s.details_of("alpha:1b"),
-            Some(&DetailsState::Loaded(details("llama")))
-        );
-        assert_eq!(s.toggle_expanded("alpha:1b"), None, "collapse");
-        assert!(!s.is_expanded("alpha:1b"));
-        assert_eq!(
-            s.toggle_expanded("alpha:1b"),
-            None,
-            "cached: no new request"
-        );
-        assert!(s.is_expanded("alpha:1b"));
-        // Another row is independent.
-        assert_eq!(s.toggle_expanded("beta:3b"), Some("beta:3b".to_string()));
-        // A failed lookup is retried the next time the row opens.
-        s.on_details("beta:3b", &Err("boom".into()));
-        assert_eq!(
-            s.details_of("beta:3b"),
-            Some(&DetailsState::Error("boom".into()))
-        );
-        s.toggle_expanded("beta:3b");
-        assert_eq!(s.toggle_expanded("beta:3b"), Some("beta:3b".to_string()));
-    }
 
     #[test]
     fn delete_ok_removes_row_and_toasts() {
         let mut s = sample();
         let t0 = Instant::now();
-        s.toggle_expanded("alpha:1b");
+        s.want_details("alpha:1b");
         assert!(
             s.on_delete_done("alpha:1b", &Ok(()), t0),
             "asks for a refresh"
         );
         assert!(names(&s).iter().all(|n| n != "alpha:1b"));
         assert_eq!(s.rows().len(), 3);
-        assert!(!s.is_expanded("alpha:1b"));
+        assert!(
+            s.details_of("alpha:1b").is_none(),
+            "its details are forgotten"
+        );
         assert_eq!(
             s.toast(t0).map(|t| t.text.as_str()),
             Some("Deleted alpha:1b")
@@ -882,56 +741,7 @@ mod tests {
 
     // ---- columns ----
 
-    #[test]
-    fn visible_columns_degrade_with_width() {
-        use Column::*;
-        let all = vec![Model, Params, Quant, Size, Source, Modified, Actions];
-        assert_eq!(visible_columns(1132.0), all, "1180 window");
-        assert_eq!(visible_columns(1014.0), all, "exact fit");
-        let no_mod = vec![Model, Params, Quant, Size, Source, Actions];
-        assert_eq!(visible_columns(1013.9), no_mod);
-        assert_eq!(visible_columns(892.0), no_mod);
-        let no_quant = vec![Model, Params, Size, Source, Actions];
-        assert_eq!(visible_columns(891.9), no_quant);
-        assert_eq!(visible_columns(852.0), no_quant, "900 window");
-        assert_eq!(visible_columns(796.0), no_quant);
-        let no_params = vec![Model, Size, Source, Actions];
-        assert_eq!(visible_columns(795.9), no_params);
-        assert_eq!(visible_columns(720.0), no_params);
-        let core = vec![Model, Size, Actions];
-        assert_eq!(visible_columns(719.9), core);
-        assert_eq!(visible_columns(100.0), core, "never drops the essentials");
-        assert_eq!(visible_columns(f32::NAN), core);
-    }
-
     // ---- small formatters ----
-
-    #[test]
-    fn column_spans_fill_the_row_and_give_model_the_rest() {
-        let cols = visible_columns(1132.0);
-        let spans = column_spans(&cols, 1132.0);
-        assert_eq!(spans.len(), 7);
-        let (c, l, r) = spans[0];
-        assert_eq!((c, l), (Column::Model, 0.0));
-        assert!((r - 338.0).abs() < 0.01, "model right {r}");
-        for pair in spans.windows(2) {
-            assert!(
-                (pair[1].1 - pair[0].2 - COLUMN_GAP).abs() < 0.01,
-                "gap between {:?} and {:?}",
-                pair[0].0,
-                pair[1].0
-            );
-        }
-        let last = spans[spans.len() - 1];
-        assert_eq!(last.0, Column::Actions);
-        assert!((last.2 - 1132.0).abs() < 0.01);
-        assert!((last.2 - last.1 - column_width(Column::Actions)).abs() < 0.01);
-        // The 900 window leaves Model more than its minimum.
-        let narrow = column_spans(&visible_columns(852.0), 852.0);
-        assert!(narrow[0].2 - narrow[0].1 >= column_width(Column::Model));
-        // Never negative, even when asked for too little room.
-        assert!(column_spans(&visible_columns(50.0), 50.0)[0].2 >= 0.0);
-    }
 
     #[test]
     fn run_command_quotes_only_unusual_names() {

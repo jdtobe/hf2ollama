@@ -1,0 +1,280 @@
+//! The detail pane of the Models tab: an installed model (actions, then its
+//! details) or a Hugging Face repository (the Browse detail).
+
+use crate::app::{bad, AppState, View};
+use crate::browse::results::format_size;
+use crate::installed::state::{
+    relative_time, run_command, short_digest, thousands, DetailsState, InstalledRow,
+};
+use crate::runtime::BackendRequest;
+use crate::theme::{mono, semibold, tokens, Tokens};
+use crate::widgets::{ellipsize_middle, primary_button, small_button_response};
+use eframe::egui::{self, vec2, Align2, Color32, FontId, Margin, RichText, Sense};
+use roost_core::chat::ChatCommand;
+use roost_core::session::SessionLifetime;
+use std::time::{Instant, SystemTime};
+
+const LABEL_W: f32 = 96.0;
+
+pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
+    let row = app.models_installed.as_ref().and_then(|name| {
+        app.installed
+            .rows()
+            .iter()
+            .find(|r| r.name() == name)
+            .cloned()
+    });
+    match row {
+        Some(row) => installed(ui, app, out, &row),
+        None => {
+            // The model was deleted (or is not listed any more).
+            app.models_installed = None;
+            crate::browse::detail::show(ui, app, out);
+        }
+    }
+}
+
+fn installed(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    row: &InstalledRow,
+) {
+    let t = tokens(ui);
+    let dark = ui.visuals().dark_mode;
+    let now = Instant::now();
+    let name = row.name().to_string();
+    let panel = egui::CentralPanel::default()
+        .frame(
+            egui::Frame::new()
+                .fill(t.surface)
+                .inner_margin(Margin::symmetric(24, 16)),
+        )
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    ui.add(
+                        egui::Label::new(RichText::new(&name).font(mono(18.0)).color(t.fg)).wrap(),
+                    );
+                    ui.label(RichText::new(facts(row)).size(13.0).color(t.fg2));
+                    actions(ui, app, out, row, now, dark);
+                    ui.add_space(6.0);
+                    details(ui, app, row, &t, dark);
+                });
+        });
+    #[cfg(test)]
+    {
+        app.browse.probe.detail = Some(panel.response.rect);
+    }
+    let _ = panel;
+}
+
+fn facts(row: &InstalledRow) -> String {
+    let mut parts = vec![format_size(row.model.size)];
+    for v in [&row.model.params, &row.model.quant, &row.model.family]
+        .into_iter()
+        .flatten()
+    {
+        parts.push(v.clone());
+    }
+    let when = relative_time(&row.model.modified, SystemTime::now());
+    if when != "—" {
+        parts.push(format!("modified {when}"));
+    }
+    parts.join("  ·  ")
+}
+
+fn actions(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    row: &InstalledRow,
+    now: Instant,
+    dark: bool,
+) {
+    let t = tokens(ui);
+    let name = row.name().to_string();
+    let armed = app.installed.is_armed(&name, now);
+    let ready = app.installed.confirm_ready(&name, now);
+    let mut chat = false;
+    let mut work = false;
+    let mut delete = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+        let r = primary_button(ui, "Chat", true);
+        #[cfg(test)]
+        {
+            app.browse.probe.chat_button = Some(r.rect);
+        }
+        chat = r.clicked();
+        let r = ui.add(
+            egui::Button::new(RichText::new("Work").size(14.0).color(t.fg2))
+                .min_size(vec2(0.0, 32.0)),
+        );
+        #[cfg(test)]
+        {
+            app.browse.probe.work_button = Some(r.rect);
+        }
+        work = r.clicked();
+        let r = if armed {
+            // Dimmed until the confirm delay has passed, but kept enabled so
+            // keyboard focus survives; the state ignores early clicks.
+            let fill = if ready {
+                bad(dark)
+            } else {
+                bad(dark).gamma_multiply(0.45)
+            };
+            ui.add(
+                egui::Button::new(
+                    RichText::new("Confirm delete")
+                        .size(13.0)
+                        .color(Color32::WHITE),
+                )
+                .fill(fill)
+                .min_size(vec2(0.0, 30.0)),
+            )
+        } else {
+            ui.add(
+                egui::Button::new(RichText::new("Delete…").size(13.0).color(bad(dark)))
+                    .min_size(vec2(0.0, 30.0)),
+            )
+        };
+        #[cfg(test)]
+        {
+            app.browse.probe.delete_button = Some(r.rect);
+        }
+        // A held Enter or Space repeats `clicked()`; only a fresh activation
+        // may arm or confirm.
+        delete = r.clicked() && !crate::confirm::activation_key_held(ui);
+    });
+    if armed {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    if chat {
+        out.push(BackendRequest::Chat(ChatCommand::Create {
+            lifetime: SessionLifetime::Persisted,
+            model: name.clone(),
+        }));
+        app.chat_ui.focus_composer = true;
+        app.chat_ui.inspect = None;
+        app.select(View::Chat);
+    }
+    if work {
+        app.chat_ui.new_agent.model = Some(name.clone());
+        crate::chat::view::open_new_agent(app, Some(name.clone()), false, out);
+        app.select(View::Work);
+    }
+    if delete {
+        if let Some(a) = app.installed.click_delete(&name, now) {
+            out.push(BackendRequest::DeleteInstalled(a.name));
+        }
+    }
+}
+
+fn details(ui: &mut egui::Ui, app: &mut AppState, row: &InstalledRow, t: &Tokens, dark: bool) {
+    ui.label(RichText::new("Details").font(semibold(14.0)));
+    let line = |ui: &mut egui::Ui, label: &str, value: &mut dyn FnMut(&mut egui::Ui)| {
+        ui.horizontal(|ui| {
+            let (lr, _) = ui.allocate_exact_size(vec2(LABEL_W, 18.0), Sense::hover());
+            ui.painter().text(
+                lr.left_center(),
+                Align2::LEFT_CENTER,
+                label,
+                FontId::proportional(12.0),
+                t.fg3,
+            );
+            value(ui);
+        });
+    };
+    match app.installed.details_of(row.name()) {
+        None | Some(DetailsState::Loading) => {
+            ui.label(RichText::new("Loading details…").size(12.5).color(t.fg3));
+        }
+        Some(DetailsState::Error(e)) => {
+            ui.label(
+                RichText::new(format!("Could not read the details. {e}"))
+                    .size(12.5)
+                    .color(bad(dark)),
+            );
+        }
+        Some(DetailsState::Loaded(d)) => {
+            let family = if d.family.is_empty() {
+                "—".to_string()
+            } else {
+                d.family.clone()
+            };
+            line(ui, "Family", &mut |ui| {
+                ui.label(RichText::new(&family).size(12.5));
+            });
+            let context = d
+                .context
+                .map_or("—".to_string(), |c| format!("{} tokens", thousands(c)));
+            line(ui, "Context", &mut |ui| {
+                ui.label(RichText::new(&context).size(12.5));
+            });
+            let caps = if d.capabilities.is_empty() {
+                "—".to_string()
+            } else {
+                d.capabilities.join(", ")
+            };
+            line(ui, "Capabilities", &mut |ui| {
+                ui.label(RichText::new(&caps).size(12.5));
+            });
+            let full = if d.digest.is_empty() {
+                row.model.digest.clone()
+            } else {
+                d.digest.clone()
+            };
+            line(ui, "Digest", &mut |ui| {
+                ui.label(RichText::new(short_digest(&full)).font(mono(11.5)))
+                    .on_hover_text(&full);
+            });
+        }
+    }
+    let cmd = run_command(row.name());
+    let mut copy = false;
+    line(ui, "Run", &mut |ui| {
+        let room = (ui.available_width() - 70.0).max(60.0);
+        let shown = ellipsize_middle(ui, &cmd, mono(11.5), room);
+        let r = ui.label(RichText::new(&shown).font(mono(11.5)));
+        if shown != cmd {
+            r.on_hover_text(&cmd);
+        }
+        copy = small_button_response(ui, "Copy").clicked();
+    });
+    if copy {
+        ui.ctx().copy_text(cmd.clone());
+    }
+    let mut open_repo = None;
+    line(ui, "Source", &mut |ui| match &row.source_repo {
+        Some(repo) => {
+            let room = ui.available_width().max(60.0);
+            let shown = ellipsize_middle(ui, repo, FontId::proportional(12.5), room);
+            if row.linkable_repo().is_some() {
+                if ui
+                    .link(RichText::new(shown).size(12.5))
+                    .on_hover_text("Show this repository")
+                    .clicked()
+                {
+                    open_repo = Some(repo.clone());
+                }
+            } else {
+                ui.label(RichText::new(shown).size(12.5).color(t.fg2));
+            }
+        }
+        None => {
+            ui.label(
+                RichText::new("Pulled from the Ollama library")
+                    .size(12.5)
+                    .color(t.fg3),
+            );
+        }
+    });
+    if let Some(repo) = open_repo {
+        app.browse.select_repo(&repo);
+        app.models_installed = None;
+    }
+}
