@@ -1,10 +1,10 @@
 # FAQ
 
-hf2ollama is pre-release and the GUI is under construction. Answers below describe the designed and verified behavior; where something is only planned, it says so.
+Roost is pre-release and the GUI is under construction. Answers below describe the designed and verified behavior; where something is only planned, it says so.
 
 ## Why use the Ollama API instead of writing into the Ollama store?
 
-The server owns its store. If hf2ollama copied files into `~/.ollama/models` it would break as soon as your Ollama used a different models directory, ran in a container, or ran on another machine, and it could break when Ollama changes its store format. Uploading blobs (`/api/blobs`) and calling `/api/create` works with any Ollama you can reach over HTTP.
+The server owns its store. If Roost copied files into `~/.ollama/models` it would break as soon as your Ollama used a different models directory, ran in a container, or ran on another machine, and it could break when Ollama changes its store format. Uploading blobs (`/api/blobs`) and calling `/api/create` works with any Ollama you can reach over HTTP.
 
 ## GGUF or safetensors: what is the difference here?
 
@@ -19,7 +19,7 @@ On Linux and Windows, behavior is unverified. The accepted values may differ. Th
 
 ## Why is a repository marked "unsupported"?
 
-A repo is unsupported when it has no GGUF files and its safetensors architecture is not on the supported list, or when it contains only other formats such as PyTorch `.bin` or ONNX. hf2ollama does not convert models (there is no Python or llama.cpp step), so it tells you why before downloading anything and disables the import button. Where search finds related GGUF repos, it suggests them.
+A repo is unsupported when it has no GGUF files and its safetensors architecture is not on the supported list, or when it contains only other formats such as PyTorch `.bin` or ONNX. Roost does not convert models (there is no Python or llama.cpp step), so it tells you why before downloading anything and disables the import button. Where search finds related GGUF repos, it suggests them.
 
 ## What happens to downloaded files? How do I keep them?
 
@@ -47,17 +47,21 @@ The model card (the repository README) is shown as a restricted subset of Markdo
 
 Delete in Installed (and Clear in Settings) works in two steps: the first click arms the button, the second one confirms. The second click is ignored for the first 0.6 seconds after arming, so a quick double-click can never delete a model, and a held-down Enter or Space never confirms. The armed state expires after 4 seconds. Delete removes the model through the Ollama API.
 
+## I used hf2ollama before. What happens to my settings and token?
+
+On first start Roost copies your hf2ollama settings and import history into its own files, only where Roost has no file yet. The originals are left in place, so nothing is lost if you go back. Logs and temporary staging folders are not copied. Download folders that hf2ollama left behind are still recognized and can be cleared. The Hugging Face token is not touched automatically, because reading the old keychain entry can make macOS show a prompt: use "Import hf2ollama token" in Settings when you want it. If you already saved a token in Roost, that one is kept and the old entry is left alone. If a copy fails, Roost starts with defaults for that file and shows a warning.
+
 ## What is portable mode?
 
 Put an empty file named `portable` next to the executable. Settings, import history and logs are then stored beside the executable, and the default staging folder is there too. Remove the file to go back to the OS config, cache and log directories. This lets you run the app from a USB drive without touching the host profile. The Hugging Face token is still kept in the system keychain, not beside the executable.
 
 ## Can I use a non-default models directory or a remote Ollama?
 
-Yes, that is the point of using the API. Set the Ollama address in Settings (default `http://localhost:11434`) and use Test. The models directory shown in the app is whatever the server reports. If Ollama runs on another machine, set the hardware override in Settings so fit estimates use that machine's memory rather than yours. Staging still happens on the machine running hf2ollama, and files are uploaded over HTTP, so large models cost network time.
+Yes, that is the point of using the API. Set the Ollama address in Settings (default `http://localhost:11434`) and use Test. The models directory shown in the app is whatever the server reports. If Ollama runs on another machine, set the hardware override in Settings so fit estimates use that machine's memory rather than yours. Staging still happens on the machine running Roost, and files are uploaded over HTTP, so large models cost network time.
 
 ## Known limitations
 
-- **Orphan blobs.** Ollama has no blob-delete API. If an import fails after upload, an unused blob can remain in Ollama's store (we observed 4 MB in testing). Ollama prunes unreferenced blobs on restart. hf2ollama documents this rather than working around it.
+- **Orphan blobs.** Ollama has no blob-delete API. If an import fails after upload, an unused blob can remain in Ollama's store (we observed 4 MB in testing). Ollama prunes unreferenced blobs on restart. Roost documents this rather than working around it.
 - **No resume of failed jobs, and none across restarts, in v1.** Pause and resume work within a running session. Files of a failed job are kept for 7 days (if enabled) but are not reused: a failed or interrupted job must be started again from the beginning, and a job is not restored after the app restarts.
 - **VRAM detection** covers NVIDIA GPUs and Apple Silicon unified memory only. Otherwise VRAM is shown as unknown and you can enter it manually. Fit results are estimates, not guarantees.
 - **Hash coverage.** Hugging Face publishes SHA-256 only for LFS files. Small config and tokenizer files are checked against a git SHA-1 only.

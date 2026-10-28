@@ -15,11 +15,11 @@ cargo build
 ```
 Cargo.toml                    workspace (resolver 2, edition 2021)
 crates/
-  hf2ollama-core/             library, no UI dependencies
+  roost-core/             library, no UI dependencies
     src/                      modules described in docs/ARCHITECTURE.md
     src/supported_architectures.json   bundled data
     tests/fixtures/           recorded Hugging Face and Ollama responses
-  hf2ollama-gui/              egui/eframe binary
+  roost-gui/              egui/eframe binary
     assets/                   bundled fonts and their OFL license texts
 docs/
   ARCHITECTURE.md FAQ.md DEVELOPMENT.md ROADMAP.md
@@ -28,6 +28,8 @@ docs/
   superpowers/specs/          the design spec (source of truth)
   superpowers/plans/          the implementation plan
   superpowers/notes/          api-verification.md, acceptance.md
+packaging/
+  macos/                      .app/.dmg scripts, Info.plist template and icon generator
 .github/                      CI, cargo-deny workflow, templates, dependabot
 deny.toml                     cargo-deny policy
 ```
@@ -40,13 +42,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI also runs clippy and the tests with `--features hf2ollama-gui/dev-hooks`.
+CI also runs clippy and the tests with `--features roost-gui/dev-hooks`.
 
 All three must pass before each commit. Run a single crate or test while iterating:
 
 ```sh
-cargo test -p hf2ollama-core
-cargo test -p hf2ollama-core fit
+cargo test -p roost-core
+cargo test -p roost-core fit
 ```
 
 Optional, if you have it installed: `cargo install cargo-deny --locked`, then `cargo deny check`. CI runs it in `.github/workflows/deny.yml`. `deny.toml` records four advisory ignores (all "unmaintained" notices on transitive dependencies, each with a reason).
@@ -55,12 +57,12 @@ Core tests use `wiremock` mock HTTP servers and `tempfile` directories, so they 
 
 ### End-to-end tests against a real Ollama
 
-`crates/hf2ollama-core/tests/e2e_real_ollama.rs` holds `#[ignore]`d tests that import tiny public models (`ggml-org/tiny-llamas`, `hf-internal-testing/tiny-random-LlamaForCausalLM`) through the real pipeline. They need network access to huggingface.co (no token) and an Ollama URL in `HF2OLLAMA_E2E_OLLAMA_URL`. Use a throwaway server, not your everyday one; the tests refuse port 11434 unless `HF2OLLAMA_E2E_ALLOW_DEFAULT=1`:
+`crates/roost-core/tests/e2e_real_ollama.rs` holds `#[ignore]`d tests that import tiny public models (`ggml-org/tiny-llamas`, `hf-internal-testing/tiny-random-LlamaForCausalLM`) through the real pipeline. They need network access to huggingface.co (no token) and an Ollama URL in `ROOST_E2E_OLLAMA_URL`. Use a throwaway server, not your everyday one; the tests refuse port 11434 unless `ROOST_E2E_ALLOW_DEFAULT=1`:
 
 ```sh
 OLLAMA_HOST=127.0.0.1:11555 OLLAMA_MODELS="$(mktemp -d)" ollama serve &
-HF2OLLAMA_E2E_OLLAMA_URL=http://127.0.0.1:11555 \
-  cargo test -p hf2ollama-core --test e2e_real_ollama -- --ignored --test-threads=1
+ROOST_E2E_OLLAMA_URL=http://127.0.0.1:11555 \
+  cargo test -p roost-core --test e2e_real_ollama -- --ignored --test-threads=1
 ```
 
 They create and delete models named `hf2o-e2e-*` only.
@@ -68,8 +70,8 @@ They create and delete models named `hf2o-e2e-*` only.
 ## Running the app
 
 ```sh
-cargo run -p hf2ollama-gui
-cargo run -p hf2ollama-gui --release
+cargo run -p roost-gui
+cargo run -p roost-gui --release
 ```
 
 The GUI is under construction, so what you see depends on how far it has got. To try portable mode, create an empty file named `portable` next to the built executable (for example `target/release/portable`).
@@ -109,7 +111,7 @@ Use `git log --oneline` to see the pattern.
 
 ## How the verified-API fixtures were recorded
 
-The files in `crates/hf2ollama-core/tests/fixtures/` (`hf_search.json`, `hf_model_gguf.json`, `hf_model_safetensors.json`, `hf_model_gated.json`, `ollama_version.json`, `ollama_tags.json`, `ollama_show.json`) are real responses captured on 2026-10-22 from the public Hugging Face API without a token and from a local Ollama 0.40.8 on macOS. The test repos were a tiny GGUF repo, a tiny random Llama safetensors repo and a gated repo. The real import checks used a temporary Ollama model that was deleted afterwards. The method, the findings and the differences from the original spec are written up in `docs/superpowers/notes/api-verification.md`.
+The files in `crates/roost-core/tests/fixtures/` (`hf_search.json`, `hf_model_gguf.json`, `hf_model_safetensors.json`, `hf_model_gated.json`, `ollama_version.json`, `ollama_tags.json`, `ollama_show.json`) are real responses captured on 2026-10-22 from the public Hugging Face API without a token and from a local Ollama 0.40.8 on macOS. The test repos were a tiny GGUF repo, a tiny random Llama safetensors repo and a gated repo. The real import checks used a temporary Ollama model that was deleted afterwards. The method, the findings and the differences from the original spec are written up in `docs/superpowers/notes/api-verification.md`.
 
 To re-record, request the same endpoints (for Hugging Face, `GET /api/models/<repo>?blobs=true`; for Ollama, `/api/version`, `/api/tags` and `/api/show`), save the JSON body, and update the tests that parse it. Check the response for anything private before committing; never commit a token.
 
@@ -121,19 +123,22 @@ Dependabot proposes cargo and GitHub Actions updates weekly. Dependencies must k
 
 These environment variables only change how the GUI starts, and are always available:
 
-- `HF2O_THEME=light|dark` overrides the saved theme.
-- `HF2O_SIZE=WxH` sets the initial window size (not below 900x640).
-- `HF2O_VIEW=browse|installed|settings` starts on that view.
+- `ROOST_THEME` overrides the saved theme: `light` or `dark` change the mode only; `meadow-light`, `meadow-dark`, `ember-light`, `ember-dark`, `plum-light`, `plum-dark`, `tide-light` or `tide-dark` set family and mode.
+- `ROOST_SIZE=WxH` sets the initial window size (not below 900x640).
+- `ROOST_QUERY=text` and `ROOST_SELECT=owner/name` pre-fill the Browse search and select a result.
+- `ROOST_VIEW=browse|installed|settings` starts on that view.
+
+The old `HF2O_*` variables are no longer read.
 
 The token hooks exist only when the GUI is built with the `dev-hooks` cargo feature (off by default, so release binaries cannot contain them):
 
 ```
-HF2O_MEMORY_TOKEN_STORE=1 HF2O_MEMORY_TOKEN=hf_example \
-  cargo run -p hf2ollama-gui --release --features dev-hooks
+ROOST_MEMORY_TOKEN_STORE=1 ROOST_MEMORY_TOKEN=hf_example \
+  cargo run -p roost-gui --release --features dev-hooks
 ```
 
-- `HF2O_MEMORY_TOKEN_STORE=1` (exactly `1`) keeps the Hugging Face token in memory instead of the system keychain. The app prints a warning at startup and Settings shows "dev: token not persisted".
-- `HF2O_MEMORY_TOKEN` is the token the in-memory store starts with.
+- `ROOST_MEMORY_TOKEN_STORE=1` (exactly `1`) keeps the Hugging Face token in memory instead of the system keychain. The app prints a warning at startup and Settings shows "dev: token not persisted".
+- `ROOST_MEMORY_TOKEN` is the token the in-memory store starts with.
 
 ## Releases
 
@@ -146,3 +151,19 @@ Versions are `YY.M.N`: the year without the century, the month without a leading
 The comment at the top of `release.yml` says how to switch to automatic releases on every code merge to `main`.
 
 The builds are not signed or notarized, so macOS and Windows warn on first launch; the release notes say how to get past that.
+
+### macOS app and DMG
+
+macOS is released as one universal `.dmg` containing `Roost.app` for Apple Silicon and Intel. `packaging/macos/package.sh` lipos the two release binaries, builds the bundle (`Info.plist`, icon, notices), applies an ad-hoc signature, creates the DMG with an `Applications` link and runs `packaging/macos/verify.sh`. The verifier checks the checksum, layout, plist values, both architectures, the ICNS icon and the signature.
+
+To build it locally (the x86_64 target may need `rustup target add x86_64-apple-darwin`):
+
+```sh
+cargo build --release -p roost-gui --target aarch64-apple-darwin
+cargo build --release -p roost-gui --target x86_64-apple-darwin
+packaging/macos/package.sh 26.10.0 \
+  target/aarch64-apple-darwin/release/roost \
+  target/x86_64-apple-darwin/release/roost dist
+```
+
+The icon source is `crates/roost-gui/assets/icon-1024.png`; regenerate it with `python3 packaging/macos/make_icon.py`. The ad-hoc signature makes the bundle internally valid but is not Developer ID signing or notarization, so Gatekeeper still warns.

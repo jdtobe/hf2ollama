@@ -1,4 +1,4 @@
-# Contributing to hf2ollama
+# Contributing to Roost
 
 Thanks for your interest. The project is pre-release and the GUI is still being built, so check [docs/ROADMAP.md](docs/ROADMAP.md) and open an issue before starting anything large. By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -16,7 +16,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-CI runs the same commands on macOS, Windows and Linux. Tests must not need a network; use the mock HTTP servers and the recorded fixtures in `crates/hf2ollama-core/tests/fixtures/`.
+CI runs the same commands on macOS, Windows and Linux. Tests must not need a network; use the mock HTTP servers and the recorded fixtures in `crates/roost-core/tests/fixtures/`.
 
 ## Test-driven development
 
@@ -45,7 +45,7 @@ Keep commits small and focused. Do not rewrite shared history.
 
 - No `unwrap` or `expect` on I/O, network or parse results in non-test code. Return typed errors (`thiserror`) instead. Tests may unwrap.
 - TLS is rustls only. OpenSSL must never enter the dependency tree. `deny.toml` bans `openssl`, `openssl-sys` and `native-tls`; when you add a dependency, disable default features that pull them in.
-- `hf2ollama-core` never imports egui. The GUI never makes HTTP calls itself; it sends commands to core and receives events.
+- `roost-core` never imports egui. The GUI never makes HTTP calls itself; it sends commands to core and receives events.
 - The UI thread must never block on I/O.
 - Keep bundled data (such as the supported-architecture list) as data files, not code.
 - Do not add dependencies casually. Prefer permissive licenses; `cargo deny check` must pass.

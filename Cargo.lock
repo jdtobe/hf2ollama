@@ -888,9 +888,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "fe3e9d21d39e6f39ff46e03d5b621424f88ee23d8a1672c6bfc9ccc7f2da4f6a"
 dependencies = [
  "cmov",
 ]
@@ -1866,43 +1866,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hf2ollama-core"
-version = "0.1.0"
-dependencies = [
- "directories",
- "fs4",
- "futures-util",
- "keyring",
- "nvml-wrapper",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
- "wiremock",
-]
-
-[[package]]
-name = "hf2ollama-gui"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui_extras",
- "hf2ollama-core",
- "pulldown-cmark",
- "rfd",
- "serde_json",
- "tempfile",
- "tokio",
- "wiremock",
-]
 
 [[package]]
 name = "hkdf"
@@ -3783,6 +3746,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "roost-core"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "fs4",
+ "futures-util",
+ "keyring",
+ "nvml-wrapper",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "roost-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_extras",
+ "png",
+ "pulldown-cmark",
+ "rfd",
+ "roost-core",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "roxmltree"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4785,6 +4787,7 @@ version = "1.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

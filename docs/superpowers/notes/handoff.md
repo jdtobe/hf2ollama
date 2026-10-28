@@ -2,11 +2,23 @@
 
 Written 2026-10-22, refreshed 2026-10-23 after PRs #1-#4 were merged, so a new session (or a person) can continue without the earlier conversation. Read this first, then `follow-ups.md` and `acceptance.md` in this folder.
 
+## Update 2026-10-27 (read this first)
+
+- The repository was renamed `hf2ollama` -> `roost` on GitHub (`origin` is `https://github.com/jdtobe/roost.git`). Everything below this section was written before the rename and still uses the hf2ollama names; the identity scan allows that for this file.
+- The Roost foundation (`docs/superpowers/plans/2026-10-27-roost-foundation.md`, tasks 1-9) is implemented on branch `feat/roost` and submitted as a PR to `main`. It is a fast-forward of `main`. Spec: `docs/superpowers/specs/2026-10-27-roost-workbench-design.md`.
+- A code review of the branch found nine issues; 1-5 are fixed (`5802022`). Deferred, none needs rework: (6) the token UI stays on "Checking keychain" if the backend never starts; (7) a corrupt-settings message is written to `startup.log` twice; (8) legacy migration is skipped in portable mode when `ProjectDirs` cannot be resolved; (9) `atomic_write_if_absent` uses `hard_link`, which fails on FAT/exFAT, so a portable install there would not migrate (fall back to `create_new` plus write).
+- Decision: the startup sweep also deletes job folders with the old `.hf2ollama-job` marker, even if an old app were running. Accepted, since hf2ollama was never distributed.
+- Next stages (not started): streaming chat and per-session persistence, then agents and tools, then `/btw`, branches, auto-titles and the history manager.
+- The release workflow is manual only (`workflow_dispatch`). It has never run; no tags or releases exist.
+- The old stash on `feat/hf2ollama` is already contained in `main` and can be dropped. The merged remote branches (`ci/release-workflow`, `fix/windows-staging-test`, two Dependabot branches) can be deleted.
+
 ## What exists
 
 hf2ollama: a portable Rust GUI (egui) to search Hugging Face and import models into Ollama through its HTTP API only. Workspace: `hf2ollama-core` (UI-free library) and `hf2ollama-gui` (egui app). The design spec and plan are in `docs/superpowers/specs/` and `docs/superpowers/plans/`; the architecture is in `docs/ARCHITECTURE.md`; the build ledger with every ruling is `build-ledger.md` in this folder.
 
 All 18 planned tasks plus the model-card tab are implemented and reviewed. The Files/About tabs were reworked afterwards (one row, pinned above the scroll area) and the search field has a clear button.
+
+Branch `feat/log-speed-macos-release` (2026-10-27) adds: the committed Finder duplicates removed; a five-line scrollable log drawer above the dock with one log at a time; a rolling five-second download speed; an app icon and window icon; and macOS release packaging as a universal `.app` inside a drag-install `.dmg`, with `packaging/macos/package.sh` and `verify.sh`. The package was built and verified locally on macOS; the workflow change has not run on GitHub yet.
 
 ## Branches and the remote
 
@@ -39,8 +51,8 @@ All 18 planned tasks plus the model-card tab are implemented and reviewed. The F
 5. README screenshots (a TODO comment marks the place) and a download link to the latest release. Take them from a clean setup: the Installed view shows the real model list of the machine.
 6. Items in `follow-ups.md` (before-release, first-follow-up, nice-to-have).
 7. Open question for the user: public commits carry `jdtobe@gmail.com`. Keep it, or switch to a GitHub noreply address for future commits (history would not be rewritten)? Not answered yet.
-8. Housekeeping: delete the merged remote branches (`ci/release-workflow`, `fix/windows-staging-test`, the two Dependabot branches). Untracked Finder duplicates with a " 2" suffix (for example `crates/hf2ollama-gui/src/dock/jobs 2.rs`) are not part of the project; the user should check and delete them, and `git add` must name paths so they are not picked up.
-9. A macOS `.app` bundle with an icon instead of a bare binary; optional signing and notarization (needs a paid Apple account, probably not worth it).
+8. Housekeeping: delete the merged remote branches (`ci/release-workflow`, `fix/windows-staging-test`, the two Dependabot branches). The Finder duplicates with a " 2" suffix were committed by accident and are removed on `feat/log-speed-macos-release`.
+9. macOS `.app` and `.dmg` with an icon: done on `feat/log-speed-macos-release` (ad-hoc signed, not notarized). Optional Developer ID signing and notarization still need a paid Apple account.
 
 ## Rules that must keep applying
 
