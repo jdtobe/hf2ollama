@@ -54,11 +54,9 @@ fn installed(
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let (_, top) = band(ui, t.accent_soft, Some(t.line), 0.0, |ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(&name).font(semibold(19.0)).color(t.fg))
-                                .wrap(),
-                        );
-                        ui.label(RichText::new(facts(row)).size(13.0).color(t.fg2));
+                        // The same heading and sub-line as a repository's page.
+                        ui.add(egui::Label::new(egui::RichText::new(&name).heading()).wrap());
+                        ui.label(RichText::new(facts(row)).color(t.fg3));
                         actions(ui, app, out, row, now, dark);
                     });
                     let (_, mid) = band(ui, t.surface2, Some(t.line), 0.0, |ui| {
