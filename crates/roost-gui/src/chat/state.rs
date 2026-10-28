@@ -337,8 +337,17 @@ impl ChatState {
     }
 
     /// Sessions with a run in progress, shown or not.
+    #[cfg(test)]
     pub fn active_runs(&self) -> usize {
         self.active.len()
+    }
+
+    /// Runs in progress for one kind of session (a tab's badge).
+    pub fn active_runs_for(&self, mode: SessionMode) -> usize {
+        self.active
+            .iter()
+            .filter(|id| self.is_agent(**id) == (mode == SessionMode::Agent))
+            .count()
     }
 
     /// Whether the saved or open session is an agent.
@@ -357,13 +366,11 @@ impl ChatState {
     }
 
     /// Steering messages still waiting to be applied to a running agent.
-    #[cfg_attr(not(test), allow(dead_code))] // until the Work tab shows them
     pub fn queued(&self, id: SessionId) -> &[String] {
         self.queued.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// `Some(true)` once the model is known to support tools.
-    #[cfg_attr(not(test), allow(dead_code))] // until the Work tab uses it
     pub fn supports_tools(&self, model: &str) -> Option<bool> {
         self.tool_support.get(model).copied()
     }
@@ -470,6 +477,7 @@ impl ChatState {
     }
 
     /// Groups rows for the rail. `day_of` maps a timestamp to a day number.
+    #[cfg(test)]
     pub fn rail(&self, now_ms: u64, day_of: impl Fn(u64) -> i64) -> Rail {
         self.rail_for(SessionMode::Chat, now_ms, day_of)
     }

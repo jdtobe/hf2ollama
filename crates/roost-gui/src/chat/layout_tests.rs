@@ -661,3 +661,262 @@ fn unload_notes_read_naturally() {
         Some("unloads in 11 min")
     );
 }
+
+// ------------------------------------------------------------- the Work tab
+
+use roost_core::session::{SessionMode, ToolStatus};
+
+fn agent_fixture() -> (App, Receiver<BackendRequest>, Session) {
+    let (tx, sent) = std::sync::mpsc::channel();
+    let (_, rx) = std::sync::mpsc::channel();
+    let mut app = App::new(
+        &Settings::default(),
+        std::path::PathBuf::from("/tmp/staging"),
+        Machine {
+            ram_gb: 64.0,
+            vram_gb: Some(24.0),
+        },
+        tx,
+        rx,
+    );
+    let now = now_ms();
+    let folder =
+        std::env::temp_dir().join("a-project-with-a-rather-long-folder-name/and/some/nested/path");
+    let mut s = Session::new_agent(LONG_MODEL, SessionLifetime::Persisted, folder, now).unwrap();
+    s.push_user("Find where the config is loaded and explain it.", now);
+    let run = RunId::new();
+    let a = s.begin_assistant(run, TurnId::new(), now);
+    s.append_assistant(a, "I will search the sources first.", "");
+    s.finish_assistant(a, AssistantStatus::Complete, None, now);
+    for (i, status, out) in [
+        (
+            1,
+            ToolStatus::Complete,
+            "src/config.rs:12: fn load() {}".repeat(20),
+        ),
+        (
+            2,
+            ToolStatus::Failed,
+            "Error: access denied: .env is protected and cannot be read".to_string(),
+        ),
+        (3, ToolStatus::Running, String::new()),
+    ] {
+        let id = s.push_tool_call(
+            run,
+            &format!("call_{i}"),
+            "search_text",
+            serde_json::json!({"pattern": "load_config", "path": "src/some/very/long/path/to/search/in"}),
+            now,
+        );
+        if status != ToolStatus::Running {
+            s.finish_tool(id, &out, status, now);
+        } else {
+            s.start_tool(id);
+        }
+    }
+    let mut agent_row = row_for(&s, "Config walkthrough");
+    agent_row.mode = SessionMode::Agent;
+    let chat = Session::new_chat("llama3.2:3b", SessionLifetime::Persisted, now);
+    let chat_row = row_for(&chat, "Just a chat");
+    let st = app.state_mut();
+    st.ollama = Some(Some("0.9".into()));
+    st.view = View::Work;
+    st.chat.fold(ChatEvent::Rows(vec![agent_row, chat_row]));
+    st.chat.fold(ChatEvent::Opened(Box::new(s.clone())));
+    (app, sent, s)
+}
+
+#[test]
+fn work_lists_only_agents_and_chat_lists_only_chats() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let texts = h
+        .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+        .join("\n");
+    assert!(
+        texts.contains("Config walkthrough") && !texts.contains("Just a chat"),
+        "{texts}"
+    );
+    assert!(texts.contains("New agent"), "{texts}");
+    app.state_mut().view = View::Chat;
+    run(&mut app, &mut h, size, 3);
+    let texts = h
+        .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+        .join("\n");
+    assert!(
+        texts.contains("Just a chat") && !texts.contains("Config walkthrough"),
+        "{texts}"
+    );
+    assert!(
+        texts.contains("Start a chat"),
+        "an agent open on Work is not shown on Chat: {texts}"
+    );
+}
+
+#[test]
+fn the_work_tab_keeps_tool_steps_and_the_agent_bar_inside_the_pane_in_every_theme() {
+    for family in [
+        ThemeFamily::Meadow,
+        ThemeFamily::Ember,
+        ThemeFamily::Plum,
+        ThemeFamily::Tide,
+    ] {
+        for dark in [false, true] {
+            for size in SIZES {
+                let (mut app, _sent, s) = agent_fixture();
+                app.state_mut().chat.fold(ChatEvent::SteeringQueued {
+                    session: s.id,
+                    text: "Only look in the src folder please, and ignore the tests entirely"
+                        .into(),
+                });
+                let mut h = Harness::themed(family, dark);
+                run(&mut app, &mut h, size, 4);
+                let window = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+                let p = app.state_mut().chat_ui.probe.clone();
+                let tag = format!("{family:?} dark={dark} {size:?}");
+                let (pane, bar, composer) = (
+                    p.pane.unwrap(),
+                    p.agent_bar.expect("agent bar"),
+                    p.composer.unwrap(),
+                );
+                assert!(inside(pane, window) && inside(composer, window), "{tag}");
+                assert!(inside(bar, pane), "{tag}: bar {bar:?} pane {pane:?}");
+                assert_eq!(p.tool_cards.len(), 3, "{tag}");
+                for c in &p.tool_cards {
+                    assert!(
+                        c.left() >= pane.left() - 0.5 && c.right() <= pane.right() + 0.5,
+                        "{tag}: card {c:?} pane {pane:?}"
+                    );
+                }
+                assert_eq!(p.queued_chips.len(), 1, "{tag}");
+                let texts = h
+                    .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+                    .join("\n");
+                assert!(
+                    texts.contains("Running…") && texts.contains("Failed"),
+                    "{tag}: {texts}"
+                );
+                assert!(texts.contains("Waiting for the agent's next step"), "{tag}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_new_agent_form_cannot_start_until_the_model_supports_tools() {
+    let size = (1180.0, 820.0);
+    let (tx, sent) = std::sync::mpsc::channel();
+    let (_, rx) = std::sync::mpsc::channel();
+    let mut app = App::new(
+        &Settings::default(),
+        std::path::PathBuf::new(),
+        Machine {
+            ram_gb: 8.0,
+            vram_gb: None,
+        },
+        tx,
+        rx,
+    );
+    {
+        let st = app.state_mut();
+        st.ollama = Some(Some("0.9".into()));
+        st.view = View::Work;
+        st.installed
+            .on_installed_loaded(&Ok(vec![crate::runtime::InstalledEntry {
+                model: roost_core::ollama::InstalledModel {
+                    name: "qwen:7b".into(),
+                    size: 1,
+                    params: None,
+                    quant: None,
+                    family: None,
+                    modified: String::new(),
+                    digest: String::new(),
+                },
+                source_repo: None,
+            }]));
+        st.chat.fold(ChatEvent::Rows(vec![]));
+        st.chat_ui.new_agent.open = true;
+        st.chat_ui.new_agent.model = Some("qwen:7b".into());
+        st.chat_ui.new_agent.folder = Some(std::env::temp_dir());
+    }
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let start = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .start_agent
+        .expect("Start button");
+    click(&mut app, &mut h, size, start.center());
+    assert!(
+        sent_chat_commands(&sent).is_empty(),
+        "disabled while tool support is unknown"
+    );
+
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: "qwen:7b".into(),
+        tools: false,
+    });
+    run(&mut app, &mut h, size, 3);
+    let texts = h
+        .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+        .join("\n");
+    assert!(texts.contains("does not support tools"), "{texts}");
+    click(&mut app, &mut h, size, start.center());
+    assert!(
+        sent_chat_commands(&sent).is_empty(),
+        "still disabled for a model without tools"
+    );
+
+    app.state_mut().chat.fold(ChatEvent::ModelCapabilities {
+        model: "qwen:7b".into(),
+        tools: true,
+    });
+    run(&mut app, &mut h, size, 3);
+    let start = app.state_mut().chat_ui.probe.start_agent.unwrap();
+    click(&mut app, &mut h, size, start.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::CreateAgent { lifetime: SessionLifetime::Persisted, model, workspace }]
+            if model == "qwen:7b" && *workspace == std::env::temp_dir()),
+        "{cmds:?}"
+    );
+    assert!(!app.state_mut().chat_ui.new_agent.open);
+}
+
+#[test]
+fn enter_steers_a_running_agent() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    app.state_mut().chat.fold(ChatEvent::TurnStarted {
+        session: s.id,
+        turn: TurnId::new(),
+    });
+    *app.state_mut().chat.draft_mut(s.id) = "look in src instead".into();
+    app.state_mut().chat_ui.focus_composer = true;
+    run(&mut app, &mut h, size, 3);
+    h.frame(vec2(size.0, size.1), press_enter(), |ui| app.show(ui));
+    run(&mut app, &mut h, size, 2);
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Send { text, .. }] if text == "look in src instead"),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn the_work_nav_item_and_menu_exist() {
+    assert_eq!(View::ALL[..2], [View::Chat, View::Work]);
+    let model =
+        crate::menu::model::build(&crate::app::AppState::new(), crate::menu::Platform::Linux);
+    let labels: Vec<_> = model
+        .action_items()
+        .iter()
+        .map(|a| a.label.clone())
+        .collect();
+    assert!(labels.contains(&"Work".to_string()));
+    assert!(labels.contains(&"New Agent…".to_string()));
+}

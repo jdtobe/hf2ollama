@@ -199,6 +199,10 @@ mod tests {
         let m = model_with_chat_enabled();
         assert_eq!(
             fired(&m, key(Key::Num2, Modifiers::COMMAND)),
+            [MenuAction::ShowView(crate::app::View::Work)]
+        );
+        assert_eq!(
+            fired(&m, key(Key::Num3, Modifiers::COMMAND)),
             [MenuAction::ShowView(crate::app::View::Browse)]
         );
         assert_eq!(

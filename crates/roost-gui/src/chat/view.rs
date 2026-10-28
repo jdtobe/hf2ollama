@@ -227,7 +227,6 @@ fn rail(
     installed: &[String],
     mode: SessionMode,
 ) {
-    let now = Instant::now();
     if app.ollama.as_ref().is_some_and(|o| o.is_some()) {
         egui::Panel::bottom("chat_loaded")
             .resizable(false)
@@ -290,7 +289,7 @@ fn rail_chat_buttons(
 }
 
 /// Opens the New agent form with a default model, and asks whether it can use tools.
-fn open_new_agent(
+pub(crate) fn open_new_agent(
     app: &mut AppState,
     model: Option<String>,
     incognito: bool,
@@ -551,6 +550,7 @@ fn banner(ui: &mut egui::Ui, fg: Color32, bg: Color32, text: &str) {
     ui.add_space(8.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pane(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -654,7 +654,11 @@ fn pane(
         .show(ui, |ui| {
             let last = s.messages.len().saturating_sub(1);
             for (i, m) in s.messages.iter().enumerate() {
-                message_card(ui, t, m, &model, badge);
+                if matches!(m.content, MessageContent::Tool { .. }) {
+                    tool_card(ui, t, m, app);
+                } else {
+                    message_card(ui, t, m, &model, badge);
+                }
                 if i == last && s.mode == SessionMode::Chat {
                     retry_row(ui, app, out, s, m);
                 }
@@ -930,6 +934,7 @@ fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut AppState) {
         let s = arguments.to_string();
         truncate_chars(&s, 90)
     };
+    #[cfg(test)]
     let top = ui.cursor().min.y;
     egui::Frame::new()
         .fill(t.surface2)
@@ -1392,6 +1397,11 @@ fn composer(
     let enter = focused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let mut send = enter;
     let mut stop = false;
+    let hint = if app.chat.is_agent(id) {
+        "Message the agent. While it works, Enter sends a steering message."
+    } else {
+        "Message (Enter to send, Shift+Enter for a new line)"
+    };
     ui.horizontal(|ui| {
         let button_w = 76.0;
         let edit_w = (ui.available_width() - button_w - 10.0).max(80.0);
@@ -1400,7 +1410,7 @@ fn composer(
                 .id(eid)
                 .desired_rows(COMPOSER_ROWS)
                 .desired_width(edit_w)
-                .hint_text("Message (Enter to send, Shift+Enter for a new line)"),
+                .hint_text(hint),
         );
         ui.vertical(|ui| {
             ui.set_width(button_w);
