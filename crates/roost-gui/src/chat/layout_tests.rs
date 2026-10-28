@@ -1762,3 +1762,47 @@ fn without_a_speech_engine_the_icon_is_disabled_and_does_nothing() {
     assert!(log.lock().unwrap().spoken.is_empty());
     assert!(f.app.state_mut().chat_ui.reading.is_none());
 }
+
+#[test]
+fn new_agent_works_while_an_agent_chat_is_open() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    {
+        let st = app.state_mut();
+        st.installed
+            .on_installed_loaded(&Ok(vec![crate::runtime::InstalledEntry {
+                model: roost_core::ollama::InstalledModel {
+                    name: "qwen:7b".into(),
+                    size: 1,
+                    params: None,
+                    quant: None,
+                    family: None,
+                    modified: String::new(),
+                    digest: String::new(),
+                },
+                source_repo: None,
+            }]));
+    }
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let button = app.state_mut().chat_ui.probe.new_button.expect("+ New");
+    let _ = sent_chat_commands(&sent);
+    click(
+        &mut app,
+        &mut h,
+        size,
+        egui::pos2(button.left() + 30.0, button.center().y),
+    );
+    assert!(app.state_mut().chat_ui.new_agent.open);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(
+        texts.contains("The agent can only read inside the folder"),
+        "the form is shown:\n{texts}"
+    );
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, ChatCommand::Close(id) if *id == s.id)),
+        "the chat on screen is let go: {cmds:?}"
+    );
+}

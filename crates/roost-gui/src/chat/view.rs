@@ -387,6 +387,14 @@ pub(crate) fn open_new_agent(
     out: &mut Vec<BackendRequest>,
 ) {
     app.chat_ui.inspect = None;
+    // The form takes the place of the chat on screen. A saved chat is let go
+    // so the manager can unload it (a running one finishes first); an
+    // incognito one stays alive in memory and can be picked from the list.
+    if let Some(shown) = app.chat.open.take() {
+        if shown.lifetime == SessionLifetime::Persisted {
+            out.push(BackendRequest::Chat(ChatCommand::Close(shown.id)));
+        }
+    }
     app.chat_ui.new_agent.open = true;
     app.chat_ui.new_agent.incognito = incognito;
     if app.chat_ui.new_agent.model.is_none() {
