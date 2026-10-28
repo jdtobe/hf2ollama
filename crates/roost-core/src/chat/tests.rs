@@ -1,8 +1,9 @@
 use super::manager::{ChatConfig, ChatHandle, ChatManager};
-use super::types::{ChatCommand, ChatEvent, SendRejection, TurnOutcome};
+use super::types::{BranchState, ChatCommand, ChatEvent, SendRejection, TurnOutcome};
 use crate::ollama::OllamaClient;
 use crate::session::{
-    AssistantStatus, MessageContent, Session, SessionDocument, SessionId, SessionLifetime,
+    AssistantStatus, MessageContent, MessageId, Session, SessionDocument, SessionId,
+    SessionLifetime,
 };
 use crate::store::{Store, Writer};
 use crate::test_server::{Route, Step, TcpScript};
@@ -162,6 +163,11 @@ impl H {
         read_session(self.dir.path(), id)
     }
 
+    /// `read`, but `None` while the file is not there yet.
+    fn try_read(&self, id: SessionId) -> Option<Session> {
+        try_read_session(self.dir.path(), id)
+    }
+
     fn file(&self, id: SessionId) -> std::path::PathBuf {
         self.dir.path().join(format!("{id}.json"))
     }
@@ -197,11 +203,24 @@ fn last_rows(e: &[ChatEvent]) -> Vec<crate::store::IndexRow> {
         .unwrap_or_default()
 }
 
+/// The saved chat. A file being rewritten at this moment is read again
+/// shortly, so a test never trips over a half-written one.
 fn read_session(dir: &Path, id: SessionId) -> Session {
-    let bytes = std::fs::read(dir.join(format!("{id}.json"))).unwrap();
+    for _ in 0..200 {
+        if let Some(s) = try_read_session(dir, id) {
+            return s;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the saved chat {id} could not be read");
+}
+
+/// The saved chat, or `None` while its file is not (completely) there yet.
+fn try_read_session(dir: &Path, id: SessionId) -> Option<Session> {
+    let bytes = std::fs::read(dir.join(format!("{id}.json"))).ok()?;
     serde_json::from_slice::<SessionDocument>(&bytes)
-        .unwrap()
-        .session
+        .ok()
+        .map(|d| d.session)
 }
 
 fn preload(dir: &Path, s: &Session) {
@@ -1804,6 +1823,163 @@ async fn a_finished_reply_keeps_the_numbers_ollama_reported() {
                 if s.prompt_tokens == Some(12) && s.reply_tokens == Some(40)
                 && s.total_ms == Some(2_500) && s.load_ms == Some(300) && s.eval_ms == Some(2_000))
         })
+    })
+    .await;
+}
+
+async fn chat_with_one_exchange(h: &H) -> (SessionId, MessageId) {
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "ask").await;
+    h.wait_ended(1).await;
+    h.wait("saved", |_| {
+        h.try_read(id).is_some_and(|s| s.messages.len() == 2)
+    })
+    .await;
+    (id, h.read(id).messages[1].id)
+}
+
+#[tokio::test]
+async fn branching_creates_a_new_chat_with_the_history_and_opens_it() {
+    let srv = fake(vec![chat_route(reply("one"))]).await;
+    let h = start(&srv).await;
+    let (id, at) = chat_with_one_exchange(&h).await;
+    h.cmd(ChatCommand::Branch {
+        session: id,
+        message: at,
+        model: Some("other:7b".into()),
+    });
+    h.wait("opened", |evs| {
+        evs.iter()
+            .any(|e| matches!(e, ChatEvent::Opened(s) if s.id != id && s.model == "other:7b"))
+    })
+    .await;
+    let new_id = h
+        .events()
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            ChatEvent::Opened(s) if s.id != id => Some(s.id),
+            _ => None,
+        })
+        .unwrap();
+    h.wait("saved", |_| h.read(new_id).messages.len() == 2)
+        .await;
+    let b = h.read(new_id);
+    assert_eq!(
+        b.parent.map(|p| (p.session_id, p.message_id)),
+        Some((id, at))
+    );
+    assert_eq!(b.lineage.len(), 1);
+    assert_eq!(h.read(id).messages.len(), 2, "the original is untouched");
+}
+
+#[tokio::test]
+async fn branching_from_an_unfinished_reply_is_refused() {
+    let srv = fake(vec![chat_route(reply("one"))]).await;
+    let h = start(&srv).await;
+    let (id, _) = chat_with_one_exchange(&h).await;
+    let user = h.read(id).messages[0].id;
+    h.cmd(ChatCommand::Branch {
+        session: id,
+        message: user,
+        model: None,
+    });
+    h.wait("refused", |evs| {
+        evs.iter()
+            .any(|e| matches!(e, ChatEvent::SessionError { .. }))
+    })
+    .await;
+    assert!(!h
+        .events()
+        .iter()
+        .any(|e| matches!(e, ChatEvent::Opened(s) if s.id != id)));
+}
+
+async fn branch_and_open(h: &H, id: SessionId, at: MessageId) -> SessionId {
+    h.cmd(ChatCommand::Branch {
+        session: id,
+        message: at,
+        model: None,
+    });
+    h.wait("opened", |evs| {
+        evs.iter()
+            .any(|e| matches!(e, ChatEvent::Opened(s) if s.id != id))
+    })
+    .await;
+    let new_id = h
+        .events()
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            ChatEvent::Opened(s) if s.id != id => Some(s.id),
+            _ => None,
+        })
+        .unwrap();
+    h.wait("saved", |_| h.read(new_id).messages.len() == 2)
+        .await;
+    new_id
+}
+
+fn last_branch_state(h: &H, session: SessionId) -> Option<BranchState> {
+    h.events().iter().rev().find_map(|e| match e {
+        ChatEvent::BranchChecked { session: s, state } if *s == session => Some(*state),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn a_branch_reports_whether_its_original_changed_or_is_gone() {
+    let srv = fake(vec![chat_route(reply("one")), chat_route(reply("two"))]).await;
+    let h = start(&srv).await;
+    let (id, at) = chat_with_one_exchange(&h).await;
+    let b = branch_and_open(&h, id, at).await;
+
+    h.cmd(ChatCommand::CheckBranch(b));
+    h.wait("unchanged", |_| {
+        last_branch_state(&h, b) == Some(BranchState::Unchanged)
+    })
+    .await;
+
+    // Regenerating the branch point's reply changes the original's history.
+    h.cmd(ChatCommand::Regenerate(id));
+    h.wait_ended(2).await;
+    h.wait("saved", |_| h.read(id).forks.len() == 1).await;
+    h.cmd(ChatCommand::CheckBranch(b));
+    h.wait("changed", |_| {
+        last_branch_state(&h, b) == Some(BranchState::Changed)
+    })
+    .await;
+
+    // Switching back makes it match again.
+    let user = h.read(id).messages[0].id;
+    h.cmd(ChatCommand::SwitchVersion {
+        session: id,
+        after: Some(user),
+        to: 0,
+    });
+    h.wait("saved back", |_| h.read(id).messages[1].id == at)
+        .await;
+    h.cmd(ChatCommand::CheckBranch(b));
+    h.wait("unchanged again", |evs| {
+        evs.iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    ChatEvent::BranchChecked {
+                        state: BranchState::Unchanged,
+                        ..
+                    }
+                )
+            })
+            .count()
+            >= 2
+    })
+    .await;
+
+    h.cmd(ChatCommand::Delete(id));
+    h.wait("deleted", |_| {
+        h.cmd(ChatCommand::CheckBranch(b));
+        last_branch_state(&h, b) == Some(BranchState::Deleted)
     })
     .await;
 }

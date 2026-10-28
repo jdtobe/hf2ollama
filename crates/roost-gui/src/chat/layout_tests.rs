@@ -1367,3 +1367,185 @@ fn editing_your_message_sends_the_new_text_as_an_edit() {
     );
     assert!(f.app.state_mut().chat_ui.editing.is_none());
 }
+
+/// A finished chat of one exchange, and a branch of it (opened).
+fn open_a_branch(f: &mut Fixture) -> (Session, Session) {
+    let now = now_ms();
+    let mut parent = Session::new_chat("llama3.2:3b", SessionLifetime::Persisted, now);
+    parent.title = "Lisbon trip".into();
+    parent.push_user("Plan a trip", now);
+    let a = parent.begin_assistant(RunId::new(), TurnId::new(), now);
+    parent.append_assistant(a, "Day 1: Alfama", "");
+    parent.finish_assistant(a, AssistantStatus::Complete, None, now);
+    let mut b = parent.branch(a, None, now).unwrap();
+    b.push_user("Make it about food", now);
+    let st = f.app.state_mut();
+    st.chat
+        .fold(ChatEvent::Rows(vec![row_for(&parent, "Lisbon trip"), {
+            let mut r = row_for(&b, "Lisbon trip (branch)");
+            r.parent = b.parent;
+            r
+        }]));
+    st.chat.fold(ChatEvent::Opened(Box::new(b.clone())));
+    (parent, b)
+}
+
+#[test]
+fn a_branched_chat_shows_where_it_came_from_and_asks_for_a_check_once() {
+    for size in SIZES {
+        let mut f = fixture_with(1);
+        let mut h = Harness::new(false);
+        let (parent, b) = open_a_branch(&mut f);
+        run(&mut f.app, &mut h, size, 4);
+        let cmds = sent_chat_commands(&f.sent);
+        let checks = cmds
+            .iter()
+            .filter(|c| matches!(c, ChatCommand::CheckBranch(id) if *id == b.id))
+            .count();
+        assert_eq!(checks, 1, "{size:?}: {cmds:?}");
+        let texts = texts_of(&mut f.app, &mut h, size);
+        for want in [
+            "Branched from",
+            "Lisbon trip",
+            "Day 1: Alfama",
+            "branch point",
+        ] {
+            assert!(
+                texts.contains(want),
+                "{size:?}: {want:?} missing in:\n{texts}"
+            );
+        }
+        let probe = f.app.state_mut().chat_ui.probe.clone();
+        let pane = probe.pane.unwrap();
+        let (id, link) = probe.strip_links[0];
+        assert_eq!(id, parent.id);
+        assert!(inside(link, pane), "{size:?}");
+        click(&mut f.app, &mut h, size, link.center());
+        let cmds = sent_chat_commands(&f.sent);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, ChatCommand::Open(i) if *i == parent.id)),
+            "{cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn the_strip_says_when_the_original_changed_or_is_gone() {
+    use roost_core::chat::BranchState;
+    let size = (1180.0, 820.0);
+    for (state, want) in [
+        (BranchState::Unchanged, "unchanged"),
+        (
+            BranchState::Changed,
+            "The original changed after this branch was made",
+        ),
+        (BranchState::Deleted, "The original chat was deleted"),
+    ] {
+        let mut f = fixture_with(1);
+        let mut h = Harness::new(false);
+        let (_, b) = open_a_branch(&mut f);
+        f.app.state_mut().chat.fold(ChatEvent::BranchChecked {
+            session: b.id,
+            state,
+        });
+        run(&mut f.app, &mut h, size, 3);
+        let texts = texts_of(&mut f.app, &mut h, size);
+        assert!(texts.contains(want), "{state:?}: {texts}");
+        let view = f.app.state_mut().chat_ui.probe.view_original.is_some();
+        assert_eq!(view, state == BranchState::Changed, "{state:?}");
+    }
+}
+
+#[test]
+fn a_chat_that_is_not_a_branch_has_no_strip() {
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, (1180.0, 820.0), 3);
+    let texts = texts_of(&mut f.app, &mut h, (1180.0, 820.0));
+    assert!(!texts.contains("Branched from"));
+}
+
+#[test]
+fn branches_are_listed_under_their_parent_in_the_sidebar() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    let (parent, b) = open_a_branch(&mut f);
+    run(&mut f.app, &mut h, size, 3);
+    let rows = f.app.state_mut().chat_ui.probe.rows.clone();
+    let rect_of = |id| {
+        rows.iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, r)| *r)
+            .unwrap()
+    };
+    let (p, c) = (rect_of(parent.id), rect_of(b.id));
+    assert!(c.left() > p.left() + 8.0, "indented: {p:?} {c:?}");
+    assert!(c.top() > p.top(), "below its parent");
+}
+
+#[test]
+fn the_branch_icon_offers_two_ways_and_the_second_picks_a_model() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    open_markdown_reply(&mut f, "A short answer.");
+    let (id, reply) = {
+        let s = f.app.state_mut().chat.open.as_ref().unwrap();
+        (s.id, s.messages[1].id)
+    };
+    run(&mut f.app, &mut h, size, 3);
+    let icon = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .branch_icon
+        .expect("Branch icon");
+    click(&mut f.app, &mut h, size, icon.center());
+    let plain = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .branch_plain
+        .expect("plain item");
+    let _ = sent_chat_commands(&f.sent);
+    click(&mut f.app, &mut h, size, plain.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Branch { session, message, model: None }]
+            if *session == id && *message == reply),
+        "{cmds:?}"
+    );
+    // The model picker.
+    click(&mut f.app, &mut h, size, icon.center());
+    let pick = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .branch_pick
+        .expect("pick item");
+    click(&mut f.app, &mut h, size, pick.center());
+    assert!(f.app.state_mut().chat_ui.branch_dialog.is_some());
+    run(&mut f.app, &mut h, size, 2);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("Branch with another model"), "{texts}");
+    let create = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .branch_create
+        .expect("Create");
+    click(&mut f.app, &mut h, size, create.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, ChatCommand::Branch { model: Some(_), .. })),
+        "{cmds:?}"
+    );
+    assert!(f.app.state_mut().chat_ui.branch_dialog.is_none());
+}

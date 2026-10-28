@@ -49,6 +49,16 @@ pub enum ChatCommand {
         message: MessageId,
         text: String,
     },
+    /// Start a new chat from the history through a finished reply, on
+    /// `model` or the same one; the new chat opens.
+    Branch {
+        session: SessionId,
+        message: MessageId,
+        model: Option<String>,
+    },
+    /// Compare a branch's original with what the branch was made from; answered
+    /// with `BranchChecked`.
+    CheckBranch(SessionId),
     /// Show another version of a fork (`after` is the message before it).
     SwitchVersion {
         session: SessionId,
@@ -177,11 +187,26 @@ pub enum ChatEvent {
         session: SessionId,
         model: String,
     },
+    /// How a branch's original compares with when the branch was made.
+    BranchChecked {
+        session: SessionId,
+        state: BranchState,
+    },
     StoreWarning(String),
     SessionError {
         session: Option<SessionId>,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchState {
+    /// The original's history up to the branch point is as it was.
+    Unchanged,
+    /// The original's history up to the branch point is different now.
+    Changed,
+    /// The original chat no longer exists.
+    Deleted,
 }
 
 pub type EventSink = Arc<dyn Fn(ChatEvent) + Send + Sync>;

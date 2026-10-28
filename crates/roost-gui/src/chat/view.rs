@@ -39,6 +39,10 @@ pub struct ChatUi {
     pub new_agent: NewAgent,
     /// What the rail's search field holds.
     pub rail_query: String,
+    /// The "Branch with another model" dialog, while open.
+    pub branch_dialog: Option<BranchDialog>,
+    /// A message to scroll into view once its chat is shown.
+    pub scroll_to: Option<roost_core::session::MessageId>,
     /// Your message being edited, with the text so far.
     pub editing: Option<(roost_core::session::MessageId, String)>,
     /// Parsed Markdown of assistant replies, by message and the text length
@@ -46,6 +50,13 @@ pub struct ChatUi {
     md_cache: std::collections::HashMap<roost_core::session::MessageId, (usize, Vec<Block>)>,
     #[cfg(test)]
     pub probe: ChatProbe,
+}
+
+/// A branch being set up: from which reply, on which model.
+pub struct BranchDialog {
+    pub session: SessionId,
+    pub message: roost_core::session::MessageId,
+    pub model: String,
 }
 
 /// The form for starting an agent: a folder, a model that supports tools.
@@ -74,6 +85,13 @@ pub struct ChatProbe {
     /// The bubble of every message painted this frame.
     pub cards: Vec<egui::Rect>,
     pub edit_icon: Option<egui::Rect>,
+    pub branch_icon: Option<egui::Rect>,
+    pub branch_plain: Option<egui::Rect>,
+    pub branch_pick: Option<egui::Rect>,
+    pub branch_create: Option<egui::Rect>,
+    /// Links in a branch's strip: the chat each opens, and where.
+    pub strip_links: Vec<(SessionId, egui::Rect)>,
+    pub view_original: Option<egui::Rect>,
     pub edit_send: Option<egui::Rect>,
     pub version_counter: Option<egui::Rect>,
     pub version_prev: Option<egui::Rect>,
@@ -230,6 +248,7 @@ fn show_mode(
             }
             pane(ui, app, out, &t, open.as_ref(), &installed, now, mode);
         });
+    branch_dialog(ui, &t, app, out, &installed);
     app.chat.open = open.or(other);
 }
 
@@ -395,6 +414,21 @@ fn rail_list(
                     if rail_row(ui, t, row, selected == Some(row.id), app, out, now) {
                         open_id = Some(row.id);
                     }
+                    for kid in &row.children {
+                        // A branch hangs under its parent, indented.
+                        let hit = egui::Frame::new()
+                            .inner_margin(Margin {
+                                left: 16,
+                                ..Margin::ZERO
+                            })
+                            .show(ui, |ui| {
+                                rail_row(ui, t, kid, selected == Some(kid.id), app, out, now)
+                            })
+                            .inner;
+                        if hit {
+                            open_id = Some(kid.id);
+                        }
+                    }
                 }
             }
             if !rail.incognito.is_empty() {
@@ -439,35 +473,42 @@ fn rail_list(
             }
         });
     if let Some(id) = open_id {
-        // Leaving a saved session lets the manager unload it (a running one
-        // finishes first). Incognito sessions must never be closed here: that
-        // would destroy them.
-        let leaving = app
-            .chat
-            .open
-            .as_ref()
-            .filter(|s| s.id != id && s.lifetime == SessionLifetime::Persisted)
-            .map(|s| s.id);
-        if let Some(prev) = leaving {
-            out.push(BackendRequest::Chat(ChatCommand::Close(prev)));
-        }
-        let bad_row = app
-            .chat
-            .rows()
-            .iter()
-            .find(|r| r.id == id)
-            .is_some_and(|r| r.status != RowStatus::Ok);
-        app.chat_ui.renaming = None;
-        app.chat_ui.new_agent.open = false;
-        app.chat_ui.focus_composer = !bad_row;
-        if bad_row {
-            app.chat_ui.inspect = Some(id);
-            app.chat.open = None;
-        } else {
-            app.chat_ui.inspect = None;
-            if app.chat.open.as_ref().map(|s| s.id) != Some(id) {
-                out.push(BackendRequest::Chat(ChatCommand::Open(id)));
-            }
+        let current = app.chat.open.as_ref().map(|s| (s.id, s.lifetime));
+        open_chat(app, out, id, current);
+    }
+}
+
+/// Shows a saved chat: closes the one being left (so the manager can unload
+/// it), and asks for the new one. `current` is the chat on screen.
+fn open_chat(
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    id: SessionId,
+    current: Option<(SessionId, SessionLifetime)>,
+) {
+    // Incognito sessions must never be closed here: that would destroy them.
+    let leaving = current
+        .filter(|(cur, life)| *cur != id && *life == SessionLifetime::Persisted)
+        .map(|(cur, _)| cur);
+    if let Some(prev) = leaving {
+        out.push(BackendRequest::Chat(ChatCommand::Close(prev)));
+    }
+    let bad_row = app
+        .chat
+        .rows()
+        .iter()
+        .find(|r| r.id == id)
+        .is_some_and(|r| r.status != RowStatus::Ok);
+    app.chat_ui.renaming = None;
+    app.chat_ui.new_agent.open = false;
+    app.chat_ui.focus_composer = !bad_row;
+    if bad_row {
+        app.chat_ui.inspect = Some(id);
+        app.chat.open = None;
+    } else {
+        app.chat_ui.inspect = None;
+        if current.map(|(cur, _)| cur) != Some(id) {
+            out.push(BackendRequest::Chat(ChatCommand::Open(id)));
         }
     }
 }
@@ -700,6 +741,9 @@ fn pane(
             .color(t.fg3),
         );
     }
+    // Pinned above the transcript, so a change to the original is never
+    // scrolled out of sight.
+    branch_strip(ui, t, app, out, s);
     let badge = app.chat.badge(s.id);
     let model = row_model(app, s);
     egui::ScrollArea::vertical()
@@ -731,6 +775,13 @@ fn pane(
                 app.chat_ui.probe.cards.push(card);
                 if !editing_this {
                     message_actions(ui, t, app, out, s, (i, m), &model, i == last, card);
+                }
+                if app.chat_ui.scroll_to == Some(m.id) {
+                    ui.scroll_to_rect(card, Some(Align::Center));
+                    app.chat_ui.scroll_to = None;
+                }
+                if s.parent.is_some_and(|p| p.message_id == m.id) {
+                    branch_divider(ui, t, s);
                 }
                 if i == last && s.mode == SessionMode::Chat {
                     retry_row(ui, app, out, s, m);
@@ -1136,7 +1187,9 @@ fn message_actions(
         return;
     }
     let details_id = egui::Id::unique("details").with(m.id);
-    let popup_open = egui::Popup::is_id_open(ui.ctx(), details_id.with("popup"));
+    let branch_popup = egui::Id::unique("branch").with(m.id).with("popup");
+    let popup_open = egui::Popup::is_id_open(ui.ctx(), details_id.with("popup"))
+        || egui::Popup::is_id_open(ui.ctx(), branch_popup);
     if !(is_latest || popup_open || ui.rect_contains_pointer(card.union(row))) {
         return;
     }
@@ -1202,6 +1255,42 @@ fn message_actions(
         }
     }
     if complete {
+        let branch_id = egui::Id::unique("branch").with(m.id);
+        let r = action_icon(ui, t, next(), branch_id, Icon::Branch, "Branch from here");
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.branch_icon = Some(r.rect);
+        }
+        let mut pick = false;
+        let mut plain = false;
+        egui::Popup::menu(&r).show(|ui| {
+            let a = ui.button("Branch into a new chat");
+            let b = ui.button("Branch with another model…");
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.branch_plain = Some(a.rect);
+                app.chat_ui.probe.branch_pick = Some(b.rect);
+            }
+            plain = a.clicked();
+            pick = b.clicked();
+            if plain || pick {
+                ui.close();
+            }
+        });
+        if plain {
+            out.push(BackendRequest::Chat(ChatCommand::Branch {
+                session: s.id,
+                message: m.id,
+                model: None,
+            }));
+        }
+        if pick {
+            app.chat_ui.branch_dialog = Some(BranchDialog {
+                session: s.id,
+                message: m.id,
+                model: s.model.clone(),
+            });
+        }
         let r = action_icon(ui, t, next(), details_id, Icon::Details, "Details");
         #[cfg(test)]
         {
@@ -1210,6 +1299,214 @@ fn message_actions(
         egui::Popup::from_toggle_button_response(&r)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| details_card(ui, t, model, stats));
+    }
+}
+
+/// Where a branched chat came from, at the top of the transcript.
+fn branch_strip(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+) {
+    let (Some(origin), false) = (s.parent, s.lineage.is_empty()) else {
+        return;
+    };
+    if app.chat.branch_check_due(s.id) {
+        out.push(BackendRequest::Chat(ChatCommand::CheckBranch(s.id)));
+    }
+    let state = app.chat.branch_view(s.id);
+    let gone = state == Some(roost_core::chat::BranchState::Deleted);
+    let changed = state == Some(roost_core::chat::BranchState::Changed);
+    let snippet = s
+        .messages
+        .iter()
+        .find(|m| m.id == origin.message_id)
+        .and_then(|m| match &m.content {
+            MessageContent::Assistant { text, .. } => Some(truncate_chars(
+                &text.split_whitespace().collect::<Vec<_>>().join(" "),
+                30,
+            )),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let (stroke, fill) = if changed {
+        (t.warn, t.warn_soft)
+    } else {
+        (t.line, t.surface)
+    };
+    let mut open: Option<(SessionId, roost_core::session::MessageId)> = None;
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, stroke))
+        .corner_radius(8.0)
+        .inner_margin(Margin::symmetric(12, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new("↳ Branched from").size(12.5).color(t.fg2));
+                let chain = &s.lineage;
+                let first_shown = chain.len().saturating_sub(3);
+                if first_shown > 0 {
+                    let all: Vec<&str> = chain.iter().map(|a| a.title.as_str()).collect();
+                    ui.label(RichText::new("…").color(t.fg3))
+                        .on_hover_text(all.join(" › "));
+                    ui.label(RichText::new("›").color(t.fg3));
+                }
+                for (i, a) in chain.iter().enumerate().skip(first_shown) {
+                    if i > first_shown {
+                        ui.label(RichText::new("›").color(t.fg3));
+                    }
+                    let last = i + 1 == chain.len();
+                    if last && gone {
+                        ui.label(RichText::new(&a.title).size(12.5).color(t.fg2));
+                        continue;
+                    }
+                    let link = ui
+                        .add(egui::Link::new(
+                            RichText::new(&a.title).size(12.5).color(t.accent),
+                        ))
+                        .on_hover_text("Open this chat");
+                    #[cfg(test)]
+                    app.chat_ui
+                        .probe
+                        .strip_links
+                        .push((a.session_id, link.rect));
+                    if link.clicked() {
+                        open = Some((a.session_id, a.message_id));
+                    }
+                }
+                if !snippet.is_empty() {
+                    ui.label(RichText::new("at").size(12.5).color(t.fg3));
+                    ui.label(
+                        RichText::new(format!("“{snippet}”"))
+                            .size(12.5)
+                            .color(t.fg2),
+                    );
+                }
+                match state {
+                    Some(roost_core::chat::BranchState::Unchanged) => {
+                        tag(ui, "unchanged", t.ok, t.accent_soft);
+                    }
+                    Some(roost_core::chat::BranchState::Changed) => {
+                        ui.label(
+                            RichText::new("The original changed after this branch was made")
+                                .size(12.5)
+                                .color(t.warn),
+                        );
+                        let r = secondary(ui, "View original", true);
+                        #[cfg(test)]
+                        {
+                            app.chat_ui.probe.view_original = Some(r.rect);
+                        }
+                        if r.clicked() {
+                            open = Some((origin.session_id, origin.message_id));
+                        }
+                    }
+                    Some(roost_core::chat::BranchState::Deleted) => {
+                        ui.label(
+                            RichText::new("The original chat was deleted")
+                                .size(12.5)
+                                .color(t.fg3),
+                        );
+                    }
+                    None => {}
+                }
+            });
+        });
+    ui.add_space(10.0);
+    if let Some((id, message)) = open {
+        app.chat_ui.scroll_to = Some(message);
+        open_chat(app, out, id, Some((s.id, s.lifetime)));
+    }
+}
+
+/// Marks where the history copied from the original ends.
+fn branch_divider(ui: &mut egui::Ui, t: &Tokens, s: &Session) {
+    let title = s
+        .lineage
+        .last()
+        .map_or("the original", |a| a.title.as_str());
+    ui.add_space(4.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            RichText::new(format!(
+                "branch point · history above is copied from “{title}”"
+            ))
+            .font(mono(11.5))
+            .color(t.fg3),
+        );
+    });
+    ui.add_space(8.0);
+}
+
+/// The "Branch with another model" window.
+fn branch_dialog(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    installed: &[String],
+) {
+    let Some(dialog) = app.chat_ui.branch_dialog.as_mut() else {
+        return;
+    };
+    let mut create = false;
+    let mut cancel = false;
+    let mut open = true;
+    egui::Window::new("Branch with another model")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .show(ui.ctx(), |ui| {
+            ui.set_max_width(380.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "The new chat starts with everything up to this reply, then continues with:",
+                    )
+                    .color(t.fg2),
+                )
+                .wrap(),
+            );
+            ui.add_space(6.0);
+            egui::ComboBox::from_id_salt("branch_model")
+                .selected_text(dialog.model.clone())
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    let mut names: Vec<&str> = installed.iter().map(String::as_str).collect();
+                    if !names.contains(&dialog.model.as_str()) {
+                        names.insert(0, dialog.model.as_str());
+                    }
+                    let names: Vec<String> = names.into_iter().map(str::to_string).collect();
+                    for name in names {
+                        ui.selectable_value(&mut dialog.model, name.clone(), name);
+                    }
+                });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let r = primary_button(ui, "Create branch", true);
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.branch_create = Some(r.rect);
+                }
+                create = r.clicked();
+                cancel = secondary(ui, "Cancel", true).clicked();
+            });
+        });
+    if create {
+        if let Some(d) = app.chat_ui.branch_dialog.take() {
+            out.push(BackendRequest::Chat(ChatCommand::Branch {
+                session: d.session,
+                message: d.message,
+                model: Some(d.model),
+            }));
+        }
+    } else if cancel || !open {
+        app.chat_ui.branch_dialog = None;
     }
 }
 

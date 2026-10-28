@@ -6,7 +6,9 @@
 use super::agent_loop::{AgentRun, ToolRun};
 use super::context::{build_request, window};
 use super::run::{drive, RunMsg};
-use super::types::{ChatCommand, ChatEvent, EventSink, RunOutcome, SendRejection, TurnOutcome};
+use super::types::{
+    BranchState, ChatCommand, ChatEvent, EventSink, RunOutcome, SendRejection, TurnOutcome,
+};
 use crate::error::Error;
 use crate::ollama::{ChatRequestBody, OllamaClient, StreamEvent};
 use crate::session::{
@@ -318,6 +320,12 @@ impl Manager {
                 message,
                 text,
             } => self.begin(session, Intent::Edit(message, text)).await,
+            ChatCommand::Branch {
+                session,
+                message,
+                model,
+            } => self.branch(session, message, model).await,
+            ChatCommand::CheckBranch(id) => self.check_branch(id).await,
             ChatCommand::SwitchVersion { session, after, to } => {
                 self.switch_version(session, after, to).await
             }
@@ -446,6 +454,62 @@ impl Manager {
             }
         }
         self.emit_rows().await;
+    }
+
+    /// Starts a new chat from `session`'s history through `message`.
+    async fn branch(&mut self, id: SessionId, message: MessageId, model: Option<String>) {
+        let was_loaded = self.sessions.contains_key(&id);
+        if let Err(e) = self.ensure(id).await {
+            self.session_error(Some(id), load_error_text(&e));
+            return;
+        }
+        let result = self
+            .sessions
+            .get(&id)
+            .map(|l| l.s.branch(message, model.as_deref(), now_ms()));
+        if !was_loaded
+            && self
+                .sessions
+                .get(&id)
+                .is_some_and(|l| matches!(l.slot, Slot::Idle))
+        {
+            self.sessions.remove(&id);
+        }
+        match result {
+            Some(Ok(b)) => {
+                self.save(&b);
+                self.emit(ChatEvent::Opened(Box::new(b.clone())));
+                self.sessions.insert(b.id, Live::new(b));
+                self.emit_rows().await;
+            }
+            Some(Err(e)) => self.session_error(Some(id), e.to_string()),
+            None => {}
+        }
+    }
+
+    /// Compares a branch's original with the fingerprint taken when the
+    /// branch was made.
+    async fn check_branch(&mut self, id: SessionId) {
+        let Some((origin, wanted)) = self
+            .sessions
+            .get(&id)
+            .and_then(|l| l.s.parent.zip(l.s.origin_hash))
+        else {
+            return;
+        };
+        let current = match self.sessions.get(&origin.session_id) {
+            Some(l) => Some(l.s.prefix_hash(origin.message_id)),
+            None => match self.writer.load(origin.session_id).await {
+                Ok(s) => Some(s.prefix_hash(origin.message_id)),
+                Err(_) => None,
+            },
+        };
+        let state = match current {
+            None => BranchState::Deleted,
+            Some(h) if h == Some(wanted) => BranchState::Unchanged,
+            Some(_) => BranchState::Changed,
+        };
+        self.emit(ChatEvent::BranchChecked { session: id, state });
     }
 
     /// Shows another version of a fork. Only while the chat is idle.

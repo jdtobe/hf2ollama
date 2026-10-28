@@ -9,6 +9,7 @@ pub enum Icon {
     Regenerate,
     Details,
     Edit,
+    Branch,
     Prev,
     Next,
 }
@@ -63,6 +64,22 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                     p(2.5, 13.5),
                     p(3.0, 10.0),
                     p(10.5, 2.5),
+                ],
+                stroke,
+            ));
+        }
+        Icon::Branch => {
+            painter.circle_stroke(p(4.5, 3.5), 1.5, stroke);
+            painter.circle_stroke(p(4.5, 12.5), 1.5, stroke);
+            painter.circle_stroke(p(11.5, 5.5), 1.5, stroke);
+            painter.line_segment([p(4.5, 5.0), p(4.5, 11.0)], stroke);
+            painter.add(egui::Shape::line(
+                vec![
+                    p(11.5, 7.0),
+                    p(11.3, 8.6),
+                    p(10.2, 9.6),
+                    p(8.0, 10.2),
+                    p(4.5, 11.0),
                 ],
                 stroke,
             ));
