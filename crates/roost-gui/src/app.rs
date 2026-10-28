@@ -27,6 +27,7 @@ pub enum View {
 }
 
 impl View {
+    #[cfg(test)]
     pub(crate) const ALL: [View; 5] = [
         View::Chat,
         View::Work,
@@ -34,16 +35,6 @@ impl View {
         View::Installed,
         View::Settings,
     ];
-
-    fn label(self) -> &'static str {
-        match self {
-            View::Chat => "Chat",
-            View::Work => "Work",
-            View::Browse => "Browse",
-            View::Installed => "Installed",
-            View::Settings => "Settings",
-        }
-    }
 }
 
 pub struct AppState {
@@ -70,6 +61,8 @@ pub struct AppState {
     pub running: Vec<roost_core::ollama::RunningModel>,
     /// The About window is open.
     pub show_about: bool,
+    /// Which of Browse and Installed the Models tab opens to.
+    pub models_view: View,
     /// Which platform's menus to build (the real one, except in tests).
     pub platform: crate::menu::Platform,
     pub chat: crate::chat::ChatState,
@@ -136,6 +129,7 @@ impl AppState {
             jobs: JobsState::new(),
             running: Vec::new(),
             show_about: false,
+            models_view: View::Browse,
             // Tests lay out the content alone; the bar is tested on its own.
             platform: if cfg!(test) {
                 crate::menu::Platform::Mac
@@ -161,6 +155,9 @@ impl AppState {
 
     pub fn select(&mut self, view: View) {
         self.view = view;
+        if matches!(view, View::Browse | View::Installed) {
+            self.models_view = view;
+        }
         if view == View::Settings {
             self.settings_view.state.on_opened();
         }
@@ -460,6 +457,62 @@ pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui:
         .stroke(Stroke::new(1.0, line))
 }
 
+/// Width of the settings gear in the top bar.
+const GEAR_W: f32 = 28.0;
+
+/// The settings gear: a small hand-painted button, highlighted on Settings.
+fn settings_gear(ui: &mut egui::Ui, on: bool) -> (egui::Response, egui::Rect) {
+    let t = tokens(ui);
+    let (rect, resp) = ui.allocate_exact_size(vec2(GEAR_W, GEAR_W), Sense::click());
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Settings");
+    let fill = if on {
+        t.accent_soft
+    } else if resp.hovered() {
+        t.surface2
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, 7.0, fill);
+    let color = if on { t.accent } else { t.fg2 };
+    let c = rect.center();
+    p.circle_stroke(c, 5.0, Stroke::new(1.5, color));
+    for k in 0..8 {
+        let angle = k as f32 * std::f32::consts::FRAC_PI_4;
+        let d = vec2(angle.cos(), angle.sin());
+        p.line_segment([c + d * 7.0, c + d * 9.5], Stroke::new(2.0, color));
+    }
+    (resp, rect)
+}
+
+impl App {
+    /// A segmented nav placed in the middle of the top row (a frame sits at
+    /// the top of its row, so it is placed explicitly).
+    fn place_nav(
+        &self,
+        ui: &mut egui::Ui,
+        labels: &[&str],
+        badges: &[Option<String>],
+        current: usize,
+    ) -> (Option<usize>, egui::Rect) {
+        let left = ui.cursor().min.x;
+        let area = egui::Rect::from_min_size(
+            egui::pos2(left, ui.max_rect().min.y + (TOP_ROW_H - NAV_H) / 2.0),
+            vec2(ui.available_width(), NAV_H),
+        );
+        let mut nav_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(area)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        let (picked, rect) = segmented_nav_rect(&mut nav_ui, labels, badges, current);
+        ui.advance_cursor_after_rect(rect);
+        (picked, rect)
+    }
+}
+
 impl eframe::App for App {
     /// Lets chat runs write their partial replies before the process ends.
     fn on_exit(&mut self) {
@@ -641,53 +694,48 @@ impl App {
                     }
                     ui.add_space(8.0);
 
-                    let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
-                    let badges: Vec<Option<String>> = View::ALL
-                        .iter()
-                        .map(|v| match v {
-                            View::Installed => (self.state.installed.status == ListStatus::Loaded)
-                                .then(|| self.state.installed.rows().len().to_string()),
-                            View::Chat => {
-                                let n = self.state.chat.active_runs_for(SessionMode::Chat);
-                                (n > 0).then(|| n.to_string())
-                            }
-                            View::Work => {
-                                let n = self.state.chat.active_runs_for(SessionMode::Agent);
-                                (n > 0).then(|| n.to_string())
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    let current = View::ALL
-                        .iter()
-                        .position(|v| *v == self.state.view)
-                        .unwrap_or(0);
-                    // A frame ignores the row's centring and sits at its top, so place it
-                    // explicitly in the middle.
-                    let left = ui.cursor().min.x;
-                    let nav_area = egui::Rect::from_min_size(
-                        egui::pos2(left, ui.max_rect().min.y + (TOP_ROW_H - NAV_H) / 2.0),
-                        vec2(ui.available_width(), NAV_H),
-                    );
-                    let mut nav_ui = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(nav_area)
-                            .layout(egui::Layout::top_down(egui::Align::Min)),
-                    );
-                    let (picked, _nav_rect) =
-                        segmented_nav_rect(&mut nav_ui, &labels, &badges, current);
-                    ui.advance_cursor_after_rect(_nav_rect);
+                    // Chat, Work and Models; Browse and Installed live inside Models.
+                    let labels = ["Chat", "Work", "Models"];
+                    let chat_runs = self.state.chat.active_runs_for(SessionMode::Chat);
+                    let work_runs = self.state.chat.active_runs_for(SessionMode::Agent);
+                    let badges: Vec<Option<String>> = vec![
+                        (chat_runs > 0).then(|| chat_runs.to_string()),
+                        (work_runs > 0).then(|| work_runs.to_string()),
+                        None,
+                    ];
+                    let current = match self.state.view {
+                        View::Chat => 0,
+                        View::Work => 1,
+                        View::Browse | View::Installed => 2,
+                        // Settings is the gear, not a tab.
+                        View::Settings => usize::MAX,
+                    };
+                    let (picked, _nav_rect) = self.place_nav(ui, &labels, &badges, current);
                     #[cfg(test)]
                     self.state.top_bar.push(("nav", _nav_rect));
                     if let Some(i) = picked {
-                        self.state.select(View::ALL[i]);
+                        let view = [View::Chat, View::Work, self.state.models_view][i];
+                        self.state.select(view);
+                    }
+                    if matches!(self.state.view, View::Browse | View::Installed) {
+                        ui.add_space(6.0);
+                        let installed = (self.state.installed.status == ListStatus::Loaded)
+                            .then(|| self.state.installed.rows().len().to_string());
+                        let sub = ["Browse", "Installed"];
+                        let on = usize::from(self.state.view == View::Installed);
+                        let (picked, _sub_rect) = self.place_nav(ui, &sub, &[None, installed], on);
+                        #[cfg(test)]
+                        self.state.top_bar.push(("subnav", _sub_rect));
+                        if let Some(i) = picked {
+                            self.state.select([View::Browse, View::Installed][i]);
+                        }
                     }
 
                     if self.state.view == View::Browse {
                         ui.add_space(8.0);
                         // Whatever is left after the pill and a gap; hidden
                         // rather than overlapping when there is no room.
-                        let room = ui.available_width() - pill_w - SEARCH_PILL_GAP - 8.0;
+                        let room = ui.available_width() - pill_w - GEAR_W - SEARCH_PILL_GAP - 16.0;
                         let field_w = room.min(360.0);
                         if field_w >= SEARCH_MIN_W {
                             let has_text = !self.state.query.is_empty();
@@ -751,6 +799,13 @@ impl App {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let on = self.state.view == View::Settings;
+                        let (gear, _gear_rect) = settings_gear(ui, on);
+                        #[cfg(test)]
+                        self.state.top_bar.push(("gear", _gear_rect));
+                        if gear.clicked() {
+                            self.state.select(View::Settings);
+                        }
                         // Hand-painted at an exact size so no layout can stretch it.
                         let (rect, _) =
                             ui.allocate_exact_size(pill_size(galley.size().x), Sense::hover());
@@ -954,7 +1009,7 @@ mod tests {
             );
             assert!((rect.height() - want.y).abs() < 1.5, "dark={dark} height");
             assert!(
-                (rect.right() - (screen_right - 16.0)).abs() < 2.0,
+                (rect.right() - (screen_right - 16.0 - GEAR_W - 8.0)).abs() < 2.0,
                 "dark={dark} right edge {}",
                 rect.right()
             );
@@ -1882,7 +1937,121 @@ mod tests {
                 h.frame(vec2(900.0, 640.0), vec![], |ui| app.show(ui));
             }
             let texts = h.frame_texts(vec2(900.0, 640.0), vec![], |ui| app.show(ui));
-            assert_eq!(texts.iter().any(|t| t == "Models"), bar, "{platform:?}");
+            assert_eq!(texts.iter().any(|t| t == "Help"), bar, "{platform:?}");
         }
+    }
+
+    fn nav_app(view: View) -> (App, crate::browse::test_util::Harness) {
+        let mut app = menu_app(crate::menu::Platform::Mac);
+        app.state.view = view;
+        app.state.ollama = Some(Some("0.9".into()));
+        let mut h = crate::browse::test_util::Harness::new(false);
+        for _ in 0..4 {
+            h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
+        }
+        (app, h)
+    }
+
+    fn click_at(app: &mut App, h: &mut crate::browse::test_util::Harness, at: egui::Pos2) {
+        let size = vec2(1180.0, 820.0);
+        h.frame(size, vec![egui::Event::PointerMoved(at)], |ui| app.show(ui));
+        for pressed in [true, false] {
+            h.frame(
+                size,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+                |ui| app.show(ui),
+            );
+        }
+        for _ in 0..2 {
+            h.frame(size, vec![], |ui| app.show(ui));
+        }
+    }
+
+    fn top_item(app: &App, name: &str) -> Option<egui::Rect> {
+        app.state
+            .top_bar
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, r)| *r)
+    }
+
+    #[test]
+    fn browse_and_installed_live_under_one_models_tab_with_a_sub_nav() {
+        let (app, _h) = nav_app(View::Browse);
+        assert!(top_item(&app, "subnav").is_some(), "sub-nav inside Models");
+        let (app, _h) = nav_app(View::Installed);
+        assert!(top_item(&app, "subnav").is_some());
+        for v in [View::Chat, View::Work, View::Settings] {
+            let (app, _h) = nav_app(v);
+            assert!(top_item(&app, "subnav").is_none(), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn the_models_tab_remembers_whether_you_were_in_browse_or_installed() {
+        let mut s = AppState::new();
+        assert_eq!(s.models_view, View::Browse);
+        s.select(View::Installed);
+        s.select(View::Chat);
+        assert_eq!(s.models_view, View::Installed);
+        s.select(View::Settings);
+        assert_eq!(
+            s.models_view,
+            View::Installed,
+            "Settings does not change it"
+        );
+        s.select(View::Browse);
+        assert_eq!(s.models_view, View::Browse);
+    }
+
+    #[test]
+    fn clicking_the_models_tab_opens_the_last_models_view() {
+        let (mut app, mut h) = nav_app(View::Chat);
+        app.state.models_view = View::Installed;
+        h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
+        let nav = top_item(&app, "nav").unwrap();
+        // The third of three tabs is Models.
+        click_at(
+            &mut app,
+            &mut h,
+            egui::pos2(nav.right() - 30.0, nav.center().y),
+        );
+        assert_eq!(app.state.view, View::Installed);
+        click_at(
+            &mut app,
+            &mut h,
+            egui::pos2(nav.left() + 20.0, nav.center().y),
+        );
+        assert_eq!(app.state.view, View::Chat);
+    }
+
+    #[test]
+    fn the_gear_opens_settings_and_sits_at_the_far_right_of_the_top_bar() {
+        let (mut app, mut h) = nav_app(View::Chat);
+        let gear = top_item(&app, "gear").expect("gear painted");
+        let pill = app.state.pill_rect.unwrap();
+        assert!(
+            gear.left() >= pill.right(),
+            "gear {gear:?} right of pill {pill:?}"
+        );
+        assert!(gear.right() <= 1180.0 - 15.0);
+        click_at(&mut app, &mut h, gear.center());
+        assert_eq!(app.state.view, View::Settings);
+    }
+
+    #[test]
+    fn settings_is_not_a_tab() {
+        let (mut app, mut h) = nav_app(View::Settings);
+        let texts = h.frame_texts(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
+        for tab in ["Chat", "Work", "Models"] {
+            assert!(texts.iter().any(|t| t == tab), "{tab}");
+        }
+        let nav = top_item(&app, "nav").unwrap();
+        assert!(nav.width() < 260.0, "three short tabs, not five: {nav:?}");
     }
 }
