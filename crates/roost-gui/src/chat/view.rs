@@ -595,6 +595,9 @@ fn header(
 ) {
     let row = app.chat.rows().iter().find(|r| r.id == s.id).cloned();
     let title = row.as_ref().map_or(s.title.clone(), |r| r.title.clone());
+    let shown_title = row
+        .as_ref()
+        .map_or(s.title.clone(), super::state::display_title);
     let pinned = row.as_ref().is_some_and(|r| r.pinned);
     let model = row.as_ref().map_or(s.model.clone(), |r| r.model.clone());
     let running = app.chat.is_running(s.id);
@@ -676,7 +679,7 @@ fn header(
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.add(
                             egui::Label::new(
-                                RichText::new(&title).font(semibold(16.0)).color(t.fg),
+                                RichText::new(&shown_title).font(semibold(16.0)).color(t.fg),
                             )
                             .truncate(),
                         );

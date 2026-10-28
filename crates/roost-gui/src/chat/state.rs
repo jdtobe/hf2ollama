@@ -58,6 +58,15 @@ pub enum SendAttempt {
     Empty,
 }
 
+/// What the rail shows for a chat: its title, or until it has one the start
+/// of its first message.
+pub fn display_title(row: &IndexRow) -> String {
+    match row.preview.as_deref() {
+        Some(p) if row.title == roost_core::session::UNTITLED && !p.is_empty() => p.to_string(),
+        _ => row.title.clone(),
+    }
+}
+
 /// The label a partial or failed reply carries, if it needs one.
 pub fn status_label(status: AssistantStatus) -> Option<&'static str> {
     match status {
@@ -333,7 +342,7 @@ impl ChatState {
         for r in sorted {
             let row = RailRow {
                 id: r.id,
-                title: r.title.clone(),
+                title: display_title(r),
                 model: r.model.clone(),
                 pinned: r.pinned,
                 badge: self.badge(r.id),
@@ -408,6 +417,7 @@ mod tests {
             status: RowStatus::Ok,
             file_mtime_ms: 0,
             file_len: 0,
+            preview: Some(String::new()),
         }
     }
 
@@ -714,5 +724,43 @@ mod tests {
         assert_eq!(st.warnings.last().unwrap(), "w19");
         st.dismiss_warnings();
         assert!(st.warnings.is_empty());
+    }
+
+    #[test]
+    fn an_untitled_chat_shows_the_start_of_its_first_message() {
+        let mut st = ChatState::default();
+        let mut r = row("Untitled", NOW);
+        r.preview = Some("How do I make sourdough?".into());
+        let mut empty = row("Untitled", NOW - 1000);
+        empty.preview = Some(String::new());
+        let mut named = row("Bread notes", NOW - 2000);
+        named.preview = Some("ignored preview".into());
+        let mut unknown = row("Untitled", NOW - 3000);
+        unknown.preview = None;
+        st.fold(ChatEvent::Rows(vec![r, empty, named, unknown]));
+        let titles: Vec<String> = st
+            .rail(NOW, utc_day)
+            .today
+            .iter()
+            .map(|r| r.title.clone())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "How do I make sourdough?",
+                "Untitled",
+                "Bread notes",
+                "Untitled"
+            ]
+        );
+    }
+
+    #[test]
+    fn display_title_prefers_a_real_title() {
+        let mut r = row("Untitled", NOW);
+        r.preview = Some("hello".into());
+        assert_eq!(display_title(&r), "hello");
+        r.title = "Mine".into();
+        assert_eq!(display_title(&r), "Mine");
     }
 }
