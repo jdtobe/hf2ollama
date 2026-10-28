@@ -998,3 +998,49 @@ async fn a_full_incognito_conversation_leaves_the_data_dir_byte_identical() {
         assert!(!String::from_utf8_lossy(bytes).contains("secret"), "{name}");
     }
 }
+
+#[tokio::test]
+async fn opening_a_running_session_flushes_pending_text_before_the_snapshot() {
+    let (_keep, hold) = oneshot::channel::<()>();
+    let srv = fake(vec![chat_route(vec![
+        Step::Write(line("a")),
+        Step::Write(line("b")),
+        Step::WaitFor(hold),
+    ])])
+    .await;
+    // A long batching window keeps the text pending when Open arrives.
+    let h = start_in(TempDir::new().unwrap(), client(&srv), |cfg| {
+        cfg.coalesce = Duration::from_secs(30)
+    })
+    .await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait("both chunks arrived", |_| {
+        srv.requests().iter().any(|(p, _)| p == "/api/chat")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    h.cmd(ChatCommand::Open(id));
+    h.wait("reopened", |e| opened(e).len() == 2).await;
+    let events = h.events();
+    let at = events
+        .iter()
+        .rposition(|e| matches!(e, ChatEvent::Opened(_)))
+        .unwrap();
+    let ChatEvent::Opened(snapshot) = &events[at] else {
+        unreachable!()
+    };
+    let snap_text = texts(snapshot).last().unwrap().1.clone();
+    assert_eq!(snap_text, "ab");
+    let flushed_before: String = events[..at]
+        .iter()
+        .filter_map(|e| match e {
+            ChatEvent::Delta { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        flushed_before, "ab",
+        "pending text must be sent before the snapshot"
+    );
+}

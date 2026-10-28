@@ -320,9 +320,33 @@ impl Manager {
             self.emit_rows().await;
             return;
         }
+        let mut pending = None;
+        let mut snapshot = None;
         if let Some(l) = self.sessions.get_mut(&id) {
             l.close_when_idle = false;
-            let s = l.s.clone();
+            // Text still waiting to be batched is already in the snapshot, so
+            // send it first; otherwise the viewer would append it twice.
+            if let Slot::Running(r) = &mut l.slot {
+                if !r.content.is_empty() || !r.thinking.is_empty() {
+                    pending = Some((
+                        r.turn,
+                        std::mem::take(&mut r.content),
+                        std::mem::take(&mut r.thinking),
+                    ));
+                }
+                r.pending_since = None;
+            }
+            snapshot = Some(l.s.clone());
+        }
+        if let Some((turn, content, thinking)) = pending {
+            self.emit(ChatEvent::Delta {
+                session: id,
+                turn,
+                content,
+                thinking,
+            });
+        }
+        if let Some(s) = snapshot {
             self.emit(ChatEvent::Opened(Box::new(s)));
         }
     }
