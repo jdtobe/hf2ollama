@@ -37,7 +37,7 @@ Location: `Paths::sessions_dir`. In portable mode that is `sessions/` beside the
 - `index-v1.json`: metadata only. One row per session: id, title, mode, lifetime, pinned, model, parent link, created and last-activity time, a run-state summary, and a load status (ok, quarantined, newer-schema, unreadable).
 - `<session-id>.json`: one `SessionDocument` (schema version 1, already defined in `session.rs`).
 - Every write uses `persistence::atomic_write`. Saving a message rewrites that session's file, then the index, and only when the row's metadata actually changed. It never touches other session files.
-- **The index is derived data.** On startup the store reconciles it with the directory: a session file missing from the index is added; a row with no file is dropped; a row whose `updated_at` or file mtime differs from the file is refreshed. A missing, unreadable or unsupported-version index is rebuilt by the same scan. Rebuilds report a recoverable warning. This also covers a crash between the session write and the index write.
+- **The index is derived data.** On startup the store reconciles it with the directory: a session file missing from the index is added; a row with no file is dropped; a row whose recorded file mtime and size differ from the file is refreshed. **File mtime and size are the staleness signal**; `updated_at` is only for rail ordering, because rename and pin deliberately leave it alone. A missing, unreadable or unsupported-version index is rebuilt by the same scan. Rebuilds report a recoverable warning. This also covers a crash between the session write and the index write.
 - **Load failures are classified, not all quarantined:**
   - Parse or validation failure (`SessionDocument` / `into_current`): rename to `<session-id>.json.corrupt-<unix-ms>` and list as an errored row offering Delete. The scan also lists existing `*.corrupt-*` files, so errored rows survive an index rebuild.
   - A file written by a **newer** schema is left untouched and shown read-only as "Made by a newer Roost", so a downgrade never damages it.
@@ -46,7 +46,7 @@ Location: `Paths::sessions_dir`. In portable mode that is `sessions/` beside the
 - `normalize_after_crash` runs **at startup load only**, never on `Open` of a session the manager is currently running.
 - **One instance per history.** The store takes an exclusive advisory lock on `sessions/.lock` (`File::try_lock`). A second Roost on the same directory starts with chat disabled and a plain-language notice ("Another Roost is using this history"); Browse, Installed and Settings still work.
 - Incognito sessions live only in the manager's memory. The store API cannot receive them. Nothing about them reaches the index, recovery files, recent-session metadata or logs.
-- Rename and pin do **not** change `updated_at`. Only message activity does, so the rail does not reshuffle when the user tidies up.
+- Rename and pin do **not** change `updated_at`. Only message activity does, so the rail does not reshuffle when the user tidies up. `Session::rename` currently sets `updated_at_ms` (and a test asserts it); that method changes so it no longer does, and its `now_ms` parameter goes away. The index row records the file's mtime and size at each write.
 - Disk work never runs on the manager task. Writes go to a small writer task using `spawn_blocking`, so a slow disk cannot stall deltas. Writes for a session id no longer in the manager's map are dropped.
 - Additive schema change: the assistant message gains an optional `thinking` text (serde default, schema stays v1) so reasoning deltas survive restart. Thinking is shown collapsed and is **never** sent back in a request.
 - The store's mutation API is narrow: `create`, `save_session`, `rename`, `set_pinned`, `delete`, `load`, `list`.
@@ -55,7 +55,7 @@ Location: `Paths::sessions_dir`. In portable mode that is `sessions/` beside the
 
 - Streams `POST /api/chat` as newline-delimited JSON. The decoder buffers **bytes**, not strings, and splits on newlines, so a multi-byte UTF-8 character split across chunks decodes correctly.
 - Yields content deltas, thinking deltas (kept separate) and a final event with token counts and done reason.
-- Timeouts: a first-event timeout of 5 minutes (the UI shows `Loading model…` until then), and a new `chat_stall` of 120 seconds between events once streaming has started. `with_stall_timeout` overrides `chat_stall` too, so tests stay fast. (The client today has only upload and create stalls; reqwest's `stream` feature is already enabled.)
+- Timeouts: a first-event timeout of 5 minutes (the UI shows `Loading model…` until then), and a new `chat_stall` of 120 seconds between events once streaming has started. `with_stall_timeout` overrides `chat_stall` too, and a separate `with_first_event_timeout` overrides the 5-minute limit, so tests of both stay fast. (The client today has only upload and create stalls; reqwest's `stream` feature is already enabled.)
 - `chat_stream` reuses the client's `check` and `error_message` for HTTP errors and in-stream `{"error": ...}` lines, and parses its own line type (the existing `handle_line` is specific to `create`). `check` currently drops the status code when the body is a JSON error, so it gains a variant that keeps the status; that is how a 404 becomes "model not found" instead of a generic error.
 - **Ollama's error shapes**, all of which end the turn as Failed with a readable message:
   - a non-200 response with a JSON `{"error": "..."}` body, where 404 maps to a distinct "model not found" outcome that drives the reselect prompt;
@@ -70,7 +70,7 @@ One manager task owns the open and persisted sessions, the incognito map, the in
 
 Commands (intents):
 
-- `Create { kind: Chat | Incognito, model }`, `Open`, `Close` (closing incognito destroys it), `ClearIncognito`
+- `Create { kind: Chat | Incognito, model }`, `Open`, `Close`, `ClearIncognito`. For a saved session, `Close` is view-level only: it never evicts the session or stops a run, and a session with an active run stays in the manager's map until the run ends and its final flush is written. Closing an incognito session cancels any run and destroys it.
 - `Rename`, `SetPinned`, `Delete`
 - `SetModel` (rejected while a run is active; allowed when idle even if the old model was removed)
 - `Send { session, text }`, `Stop(session)`, `Retry(session)`
@@ -91,13 +91,13 @@ Events are ordered per session and carry `SessionId`, `RunId` and `TurnId`: row 
 - The assistant message grows in memory and is flushed through the writer about every `FLUSH_INTERVAL` (default 2 seconds, a tunable constant, not a requirement) and at the terminal event.
 - Each `Send` spawns one run task. Terminal events are idempotent: a late event after the terminal one is dropped. The cancel-versus-complete race resolves to whichever the manager records first, and only that one is emitted.
 - **Send while a run is active** is rejected with `SendRejected { Busy }`. In the GUI, Enter does nothing during a run. The draft is kept for sending afterwards. Typing stays enabled so the user can prepare the next message.
-- **Retry** is offered on the last assistant message when it is Failed or Cancelled. The failed message stays in the transcript. Retry re-sends from the last user message and appends a **new** assistant message. A failed or cancelled assistant message is excluded from the next request's context. A turn that fails before the first token still creates an empty assistant card carrying the error, so Retry always has somewhere to attach.
+- **Retry** is offered on the last assistant message when it is Failed, Cancelled or **Interrupted** (a partial reply left by a crash and marked at the next startup, so a restart after a crash always has a way forward). The failed message stays in the transcript. Retry re-sends from the last user message and appends a **new** assistant message. A failed, cancelled or interrupted assistant message is excluded from the next request's context. A turn that fails before the first token still creates an empty assistant card carrying the error, so Retry always has somewhere to attach.
 - **Delete during a run:** the manager removes the session from its map first (so no later write can recreate the file), cancels the run, awaits the run task's teardown, then unlinks the file and updates the index.
 - **Quit with active runs:** the app cancels all runs without a prompt, the manager does a final flush marking partial replies Cancelled, and shutdown waits for it for at most 3 seconds. The 2-second window is closed on exit. Incognito sessions are destroyed.
 - `SetModel` to a removed model shows the picker's missing-model state. It never rewrites earlier messages.
 - Unreachable Ollama, a missing model, a stall and a load timeout each end the turn once with a readable message. The transcript and composer stay usable.
 - Titles stay `Untitled` until the user renames. Auto-title is stage 4; `title_metadata` stays in the format so stage 4 needs no migration.
-- **Channels:** the manager coalesces content deltas in a short window (about 30 ms) before sending, so the queue is bounded by time rather than token rate even when the window is not repainting. Events use an unbounded channel; the runtime calls `request_repaint` after forwarding.
+- **Channels:** the manager coalesces content deltas in a short window (about 30 ms) before sending, so the queue is bounded by time rather than token rate even when the window is not repainting. Any pending coalesced delta is flushed **before** the terminal event is sent, so no text arrives after its turn has ended. Events use an unbounded channel; the runtime calls `request_repaint` after forwarding.
 
 ## Context management (pure functions)
 
@@ -105,7 +105,7 @@ Applied before each request, as the parent spec states, against the window defin
 
 - Estimate: `ceil(UTF-8 bytes / 3) + 8` per message. Reserve 30% of the window for output. Send the newest complete groups that fit.
 - A **group** in stage 2 is a user message plus the assistant reply that followed it. A request therefore never begins with an orphaned assistant message. Stage 3 extends a group to include tool call and result pairs without changing the function's signature.
-- Failed or cancelled assistant messages and all thinking text are excluded from the request.
+- Thinking text is never sent. An exchange whose reply did not complete (Failed, Cancelled or Interrupted) is dropped **whole**, user message included, whenever a later user message exists. If the user types a new message instead of pressing Retry, the request therefore never contains two user turns in a row. The transcript keeps the dropped exchange. (When the failed exchange is the latest one, it is the newest user message and is kept, which is what Retry sends.)
 - Always keep the system prompt and the newest user message.
 - Dropped older groups are replaced by the synthetic `Earlier messages omitted for context` marker, and the omitted count is reported. The local transcript is never trimmed.
 - If the system prompt plus the newest user message do not fit, the send is rejected with a readable size error.
@@ -119,8 +119,8 @@ Applied before each request, as the parent spec states, against the window defin
   - A separate live Incognito group with a memory-only note and Clear.
   - Rows show a truncated title, model, and a background-run indicator (spinner or `Waiting for model`). Row actions: open, rename, pin or unpin, delete (confirmed via the `confirm.rs` pattern). Errored and newer-schema rows offer Delete and, for newer-schema, no editing.
 - **Conversation pane:**
-  - Message cards with plain selectable text. Streaming updates live. Partial replies carry their terminal label (Failed, Stopped). Thinking text is shown collapsed.
-  - Retry on a failed or stopped last turn, and an `N earlier messages omitted` note.
+  - Message cards with plain selectable text. Streaming updates live. Partial replies carry their terminal label (Failed, Stopped, Interrupted). Thinking text is shown collapsed.
+  - Retry on a failed, stopped or interrupted last turn, and an `N earlier messages omitted` note.
   - A model picker fed by the installed models.
   - A composer: Enter sends, Shift+Enter inserts a newline. While a run is active, Send becomes Stop, Enter does nothing, and typing is still allowed (draft kept).
   - A visible incognito banner.
@@ -138,7 +138,8 @@ Core:
 - Streaming decode against a **raw TCP server** (wiremock cannot split a body at arbitrary bytes or stall mid-stream): split chunks, several lines per chunk, a multi-byte UTF-8 character split across chunks, interleaved thinking and content, stall mid-stream (ends Failed), early close without `done` (ends Failed, not Interrupted).
 - Error shapes: non-200 JSON error, 404 model-missing, mid-stream `{"error"}` line, malformed line.
 - Exactly one terminal event per turn. The cancel-versus-complete race uses a deterministic injection seam (a gate on the stream source), not timing.
-- First-event timeout and `chat_stall`, using the shortened overrides.
+- First-event timeout and `chat_stall`, using their shortened overrides (`with_first_event_timeout`, `with_stall_timeout`).
+- A crash-recovered Interrupted last turn offers Retry and sends the right request; a new message after a failed exchange yields a request with no consecutive user turns; the coalesced delta arrives before the terminal event; rename and pin leave `updated_at` and ordering unchanged; Close on a running saved session keeps the final flush.
 - Partial flush after a simulated crash and recovery with `normalize_after_crash`.
 - Store: a per-session rewrite does not touch other files; corrupt files are quarantined; a newer-schema file is untouched; a transient I/O error does not rename; corrupt, missing, stale or unsupported-version index is reconciled; quarantined rows survive a rebuild; pins survive a rebuild; a second instance is refused by the lock.
 - Delete during an active run leaves no file behind, even with a late flush.
