@@ -184,6 +184,17 @@ fn row_of(s: &Session, st: Stamp) -> IndexRow {
     }
 }
 
+/// The index row for a session that is not (or not only) on disk.
+pub(crate) fn live_row(s: &Session) -> IndexRow {
+    row_of(
+        s,
+        Stamp {
+            mtime_ms: 0,
+            len: 0,
+        },
+    )
+}
+
 fn placeholder(id: SessionId, status: RowStatus, title: Option<String>, st: Stamp) -> IndexRow {
     IndexRow {
         id,
