@@ -1,6 +1,8 @@
 //! Chat view-model: folds `ChatEvent`s into plain data. No egui types.
 
-use roost_core::chat::{ChatCommand, ChatEvent, RunOutcome, SendRejection, TurnOutcome};
+use roost_core::chat::{
+    BranchState, ChatCommand, ChatEvent, RunOutcome, SendRejection, TurnOutcome,
+};
 use roost_core::session::{
     AssistantStatus, Message, MessageContent, MessageId, Session, SessionId, SessionLifetime,
     SessionMode, ToolStatus, TurnId, UserDelivery,
@@ -38,6 +40,17 @@ pub struct RailRow {
     pub badge: RunBadge,
     pub status: RowStatus,
     pub lifetime: SessionLifetime,
+    /// Branches made from this chat, newest first.
+    pub children: Vec<RailRow>,
+}
+
+/// Where a check of a branch's original stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchView {
+    /// Not asked yet since the branch was opened.
+    Unknown,
+    Asked,
+    Known(BranchState),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -81,6 +94,8 @@ pub fn status_label(status: AssistantStatus) -> Option<&'static str> {
 pub struct ChatState {
     rows: Vec<IndexRow>,
     pub open: Option<Session>,
+    /// What is known about each opened branch's original.
+    branch_views: HashMap<SessionId, BranchView>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
     /// Model steps taken so far in each session's current run.
     steps: HashMap<SessionId, u32>,
@@ -144,7 +159,13 @@ impl ChatState {
             }
             ChatEvent::Opened(s) => {
                 self.notice = None;
+                if s.parent.is_some() {
+                    self.branch_views.insert(s.id, BranchView::Unknown);
+                }
                 self.open = Some(*s);
+            }
+            ChatEvent::BranchChecked { session, state } => {
+                self.branch_views.insert(session, BranchView::Known(state));
             }
             ChatEvent::Appended { session, message } => self.appended(session, *message),
             ChatEvent::TurnStarted { session, turn } => {
@@ -540,30 +561,77 @@ impl ChatState {
                 .cmp(&a.updated_at_ms)
                 .then_with(|| a.id.cmp(&b.id))
         });
-        for r in sorted {
-            let row = RailRow {
-                id: r.id,
-                title: display_title(r),
-                model: r.model.clone(),
-                pinned: r.pinned,
-                badge: self.badge(r.id),
-                status: r.status,
-                lifetime: r.lifetime,
-            };
+        let shown: std::collections::HashSet<SessionId> = sorted.iter().map(|r| r.id).collect();
+        let parent_shown = |r: &IndexRow| {
+            r.parent
+                .is_some_and(|p| p.session_id != r.id && shown.contains(&p.session_id))
+        };
+        let make = |r: &IndexRow| RailRow {
+            id: r.id,
+            title: display_title(r),
+            model: r.model.clone(),
+            pinned: r.pinned,
+            badge: self.badge(r.id),
+            status: r.status,
+            lifetime: r.lifetime,
+            children: Vec::new(),
+        };
+        let mut placed: Vec<(u64, u8, RailRow)> = Vec::new();
+        for r in sorted.iter().filter(|r| !parent_shown(r)) {
+            let mut row = make(r);
+            // A branch is listed under its parent (already newest first), and
+            // lifts the parent's place in the list when it is the newer.
+            let mut newest = r.updated_at_ms;
+            for kid in sorted
+                .iter()
+                .filter(|k| k.parent.is_some_and(|p| p.session_id == r.id) && k.id != r.id)
+            {
+                newest = newest.max(kid.updated_at_ms);
+                row.children.push(make(kid));
+            }
             let group = if r.lifetime == SessionLifetime::Incognito {
-                &mut rail.incognito
+                4
             } else if r.pinned {
-                &mut rail.pinned
+                0
             } else {
-                match today - day_of(r.updated_at_ms) {
-                    d if d <= 0 => &mut rail.today,
-                    1 => &mut rail.yesterday,
-                    _ => &mut rail.earlier,
+                match today - day_of(newest) {
+                    d if d <= 0 => 1,
+                    1 => 2,
+                    _ => 3,
                 }
             };
-            group.push(row);
+            placed.push((newest, group, row));
+        }
+        placed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.id.cmp(&b.2.id)));
+        for (_, group, row) in placed {
+            match group {
+                0 => rail.pinned.push(row),
+                1 => rail.today.push(row),
+                2 => rail.yesterday.push(row),
+                3 => rail.earlier.push(row),
+                _ => rail.incognito.push(row),
+            }
         }
         rail
+    }
+
+    /// The answer about a branch's original, once there is one.
+    pub fn branch_view(&self, id: SessionId) -> Option<BranchState> {
+        match self.branch_views.get(&id) {
+            Some(BranchView::Known(s)) => Some(*s),
+            _ => None,
+        }
+    }
+
+    /// True once per opening of a branch: time to ask the manager to check it.
+    pub fn branch_check_due(&mut self, id: SessionId) -> bool {
+        match self.branch_views.get_mut(&id) {
+            Some(v @ BranchView::Unknown) => {
+                *v = BranchView::Asked;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn dismiss_warnings(&mut self) {
@@ -1148,6 +1216,82 @@ mod tests {
         assert_eq!(titles("llama3.2"), ["Trip planning"]);
         assert!(titles("trip borrow").is_empty(), "every word must match");
         assert!(titles("zzz").is_empty());
+    }
+
+    fn branch_of(parent: &IndexRow, title: &str, updated: u64) -> IndexRow {
+        let mut r = row(title, updated);
+        r.parent = Some(roost_core::session::BranchOrigin {
+            session_id: parent.id,
+            message_id: roost_core::session::MessageId::new(),
+        });
+        r
+    }
+
+    #[test]
+    fn branches_sit_under_their_parent_newest_first() {
+        let mut st = ChatState::default();
+        let parent = row("Lisbon trip", NOW - 1_000);
+        let early = branch_of(&parent, "Food", NOW - 500);
+        let late = branch_of(&parent, "Budget", NOW - 10);
+        let other = row("Rust", NOW - 50);
+        st.fold(ChatEvent::Rows(vec![
+            early.clone(),
+            late.clone(),
+            other.clone(),
+            parent.clone(),
+        ]));
+        let rail = st.rail(NOW, utc_day);
+        let top: Vec<&str> = rail.today.iter().map(|r| r.title.as_str()).collect();
+        // The parent rises with its newest branch, above "Rust".
+        assert_eq!(top, ["Lisbon trip", "Rust"]);
+        let kids: Vec<&str> = rail.today[0]
+            .children
+            .iter()
+            .map(|r| r.title.as_str())
+            .collect();
+        assert_eq!(kids, ["Budget", "Food"]);
+    }
+
+    #[test]
+    fn a_branch_whose_parent_is_gone_or_hidden_stands_alone() {
+        let mut st = ChatState::default();
+        let parent = row("Lisbon trip", NOW);
+        let kid = branch_of(&parent, "Food", NOW - 1);
+        st.fold(ChatEvent::Rows(vec![kid.clone()]));
+        assert_eq!(st.rail(NOW, utc_day).today.len(), 1, "parent deleted");
+        st.fold(ChatEvent::Rows(vec![parent, kid]));
+        let found = st.rail_for(SessionMode::Chat, "food", NOW, utc_day);
+        assert_eq!(found.today.len(), 1, "search matches only the branch");
+        assert!(found.today[0].children.is_empty());
+    }
+
+    #[test]
+    fn a_branch_is_checked_once_each_time_it_is_opened() {
+        let mut st = ChatState::default();
+        let mut parent = Session::new_chat("m", SessionLifetime::Persisted, 1);
+        parent.push_user("q", 2);
+        let a = parent.begin_assistant(RunId::new(), TurnId::new(), 3);
+        parent.finish_assistant(a, AssistantStatus::Complete, None, 3);
+        let b = parent.branch(a, None, 4).unwrap();
+        st.fold(ChatEvent::Opened(Box::new(b.clone())));
+        assert_eq!(st.branch_view(b.id), None);
+        assert!(st.branch_check_due(b.id));
+        assert!(!st.branch_check_due(b.id), "asked once");
+        st.fold(ChatEvent::BranchChecked {
+            session: b.id,
+            state: roost_core::chat::BranchState::Changed,
+        });
+        assert_eq!(
+            st.branch_view(b.id),
+            Some(roost_core::chat::BranchState::Changed)
+        );
+        st.fold(ChatEvent::Opened(Box::new(b.clone())));
+        assert_eq!(
+            st.branch_view(b.id),
+            None,
+            "reopening forgets the old answer"
+        );
+        assert!(st.branch_check_due(b.id));
     }
 
     #[test]

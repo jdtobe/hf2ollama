@@ -190,6 +190,15 @@ pub struct BranchOrigin {
     pub message_id: MessageId,
 }
 
+/// One chat in a branch's ancestry: the chat, the message the next branch was
+/// made at, and the chat's title at that time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ancestor {
+    pub session_id: SessionId,
+    pub message_id: MessageId,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "kebab-case")]
 pub enum MessageContent {
@@ -277,6 +286,14 @@ pub struct Session {
     pub step_budget: u32,
     pub run_state: RunState,
     pub parent: Option<BranchOrigin>,
+    /// Every chat this one descends from, oldest first; the last entry is the
+    /// chat it was branched from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lineage: Vec<Ancestor>,
+    /// Fingerprint of the original's messages up to the branch point when the
+    /// branch was made (see `prefix_hash`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_hash: Option<u64>,
     /// Other versions of parts of the conversation (see `Fork`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forks: Vec<Fork>,
@@ -319,6 +336,8 @@ impl Session {
             step_budget: DEFAULT_STEP_BUDGET,
             run_state: RunState::Idle,
             parent: None,
+            lineage: Vec::new(),
+            origin_hash: None,
             forks: Vec::new(),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
@@ -405,6 +424,88 @@ impl Session {
         let after = at.checked_sub(1).map(|i| self.messages[i].id);
         let f = &self.forks[self.fork_index(after)?];
         Some((f.active + 1, f.parked.len() + 1))
+    }
+
+    /// A stable fingerprint (FNV-1a) of the messages from the start through
+    /// `through` on the shown path: ids, roles, text and status. `None` if
+    /// there is no such message.
+    pub fn prefix_hash(&self, through: MessageId) -> Option<u64> {
+        let at = self.messages.iter().position(|m| m.id == through)?;
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |bytes: &[u8]| {
+            for b in bytes {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h ^= 0xff;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        for m in &self.messages[..=at] {
+            eat(m.id.to_string().as_bytes());
+            match &m.content {
+                MessageContent::User { text, .. } => {
+                    eat(b"user");
+                    eat(text.as_bytes());
+                }
+                MessageContent::Assistant { text, status, .. } => {
+                    eat(b"assistant");
+                    eat(text.as_bytes());
+                    eat(format!("{status:?}").as_bytes());
+                }
+                MessageContent::Tool {
+                    name,
+                    arguments,
+                    output,
+                    ..
+                } => {
+                    eat(b"tool");
+                    eat(name.as_bytes());
+                    eat(arguments.to_string().as_bytes());
+                    eat(output.as_deref().unwrap_or("").as_bytes());
+                }
+            }
+        }
+        Some(h)
+    }
+
+    /// A new chat that starts with this one's history through `through` (a
+    /// finished reply), on `model` or this chat's own. The original is not
+    /// changed. Message ids are kept, so a link can find the branch point.
+    pub fn branch(
+        &self,
+        through: MessageId,
+        model: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Session, SessionError> {
+        let messages = self.completed_prefix_through(through)?;
+        let mut b = self.clone();
+        b.id = SessionId::new();
+        b.messages = messages;
+        b.forks = Vec::new();
+        b.pinned = false;
+        b.run_state = RunState::Idle;
+        b.title = if self.title == UNTITLED {
+            UNTITLED.into()
+        } else {
+            let cut: String = self.title.chars().take(MAX_TITLE_CHARS - 9).collect();
+            format!("{cut} (branch)")
+        };
+        b.title_metadata = TitleMetadata::default();
+        b.model = model.map_or_else(|| self.model.clone(), str::to_string);
+        b.parent = Some(BranchOrigin {
+            session_id: self.id,
+            message_id: through,
+        });
+        b.lineage = self.lineage.clone();
+        b.lineage.push(Ancestor {
+            session_id: self.id,
+            message_id: through,
+            title: self.title.clone(),
+        });
+        b.origin_hash = self.prefix_hash(through);
+        b.created_at_ms = now_ms;
+        b.updated_at_ms = now_ms;
+        Ok(b)
     }
 
     pub fn is_branch(&self) -> bool {
@@ -1199,6 +1300,95 @@ mod tests {
         assert!(!json.contains("forks"), "empty forks are not written");
         let loaded: SessionDocument = serde_json::from_str(&json).unwrap();
         assert!(loaded.session.forks.is_empty());
+    }
+
+    fn four_message_chat() -> (Session, Vec<Message>) {
+        let mut s = Session::new_chat("m", SessionLifetime::Persisted, T0);
+        s.title = "Trip".into();
+        let msgs = vec![
+            user("plan"),
+            assistant("days", AssistantStatus::Complete),
+            user("food"),
+            assistant("tapas", AssistantStatus::Complete),
+        ];
+        s.messages = msgs.clone();
+        (s, msgs)
+    }
+
+    #[test]
+    fn a_branch_copies_the_history_and_remembers_where_from() {
+        let (s, m) = four_message_chat();
+        let b = s.branch(m[1].id, None, T0 + 5).unwrap();
+        assert_ne!(b.id, s.id);
+        assert_eq!(b.messages, m[..2].to_vec());
+        assert_eq!(
+            b.parent,
+            Some(BranchOrigin {
+                session_id: s.id,
+                message_id: m[1].id
+            })
+        );
+        assert_eq!(b.lineage.len(), 1);
+        assert_eq!(b.lineage[0].session_id, s.id);
+        assert_eq!(b.lineage[0].title, "Trip");
+        assert_eq!(b.origin_hash, s.prefix_hash(m[1].id));
+        assert_eq!(b.title, "Trip (branch)");
+        assert_eq!((b.model.as_str(), b.mode), ("m", SessionMode::Chat));
+        assert!(b.forks.is_empty() && b.created_at_ms == T0 + 5);
+        assert_eq!(s.messages.len(), 4, "the original is untouched");
+    }
+
+    #[test]
+    fn a_branch_can_use_another_model_and_branches_nest() {
+        let (s, m) = four_message_chat();
+        let b = s.branch(m[3].id, Some("big:70b"), T0).unwrap();
+        assert_eq!(b.model, "big:70b");
+        let c = b.branch(m[1].id, None, T0).unwrap();
+        let chain: Vec<SessionId> = c.lineage.iter().map(|a| a.session_id).collect();
+        assert_eq!(chain, vec![s.id, b.id]);
+        assert_eq!(c.title, "Trip (branch) (branch)");
+    }
+
+    #[test]
+    fn only_a_finished_reply_is_a_branch_point() {
+        let (s, m) = four_message_chat();
+        assert_eq!(
+            s.branch(m[0].id, None, T0).unwrap_err(),
+            SessionError::NotABranchBoundary
+        );
+        assert_eq!(
+            s.branch(MessageId::new(), None, T0).unwrap_err(),
+            SessionError::UnknownMessage
+        );
+    }
+
+    #[test]
+    fn the_prefix_fingerprint_tracks_history_up_to_the_branch_point_only() {
+        let (mut s, m) = four_message_chat();
+        let h = s.prefix_hash(m[1].id).unwrap();
+        s.messages.push(user("more"));
+        assert_eq!(
+            s.prefix_hash(m[1].id),
+            Some(h),
+            "later messages do not count"
+        );
+        if let MessageContent::User { text, .. } = &mut s.messages[0].content {
+            text.push('!');
+        }
+        assert_ne!(s.prefix_hash(m[1].id), Some(h));
+        assert_eq!(s.prefix_hash(MessageId::new()), None);
+    }
+
+    #[test]
+    fn branch_details_are_saved_and_old_files_load() {
+        let (s, m) = four_message_chat();
+        let b = s.branch(m[1].id, None, T0).unwrap();
+        let json = serde_json::to_string(&SessionDocument::new(b.clone())).unwrap();
+        let back: SessionDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.session.lineage, b.lineage);
+        assert_eq!(back.session.origin_hash, b.origin_hash);
+        let plain = serde_json::to_string(&SessionDocument::new(s)).unwrap();
+        assert!(!plain.contains("lineage") && !plain.contains("origin_hash"));
     }
 
     #[test]
