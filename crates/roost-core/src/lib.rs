@@ -15,4 +15,5 @@ pub mod paths;
 pub mod persistence;
 pub mod pipeline;
 pub mod secrets;
+pub mod session;
 pub mod staging;
