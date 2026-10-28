@@ -429,3 +429,107 @@ fn switching_sessions_closes_the_previous_saved_one_so_it_can_be_evicted() {
         "{cmds:?}"
     );
 }
+
+fn rail_row_of(app: &mut App, id: roost_core::session::SessionId) -> Rect {
+    app.state_mut()
+        .chat_ui
+        .probe
+        .rows
+        .iter()
+        .find(|(r, _)| *r == id)
+        .map(|(_, r)| *r)
+        .expect("row painted")
+}
+
+fn rail_delete_of(app: &mut App, id: roost_core::session::SessionId) -> Option<(Rect, bool)> {
+    app.state_mut()
+        .chat_ui
+        .probe
+        .rail_delete
+        .iter()
+        .find(|(r, _, _)| *r == id)
+        .map(|(_, rect, armed)| (*rect, *armed))
+}
+
+#[test]
+fn hovering_a_rail_row_shows_a_delete_control_inside_the_row() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(3);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let target = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .rows
+        .iter()
+        .map(|(id, _)| *id)
+        .find(|id| *id != f.open.id && *id != f.bad.id)
+        .unwrap();
+    assert!(
+        rail_delete_of(&mut f.app, target).is_none(),
+        "hidden until hovered"
+    );
+    let row = rail_row_of(&mut f.app, target);
+    h.frame(
+        vec2(size.0, size.1),
+        vec![egui::Event::PointerMoved(row.center())],
+        |ui| f.app.show(ui),
+    );
+    run(&mut f.app, &mut h, size, 2);
+    let (del, armed) = rail_delete_of(&mut f.app, target).expect("delete control on hover");
+    assert!(!armed);
+    assert!(inside(del, rail_row_of(&mut f.app, target)), "{del:?}");
+    // The selected row always shows it, so it is one click away.
+    assert!(rail_delete_of(&mut f.app, f.open.id).is_some());
+}
+
+#[test]
+fn rail_delete_takes_a_click_and_a_confirm_after_a_short_pause() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(3);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let target = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .rows
+        .iter()
+        .map(|(id, _)| *id)
+        .find(|id| *id != f.open.id && *id != f.bad.id)
+        .unwrap();
+    let row = rail_row_of(&mut f.app, target);
+    h.frame(
+        vec2(size.0, size.1),
+        vec![egui::Event::PointerMoved(row.center())],
+        |ui| f.app.show(ui),
+    );
+    run(&mut f.app, &mut h, size, 2);
+    let (del, _) = rail_delete_of(&mut f.app, target).unwrap();
+    click(&mut f.app, &mut h, size, del.center());
+    let (del, armed) = rail_delete_of(&mut f.app, target).expect("still shown while armed");
+    assert!(armed, "the first click arms");
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, ChatCommand::Delete(_) | ChatCommand::Open(_))),
+        "{cmds:?}"
+    );
+    // An immediate second click is inside the pause and must not delete.
+    click(&mut f.app, &mut h, size, del.center());
+    assert!(!sent_chat_commands(&f.sent)
+        .iter()
+        .any(|c| matches!(c, ChatCommand::Delete(_))));
+    std::thread::sleep(std::time::Duration::from_millis(650));
+    let (del, _) = rail_delete_of(&mut f.app, target).unwrap();
+    click(&mut f.app, &mut h, size, del.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Delete(d)] if *d == target),
+        "{cmds:?}"
+    );
+}
