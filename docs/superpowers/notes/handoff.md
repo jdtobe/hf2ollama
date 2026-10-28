@@ -6,6 +6,10 @@ Written 2026-10-22, refreshed 2026-10-23 after PRs #1-#4 were merged, so a new s
 
 Stage 2 (streaming chat, per-session storage, incognito, history rail with pinning) is on branch `feat/roost-chat`; see `docs/superpowers/specs/2026-10-27-roost-chat-design.md` and `docs/superpowers/plans/2026-10-27-roost-chat.md`. Not pushed or merged. Manual verification still owed: a real Ollama (chat, stop, a model that is not installed), the look of all four themes, and Windows/Linux. Known gaps: markdown rendering, copy, regenerate, rail search, empty chats are saved at creation and not pruned, Earlier is not paginated. Stage 3 (agents) is next.
 
+### Navigation direction (from the user, 2026-10-28)
+
+Planned, not started: the main tabs become **Chat > Work > Models > settings gear**. Work is the agentic mode: a real agent loop, or another interactive mode built on a harness. Models merges Browse and Installed into one view, roughly like VS Code's extensions view. Tonight's agent stage adds a Work tab next to the existing tabs as a first step; the Models merge needs its own design.
+
 ### UI refinement backlog (from the first hands-on test of chat)
 
 - Done: delete control on every rail row (hover or selected row; click, pause, click to confirm).
