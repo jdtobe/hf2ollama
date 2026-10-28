@@ -623,7 +623,6 @@ impl Manager {
         let now = now_ms();
         let before = live.s.updated_at_ms;
         let mut removed: Option<crate::session::Message> = None;
-        let removed_id;
         let user = match &intent {
             Intent::Send(text) => {
                 let uid = live.s.push_user(text, now);
@@ -635,7 +634,7 @@ impl Manager {
                 None
             }
         };
-        removed_id = removed.as_ref().map(|m| m.id);
+        let removed_id = removed.as_ref().map(|m| m.id);
         let win = window(live.s.model_options.num_ctx, show_ctx);
         let trimmed = match build_request(CHAT_SYSTEM_PROMPT, &live.s.messages, win) {
             Ok(t) => t,
