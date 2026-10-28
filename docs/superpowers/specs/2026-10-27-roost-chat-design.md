@@ -25,6 +25,7 @@ Parent acceptance criteria this stage must satisfy: 2, 3, 11, 12, 13, and the st
 `/api/show` reports the model's **maximum** context, not what Ollama loads by default. Trimming against the maximum would let Ollama truncate the prompt silently on the server, so the trimming would protect nothing. Therefore:
 
 - Every chat request sends an explicit `options.num_ctx`.
+- Ollama's own default window is smaller than the model maximum and varies by version and available memory. That was not verified against a live server here (tests never use the real Ollama), but sending an explicit value is correct either way.
 - The window is `session.model_options.num_ctx` if set, else `min(show context, 16,384)`, else 8,192 when `show` gives no context. The 16,384 cap keeps KV-cache memory reasonable for models that advertise 128k or more. The cap is a named constant.
 - Trimming budgets against that same number, so what Roost trims to is what Ollama loads.
 - The final stream event's `prompt_eval_count` is surfaced in the event (for display and debugging). Using it to recalibrate the estimate is deferred.
@@ -55,6 +56,7 @@ Location: `Paths::sessions_dir`. In portable mode that is `sessions/` beside the
 - Streams `POST /api/chat` as newline-delimited JSON. The decoder buffers **bytes**, not strings, and splits on newlines, so a multi-byte UTF-8 character split across chunks decodes correctly.
 - Yields content deltas, thinking deltas (kept separate) and a final event with token counts and done reason.
 - Timeouts: a first-event timeout of 5 minutes (the UI shows `Loading model…` until then), and a new `chat_stall` of 120 seconds between events once streaming has started. `with_stall_timeout` overrides `chat_stall` too, so tests stay fast. (The client today has only upload and create stalls; reqwest's `stream` feature is already enabled.)
+- `chat_stream` reuses the client's `check` and `error_message` for HTTP errors and in-stream `{"error": ...}` lines, and parses its own line type (the existing `handle_line` is specific to `create`). `check` currently drops the status code when the body is a JSON error, so it gains a variant that keeps the status; that is how a 404 becomes "model not found" instead of a generic error.
 - **Ollama's error shapes**, all of which end the turn as Failed with a readable message:
   - a non-200 response with a JSON `{"error": "..."}` body, where 404 maps to a distinct "model not found" outcome that drives the reselect prompt;
   - a 200 stream that carries a valid `{"error": "..."}` line mid-stream;
@@ -133,7 +135,7 @@ All tests are test-first and use wiremock, a raw TCP test server and tempdirs. T
 
 Core:
 
-- Streaming decode against a **raw TCP server** (wiremock cannot split a body at arbitrary bytes or stall mid-stream): split chunks, several lines per chunk, a multi-byte UTF-8 character split across chunks, interleaved thinking and content, stall mid-stream, early close without `done`.
+- Streaming decode against a **raw TCP server** (wiremock cannot split a body at arbitrary bytes or stall mid-stream): split chunks, several lines per chunk, a multi-byte UTF-8 character split across chunks, interleaved thinking and content, stall mid-stream (ends Failed), early close without `done` (ends Failed, not Interrupted).
 - Error shapes: non-200 JSON error, 404 model-missing, mid-stream `{"error"}` line, malformed line.
 - Exactly one terminal event per turn. The cancel-versus-complete race uses a deterministic injection seam (a gate on the stream source), not timing.
 - First-event timeout and `chat_stall`, using the shortened overrides.
