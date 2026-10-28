@@ -82,6 +82,7 @@ pub struct OllamaClient {
     create_stall: Duration,
     chat_stall: Duration,
     first_event: Duration,
+    keep_alive: crate::config::KeepAlive,
 }
 
 #[derive(Serialize)]
@@ -213,7 +214,14 @@ impl OllamaClient {
             create_stall: CREATE_STALL,
             chat_stall: chat::CHAT_STALL,
             first_event: chat::FIRST_EVENT,
+            keep_alive: crate::config::KeepAlive::default(),
         }
+    }
+
+    /// How long chat requests ask Ollama to keep the model loaded.
+    pub fn with_keep_alive(mut self, keep_alive: crate::config::KeepAlive) -> OllamaClient {
+        self.keep_alive = keep_alive;
+        self
     }
 
     /// Overrides the upload, create and chat stall timeouts.

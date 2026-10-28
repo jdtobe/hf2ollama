@@ -265,7 +265,7 @@ impl Shared {
         let staging = self.staging_dir(settings);
         PipelineCtx {
             hf: HfClient::new(&settings.hf_endpoint, token),
-            ollama: OllamaClient::new(&settings.ollama_url),
+            ollama: OllamaClient::new(&settings.ollama_url).with_keep_alive(settings.keep_alive),
             staging: Staging::new(staging),
             settings: settings.clone(),
             history: Arc::clone(&self.history),
@@ -460,7 +460,7 @@ fn run(
     let shared = Arc::new(Shared {
         clients: Mutex::new(Clients {
             hf: HfClient::new(&settings.hf_endpoint, token),
-            ollama: OllamaClient::new(&settings.ollama_url),
+            ollama: OllamaClient::new(&settings.ollama_url).with_keep_alive(settings.keep_alive),
             settings: settings.clone(),
             staging: PathBuf::new(),
             managers: Vec::new(),
@@ -535,7 +535,9 @@ fn start_chat(
                 }
                 emitter.emit(UiEvent::Chat(e));
             });
-            let cfg = ChatConfig::new(OllamaClient::new(&settings.ollama_url));
+            let cfg = ChatConfig::new(
+                OllamaClient::new(&settings.ollama_url).with_keep_alive(settings.keep_alive),
+            );
             Some(ChatManager::spawn(runtime.handle(), writer, cfg, sink))
         }
         Err(StoreError::Locked) => {
