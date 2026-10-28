@@ -8,7 +8,7 @@ The product is being extended from an importer into a local-model workbench (cha
 
 1. **Foundation (implemented):** the rename to Roost, safe migration of hf2ollama settings, import history, staging markers and (on request) the Hugging Face token, four theme families with light and dark variants, and the serializable session domain types in `roost-core`.
 2. **Streaming chat and history (implemented):** streaming chat, one file per session with a rebuildable index, incognito, the history rail with pinning, and background runs. Deferred inside this stage: markdown and code-block rendering, a copy button, regenerate, rail search and filters, and pagination of the Earlier group.
-3. **Read-only agents (implemented):** the Work tab, a workspace jail, the tool registry with four Files / Read tools, steering, Stop and a step budget. Not yet: write, shell and network tools, tool approval prompts, `/btw`.
+3. **Read-only agents (implemented):** the Work tab, a workspace jail, the tool registry with four Files / Read tools, steering, Stop and a step budget. Tool approval prompts (Ask) are implemented. Not yet: write, shell and network tools.
 4. `/btw` side threads, branches, automatic titles and the history manager. Not started.
 
 ## Done

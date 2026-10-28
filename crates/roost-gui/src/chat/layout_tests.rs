@@ -1806,3 +1806,110 @@ fn new_agent_works_while_an_agent_chat_is_open() {
         "the chat on screen is let go: {cmds:?}"
     );
 }
+
+fn ask_for_approval(app: &mut App, session: roost_core::session::SessionId) {
+    app.state_mut().chat.fold(ChatEvent::ApprovalRequested {
+        session,
+        call_id: "call_9".into(),
+        name: "read_file".into(),
+        arguments: serde_json::json!({"path": "src/main.rs"}),
+    });
+}
+
+#[test]
+fn a_pending_approval_shows_what_the_agent_wants_and_three_ways_to_answer() {
+    use roost_core::chat::ApprovalDecision;
+    for size in SIZES {
+        for (pick, want) in [
+            (0usize, ApprovalDecision::Allow),
+            (1, ApprovalDecision::AllowForChat),
+            (2, ApprovalDecision::Deny),
+        ] {
+            let (mut app, sent, s) = agent_fixture();
+            let mut h = Harness::new(false);
+            ask_for_approval(&mut app, s.id);
+            run(&mut app, &mut h, size, 4);
+            let texts = texts_of(&mut app, &mut h, size);
+            assert!(
+                texts.contains("read_file") && texts.contains("src/main.rs"),
+                "{texts}"
+            );
+            let p = app.state_mut().chat_ui.probe.clone();
+            let pane = p.pane.unwrap();
+            assert_eq!(p.approval_buttons.len(), 3, "{size:?}");
+            for b in &p.approval_buttons {
+                assert!(inside(*b, pane), "{size:?}: {b:?} outside {pane:?}");
+            }
+            let _ = sent_chat_commands(&sent);
+            click(&mut app, &mut h, size, p.approval_buttons[pick].center());
+            let cmds = sent_chat_commands(&sent);
+            assert!(
+                matches!(cmds.as_slice(), [ChatCommand::ResolveApproval { session, call_id, decision }]
+                    if *session == s.id && call_id == "call_9" && *decision == want),
+                "{size:?} pick {pick}: {cmds:?}"
+            );
+            run(&mut app, &mut h, size, 2);
+            assert!(
+                app.state_mut().chat_ui.probe.approval_buttons.is_empty(),
+                "the card goes away once answered"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_approval_card_goes_when_the_tool_starts_or_the_run_ends() {
+    let size = (1180.0, 820.0);
+    for end in [0, 1] {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        ask_for_approval(&mut app, s.id);
+        run(&mut app, &mut h, size, 3);
+        assert_eq!(app.state_mut().chat_ui.probe.approval_buttons.len(), 3);
+        if end == 0 {
+            app.state_mut().chat.fold(ChatEvent::ToolStarted {
+                session: s.id,
+                call_id: "call_9".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({}),
+            });
+        } else {
+            app.state_mut().chat.fold(ChatEvent::RunEnded {
+                session: s.id,
+                outcome: roost_core::chat::RunOutcome::Cancelled,
+                message: None,
+            });
+        }
+        run(&mut app, &mut h, size, 3);
+        assert!(
+            app.state_mut().chat_ui.probe.approval_buttons.is_empty(),
+            "end {end}"
+        );
+    }
+}
+
+#[test]
+fn the_tools_menu_sets_files_read_to_off_ask_or_auto() {
+    use roost_core::session::Permission;
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let chip = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .agent_chip
+        .expect("Agent chip");
+    click(&mut app, &mut h, size, chip.center());
+    let ask = app.state_mut().chat_ui.probe.permission_buttons.clone();
+    assert_eq!(ask.len(), 3, "Off, Ask, Auto");
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, ask[1].center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, key, Permission::Ask)]
+            if *id == s.id && key == "files.read"),
+        "{cmds:?}"
+    );
+}

@@ -1,5 +1,7 @@
 use super::manager::{ChatConfig, ChatHandle, ChatManager};
-use super::types::{BranchState, ChatCommand, ChatEvent, SendRejection, TurnOutcome};
+use super::types::{
+    ApprovalDecision, BranchState, ChatCommand, ChatEvent, SendRejection, TurnOutcome,
+};
 use crate::ollama::OllamaClient;
 use crate::session::{
     AssistantStatus, MessageContent, MessageId, Session, SessionDocument, SessionId,
@@ -2082,4 +2084,215 @@ async fn adding_a_side_question_appends_it_and_deleting_forgets_it() {
         4,
         "deleting does not undo the add"
     );
+}
+
+// ---- tool approval
+
+fn approval_for(e: &[ChatEvent]) -> Option<(String, String)> {
+    e.iter().rev().find_map(|e| match e {
+        ChatEvent::ApprovalRequested { call_id, name, .. } => Some((call_id.clone(), name.clone())),
+        _ => None,
+    })
+}
+
+fn count_approvals(e: &[ChatEvent]) -> usize {
+    e.iter()
+        .filter(|e| matches!(e, ChatEvent::ApprovalRequested { .. }))
+        .count()
+}
+
+fn started_tools(e: &[ChatEvent]) -> usize {
+    e.iter()
+        .filter(|e| matches!(e, ChatEvent::ToolStarted { .. }))
+        .count()
+}
+
+/// An agent that asks before reading files, working on a=hello.
+async fn asking_agent(routes: Vec<Route>) -> (TcpScript, H, SessionId, TempDir) {
+    let ws = workspace();
+    let srv = fake_agent(routes).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.cmd(ChatCommand::SetCapability(
+        id,
+        "files.read".into(),
+        crate::session::Permission::Ask,
+    ));
+    h.wait("capability set", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.capabilities.get("files.read")
+                == Some(&crate::session::Permission::Ask)
+        })
+    })
+    .await;
+    (srv, h, id, ws)
+}
+
+#[tokio::test]
+async fn a_tool_set_to_ask_waits_for_the_user_and_runs_once_allowed() {
+    let (srv, h, id, _ws) = asking_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("It says hello.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    // The model was offered the tools even though they need approval.
+    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 4);
+    let (call_id, name) = approval_for(&h.events()).unwrap();
+    assert_eq!(name, "read_file");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        started_tools(&h.events()),
+        0,
+        "nothing runs before the answer"
+    );
+    assert!(run_ends(&h.events()).is_empty(), "the run waits");
+
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(started_tools(&events), 1);
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolFinished { ok: true, output, .. } if output == "1| hello\n2| world")));
+    assert_eq!(
+        run_ends(&events),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+}
+
+#[tokio::test]
+async fn a_declined_tool_call_is_reported_to_the_model_and_the_run_goes_on() {
+    let (srv, h, id, _ws) = asking_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("Understood, I will not read it.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(started_tools(&events), 0, "the tool never ran");
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolFinished { ok: false, output, .. } if output.contains("declined"))));
+    let second = chat_bodies(&srv)[1]["messages"].clone();
+    let last = second.as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["role"], "tool");
+    assert!(
+        last["content"].as_str().unwrap().contains("declined"),
+        "{last}"
+    );
+}
+
+#[tokio::test]
+async fn allow_for_this_chat_stops_further_questions() {
+    let (_srv, h, id, _ws) = asking_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "read it twice").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForChat,
+    });
+    h.wait_run_ended(1).await;
+    let events = h.events();
+    assert_eq!(count_approvals(&events), 1, "asked once, not twice");
+    assert_eq!(started_tools(&events), 2);
+    h.wait("saved", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.capabilities.get("files.read")
+                == Some(&crate::session::Permission::Auto)
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn stopping_while_waiting_for_an_answer_ends_the_run_and_cancels_the_call() {
+    let (_srv, h, id, _ws) = asking_agent(vec![chat_route(calls(
+        "read_file",
+        serde_json::json!({"path": "a.txt"}),
+    ))])
+    .await;
+    h.send(id, "read it").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    h.cmd(ChatCommand::Stop(id));
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events())[0].0,
+        super::types::RunOutcome::Cancelled
+    );
+    h.wait("saved", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.messages.iter().any(|m| {
+                matches!(
+                    &m.content,
+                    MessageContent::Tool {
+                        status: crate::session::ToolStatus::Cancelled,
+                        ..
+                    }
+                )
+            })
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_answer_for_another_call_is_ignored() {
+    let (_srv, h, id, _ws) = asking_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("ok")),
+    ])
+    .await;
+    h.send(id, "read it").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id: "not-the-call".into(),
+        decision: ApprovalDecision::Allow,
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(started_tools(&h.events()), 0);
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
+}
+
+#[tokio::test]
+async fn reopening_a_chat_that_is_waiting_asks_the_question_again() {
+    let (_srv, h, id, _ws) = asking_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("ok")),
+    ])
+    .await;
+    h.send(id, "read it").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    h.cmd(ChatCommand::Open(id));
+    h.wait("asked again", |e| count_approvals(e) >= 2).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
 }

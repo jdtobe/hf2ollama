@@ -44,6 +44,14 @@ pub struct RailRow {
     pub children: Vec<RailRow>,
 }
 
+/// A tool call the agent cannot make until the user answers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingApproval {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
 /// Where a check of a branch's original stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BranchView {
@@ -97,6 +105,8 @@ pub struct ChatState {
     /// The side question being answered in each chat, and one that failed.
     btw_pending: HashMap<SessionId, (BtwId, String)>,
     btw_error: HashMap<SessionId, String>,
+    /// The tool call each agent is waiting for an answer about.
+    approvals: HashMap<SessionId, PendingApproval>,
     /// What is known about each opened branch's original.
     branch_views: HashMap<SessionId, BranchView>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
@@ -272,9 +282,25 @@ impl ChatState {
                     SendRejection::Cancelled => None,
                 };
             }
+            ChatEvent::ApprovalRequested {
+                session,
+                call_id,
+                name,
+                arguments,
+            } => {
+                self.approvals.insert(
+                    session,
+                    PendingApproval {
+                        call_id,
+                        name,
+                        arguments,
+                    },
+                );
+            }
             ChatEvent::ToolStarted {
                 session, call_id, ..
             } => {
+                self.approvals.remove(&session);
                 self.update_tool(session, &call_id, None, ToolStatus::Running);
             }
             ChatEvent::ToolFinished {
@@ -283,6 +309,7 @@ impl ChatState {
                 ok,
                 output,
             } => {
+                self.approvals.remove(&session);
                 let status = if ok {
                     ToolStatus::Complete
                 } else {
@@ -301,6 +328,7 @@ impl ChatState {
                 message,
             } => {
                 self.active.remove(&session);
+                self.approvals.remove(&session);
                 self.runs.remove(&session);
                 self.steps.remove(&session);
                 self.sending.remove(&session);
@@ -650,6 +678,16 @@ impl ChatState {
             }
         }
         rail
+    }
+
+    /// The tool call this chat's agent is waiting to be allowed to make.
+    pub fn approval(&self, id: SessionId) -> Option<&PendingApproval> {
+        self.approvals.get(&id)
+    }
+
+    /// Forgets the question once it has been answered.
+    pub fn approval_answered(&mut self, id: SessionId) {
+        self.approvals.remove(&id);
     }
 
     /// The side question being answered in this chat, if any.

@@ -6,7 +6,8 @@ pub mod types;
 
 pub use manager::{ChatConfig, ChatHandle, ChatManager};
 pub use types::{
-    BranchState, ChatCommand, ChatEvent, EventSink, RunOutcome, SendRejection, TurnOutcome,
+    ApprovalDecision, BranchState, ChatCommand, ChatEvent, EventSink, RunOutcome, SendRejection,
+    TurnOutcome,
 };
 
 #[cfg(test)]
