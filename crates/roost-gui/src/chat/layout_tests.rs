@@ -286,13 +286,36 @@ fn send_becomes_stop_during_a_run() {
 }
 
 fn press_enter() -> Vec<egui::Event> {
+    press_enter_with(egui::Modifiers::NONE)
+}
+
+fn press_enter_with(modifiers: egui::Modifiers) -> Vec<egui::Event> {
     vec![egui::Event::Key {
         key: egui::Key::Enter,
         physical_key: Some(egui::Key::Enter),
         pressed: true,
         repeat: false,
-        modifiers: egui::Modifiers::NONE,
+        modifiers,
     }]
+}
+
+#[test]
+fn shift_enter_adds_a_line_instead_of_sending() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    let id = f.open.id;
+    *f.app.state_mut().chat.draft_mut(id) = "hello".into();
+    f.app.state_mut().chat_ui.focus_composer = true;
+    run(&mut f.app, &mut h, size, 3);
+    h.frame(
+        vec2(size.0, size.1),
+        press_enter_with(egui::Modifiers::SHIFT),
+        |ui| f.app.show(ui),
+    );
+    run(&mut f.app, &mut h, size, 2);
+    assert!(sent_chat_commands(&f.sent).is_empty());
+    assert_eq!(f.app.state_mut().chat.draft(id), "hello\n");
 }
 
 #[test]
@@ -890,8 +913,8 @@ fn the_rail_has_one_new_button_and_no_footer() {
     let mut h = Harness::new(false);
     run(&mut f.app, &mut h, size, 3);
     let texts = texts_of(&mut f.app, &mut h, size);
-    assert!(texts.contains("+ New"), "{texts}");
-    for gone in ["New chat", "New incognito", "IN MEMORY", "In memory"] {
+    assert!(texts.contains("+ New chat"), "{texts}");
+    for gone in ["New incognito", "IN MEMORY", "In memory"] {
         assert!(
             !texts
                 .to_uppercase()

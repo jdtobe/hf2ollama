@@ -8,121 +8,61 @@ use crate::app::AppState;
 use crate::runtime::BackendRequest;
 use crate::theme::{mono, semibold, tokens};
 use crate::widgets::{caption, primary_button};
-use eframe::egui::{self, vec2, Margin, RichText, Sense, Stroke};
+use eframe::egui::{self, vec2, Margin, RichText, Stroke};
 use roost_core::events::Command;
 
-/// Pipeline steps shown as chips for the chosen import.
-pub fn steps(is_gguf: bool, quantize: bool, delete_after: bool) -> Vec<&'static str> {
+/// Pipeline steps for the chosen import, in order. One word each: the whole
+/// line has to fit the narrowest card on one row.
+pub fn steps(is_gguf: bool, quantize: bool) -> Vec<&'static str> {
+    let mut v = vec!["Download", "Verify", "Upload"];
+    if !is_gguf && quantize {
+        v.push("Quantize");
+    }
+    v.push("Create");
+    v
+}
+
+/// What the steps do, for the hover text.
+pub fn steps_detail(is_gguf: bool, quantize: bool) -> String {
     let mut v = vec![
-        "Download",
-        "Verify sha256",
+        "Download the files",
+        "Verify their sha256",
         if is_gguf {
-            "Upload blob(s)"
+            "Upload the blob to Ollama"
         } else {
-            "Upload blobs"
+            "Upload the blobs to Ollama"
         },
     ];
     if !is_gguf && quantize {
         v.push("Quantize");
     }
-    v.push("Create model");
-    v.push(if delete_after {
-        "Delete staging"
-    } else {
-        "Keep files"
-    });
-    v
+    v.push("Create the model");
+    v.join("\n")
 }
 
-/// Where one chip goes: its row and x offset from the left edge.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ChipSlot {
-    pub row: usize,
-    pub x: f32,
-}
-
-/// Flows chips of the given widths into rows no wider than `avail`. Chips on
-/// the same row are separated by `gap + sep_w + gap`.
-pub fn layout_chips(widths: &[f32], gap: f32, sep_w: f32, avail: f32) -> Vec<ChipSlot> {
-    let mut slots = Vec::with_capacity(widths.len());
-    let (mut row, mut end) = (0usize, None::<f32>);
-    for &w in widths {
-        let x = match end {
-            None => 0.0,
-            Some(e) => {
-                let next = e + gap + sep_w + gap;
-                if next + w > avail {
-                    row += 1;
-                    0.0
-                } else {
-                    next
-                }
-            }
-        };
-        slots.push(ChipSlot { row, x });
-        end = Some(x + w);
-    }
-    slots
-}
-
-/// Horizontal padding added to a chip label (7 px each side).
-pub const CHIP_PAD: f32 = 14.0;
-const CHIP_H: f32 = 20.0;
-const CHIP_ROW_GAP: f32 = 6.0;
-const CHIP_GAP: f32 = 4.0;
-const CHIP_SEP_W: f32 = 8.0;
-
-/// Draws the chips (wrapping to as many rows as needed) and returns their
-/// rectangles. Chip widths are measured from the labels, so no label wraps.
-pub fn step_chips(ui: &mut egui::Ui, labels: &[&str]) -> Vec<egui::Rect> {
+/// Draws the steps as one line, `Download › Verify › Upload › Create`. The
+/// line never wraps; if the card is too narrow it is cut with an ellipsis and
+/// the hover text lists every step. Returns the line's rectangle.
+pub fn step_line(ui: &mut egui::Ui, labels: &[&str], detail: &str) -> egui::Rect {
     let t = tokens(ui);
-    let galleys: Vec<_> = labels
-        .iter()
-        .map(|l| {
-            ui.painter()
-                .layout_no_wrap((*l).to_string(), mono(11.0), t.fg2)
-        })
-        .collect();
-    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + CHIP_PAD).collect();
-    let avail = ui.available_width();
-    let slots = layout_chips(&widths, CHIP_GAP, CHIP_SEP_W, avail);
-    let rows = slots.last().map_or(0, |s| s.row + 1);
-    if rows == 0 {
-        return Vec::new();
-    }
-    let height = rows as f32 * CHIP_H + (rows - 1) as f32 * CHIP_ROW_GAP;
-    let (area, _) = ui.allocate_exact_size(vec2(avail, height), Sense::hover());
-    let mut rects: Vec<egui::Rect> = Vec::with_capacity(labels.len());
-    for ((slot, w), galley) in slots.iter().zip(&widths).zip(galleys) {
-        let min = area.min + vec2(slot.x, slot.row as f32 * (CHIP_H + CHIP_ROW_GAP));
-        let rect = egui::Rect::from_min_size(min, vec2(*w, CHIP_H));
-        if let Some(prev) = rects.last() {
-            if (prev.min.y - rect.min.y).abs() < 0.5 {
-                let sep = egui::Rect::from_min_max(
-                    egui::pos2(prev.max.x, rect.min.y),
-                    egui::pos2(rect.min.x, rect.max.y),
-                );
-                ui.painter().text(
-                    sep.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "›",
-                    egui::FontId::proportional(12.0),
-                    t.fg3,
-                );
-            }
+    let mut job = egui::text::LayoutJob::default();
+    for (i, l) in labels.iter().enumerate() {
+        if i > 0 {
+            job.append(
+                "  ›  ",
+                0.0,
+                egui::TextFormat::simple(egui::FontId::proportional(11.0), t.fg3),
+            );
         }
-        ui.painter().rect_filled(rect, 4.0, t.surface);
-        ui.painter().rect_stroke(
-            rect,
-            4.0,
-            Stroke::new(1.0, t.line),
-            egui::StrokeKind::Inside,
+        job.append(
+            l,
+            0.0,
+            egui::TextFormat::simple(egui::FontId::proportional(11.5), t.fg2),
         );
-        ui.painter()
-            .galley(rect.center() - galley.size() / 2.0, galley, t.fg2);
-        rects.push(rect);
     }
-    rects
+    ui.add(egui::Label::new(job).truncate())
+        .on_hover_text(detail)
+        .rect
 }
 
 /// Draws the card for the selected repository and sends the import when the
@@ -134,7 +74,6 @@ pub fn step_chips(ui: &mut egui::Ui, labels: &[&str]) -> Vec<egui::Rect> {
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>, budget: f32) {
     let t = tokens(ui);
     let reason = app.import_block_reason();
-    let delete_after = app.delete_after_import;
 
     // (is_gguf, quantize chosen, download bytes, final bytes, final is an estimate)
     let mut facts = None;
@@ -254,8 +193,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                                 facts
                             {
                                 ui.add_space(2.0);
-                                let labels = steps(is_gguf, quantize, delete_after);
-                                step_chips(ui, &labels);
+                                let labels = steps(is_gguf, quantize);
+                                let _line =
+                                    step_line(ui, &labels, &steps_detail(is_gguf, quantize));
+                                #[cfg(test)]
+                                {
+                                    app.browse.probe.chips = vec![_line];
+                                }
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                     let dim = |s: &str| {
@@ -292,99 +236,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browse::test_util::headless;
-    use crate::theme::mono;
 
     #[test]
     fn steps_follow_the_import_kind() {
         assert_eq!(
-            steps(true, false, true),
-            [
-                "Download",
-                "Verify sha256",
-                "Upload blob(s)",
-                "Create model",
-                "Delete staging"
-            ]
-        );
-        assert_eq!(steps(true, false, false).last(), Some(&"Keep files"));
-        assert_eq!(
-            steps(false, true, true),
-            [
-                "Download",
-                "Verify sha256",
-                "Upload blobs",
-                "Quantize",
-                "Create model",
-                "Delete staging"
-            ]
+            steps(true, false),
+            ["Download", "Verify", "Upload", "Create"]
         );
         assert_eq!(
-            steps(false, false, false),
-            [
-                "Download",
-                "Verify sha256",
-                "Upload blobs",
-                "Create model",
-                "Keep files"
-            ]
+            steps(false, true),
+            ["Download", "Verify", "Upload", "Quantize", "Create"]
         );
-    }
-
-    #[test]
-    fn layout_chips_wraps_when_the_row_is_full() {
-        // 60 + (6+14+6) + 80 = 166 fits in 170; the third chip needs 26 + 70 more.
-        let slots = layout_chips(&[60.0, 80.0, 70.0], 6.0, 14.0, 170.0);
-        assert_eq!(slots[0], ChipSlot { row: 0, x: 0.0 });
-        assert_eq!(slots[1], ChipSlot { row: 0, x: 86.0 });
-        assert_eq!(slots[2], ChipSlot { row: 1, x: 0.0 });
-        // Everything fits in one row when wide enough.
-        let one = layout_chips(&[60.0, 80.0, 70.0], 6.0, 14.0, 400.0);
-        assert!(one.iter().all(|s| s.row == 0));
-        // A chip wider than the row still gets a row of its own.
-        let wide = layout_chips(&[300.0, 20.0], 6.0, 14.0, 100.0);
-        assert_eq!(wide[0], ChipSlot { row: 0, x: 0.0 });
-        assert_eq!(wide[1].row, 1);
-    }
-
-    #[test]
-    fn step_chips_wrap_onto_rows_without_widening_any_chip() {
-        let labels = steps(false, true, true);
-        for dark in [false, true] {
-            // 700 px window: the card is far narrower than the window.
-            let (rects, widths) = headless(dark, 300.0, |ui| {
-                let rects = step_chips(ui, &labels);
-                let widths: Vec<f32> = labels
-                    .iter()
-                    .map(|l| {
-                        ui.painter()
-                            .layout_no_wrap((*l).to_string(), mono(11.0), egui::Color32::WHITE)
-                            .size()
-                            .x
-                    })
-                    .collect();
-                (rects, widths)
-            });
-            assert_eq!(rects.len(), labels.len(), "dark={dark}");
-            let mut ys: Vec<i32> = rects.iter().map(|r| r.min.y.round() as i32).collect();
-            ys.dedup();
-            assert!(ys.len() >= 2, "dark={dark}: chips should wrap, rows {ys:?}");
-            for (r, w) in rects.iter().zip(&widths) {
-                assert!(
-                    (r.width() - (w + CHIP_PAD)).abs() < 0.6,
-                    "dark={dark}: chip {} wide vs content {}",
-                    r.width(),
-                    w
-                );
-                assert!(r.height() < 26.0, "dark={dark}: chip wrapped its label");
-            }
-            let left = rects.iter().map(|r| r.min.x).fold(f32::MAX, f32::min);
-            let right = rects.iter().map(|r| r.max.x).fold(0.0, f32::max);
-            assert!(
-                right - left <= 300.5,
-                "dark={dark}: overflow {}",
-                right - left
-            );
-        }
+        assert_eq!(steps(false, false), steps(true, false));
     }
 }

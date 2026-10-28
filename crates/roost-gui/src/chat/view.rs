@@ -234,7 +234,8 @@ fn rail(
     rail_list(ui, app, out, t, mode);
 }
 
-/// One “+ New” button; its menu offers the kinds of session for this tab.
+/// A split button: the main half starts a new chat/agent, the arrow beside it
+/// offers the incognito variant.
 fn rail_new_menu(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -244,54 +245,67 @@ fn rail_new_menu(
     mode: SessionMode,
 ) {
     let ready = model.is_some();
-    let (button, _) = egui::containers::menu::MenuButton::from_button(
-        egui::Button::new(
-            RichText::new("+ New")
-                .font(semibold(13.0))
-                .color(t.accent_fg),
-        )
-        .fill(t.accent)
-        .min_size(vec2(96.0, 30.0)),
-    )
-    .ui(ui, |ui| {
-        let (plain, incognito) = if mode == SessionMode::Agent {
-            ("New agent…", "New incognito agent…")
-        } else {
-            ("New chat", "New incognito chat")
-        };
-        for (label, lifetime) in [
-            (plain, SessionLifetime::Persisted),
-            (incognito, SessionLifetime::Incognito),
-        ] {
-            let hint = "Install a model first (Models), then start one.";
-            let item = ui.add_enabled(ready, egui::Button::new(label));
+    let hint = "Install a model first (Models), then start one.";
+    let (plain, incognito) = if mode == SessionMode::Agent {
+        ("+ New agent…", "New incognito agent…")
+    } else {
+        ("+ New chat", "New incognito chat")
+    };
+    let mut start = None;
+    let (main, arrow) = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            let main = ui.add_enabled(
+                ready,
+                egui::Button::new(RichText::new(plain).font(semibold(13.0)).color(t.accent_fg))
+                    .fill(t.accent)
+                    .min_size(vec2(96.0, 30.0)),
+            );
             if !ready {
-                item.clone().on_disabled_hover_text(hint);
+                main.clone().on_disabled_hover_text(hint);
             }
-            if item.clicked() {
-                if mode == SessionMode::Agent {
-                    open_new_agent(
-                        app,
-                        model.clone(),
-                        lifetime == SessionLifetime::Incognito,
-                        out,
-                    );
-                } else if let Some(model) = model.clone() {
-                    app.chat_ui.focus_composer = true;
-                    app.chat_ui.inspect = None;
-                    out.push(BackendRequest::Chat(ChatCommand::Create {
-                        lifetime,
-                        model,
-                    }));
+            if main.clicked() {
+                start = Some(SessionLifetime::Persisted);
+            }
+            let (arrow, _) = egui::containers::menu::MenuButton::from_button(
+                egui::Button::new(RichText::new("▾").font(semibold(13.0)).color(t.accent_fg))
+                    .fill(t.accent)
+                    .min_size(vec2(26.0, 30.0)),
+            )
+            .ui(ui, |ui| {
+                let item = ui.add_enabled(ready, egui::Button::new(incognito));
+                if !ready {
+                    item.clone().on_disabled_hover_text(hint);
                 }
-            }
+                if item.clicked() {
+                    start = Some(SessionLifetime::Incognito);
+                }
+            });
+            (main, arrow)
+        })
+        .inner;
+    if let Some(lifetime) = start {
+        if mode == SessionMode::Agent {
+            open_new_agent(
+                app,
+                model.clone(),
+                lifetime == SessionLifetime::Incognito,
+                out,
+            );
+        } else if let Some(model) = model.clone() {
+            app.chat_ui.focus_composer = true;
+            app.chat_ui.inspect = None;
+            out.push(BackendRequest::Chat(ChatCommand::Create {
+                lifetime,
+                model,
+            }));
         }
-    });
+    }
     #[cfg(test)]
     {
-        app.chat_ui.probe.new_button = Some(button.rect);
+        app.chat_ui.probe.new_button = Some(main.rect.union(arrow.rect));
     }
-    let _ = button;
+    let _ = (main, arrow);
 }
 
 /// Opens the New agent form with a default model, and asks whether it can use tools.
@@ -1081,7 +1095,16 @@ fn composer(
     // Plain Enter never types a newline here; it sends, or does nothing
     // while a reply is running. Shift+Enter still adds a line.
     let focused = ui.memory(|m| m.has_focus(eid));
-    let enter = focused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
+    // `consume_key` ignores an extra Shift, so look for it first: Shift+Enter
+    // must reach the text field and add a line.
+    let enter = focused
+        && ui.input_mut(|i| {
+            let shifted = i.modifiers.shift
+                || i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. } if modifiers.shift)
+                });
+            !shifted && i.consume_key(Modifiers::NONE, Key::Enter)
+        });
     let mut send = enter;
     let mut stop = false;
     let hint = if app.chat.is_agent(id) {

@@ -337,6 +337,8 @@ const TOP_ROW_H: f32 = 36.0;
 /// Height of the segmented nav: 28 px segments, 2 px padding, 1 px border.
 const NAV_H: f32 = 34.0;
 
+/// Below this window width the status pill shows only the Ollama version.
+const PILL_FULL_MIN_WINDOW: f32 = 1100.0;
 /// Space kept between the search field and the status pill.
 const SEARCH_PILL_GAP: f32 = 16.0;
 /// Narrowest useful search field; below this the field is hidden.
@@ -697,7 +699,11 @@ impl App {
         let t = tokens(ui);
         let dark = ui.visuals().dark_mode;
 
+        // Narrow windows drop the host from the pill (it moves to the hover
+        // text) so the search field keeps its room.
+        let narrow = ui.ctx().content_rect().width() < PILL_FULL_MIN_WINDOW;
         let (dot, label) = match &self.state.ollama {
+            Some(Some(v)) if narrow => (t.ok, format!("Ollama {v}")),
             Some(Some(v)) => (t.ok, format!("Ollama {v} · {}", self.state.ollama_host)),
             Some(None) => (bad(dark), "Ollama not reachable".to_string()),
             None => (t.fg3, "Checking Ollama…".to_string()),
@@ -853,7 +859,13 @@ impl App {
                         self.state.pill_rect = Some(rect);
                         let pill_resp = pill_resp
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .on_hover_text("Models in memory");
+                            .on_hover_text(match &self.state.ollama {
+                                Some(Some(v)) => format!(
+                                    "Ollama {v} · {}\nClick to see models in memory",
+                                    self.state.ollama_host
+                                ),
+                                _ => "Models in memory".to_string(),
+                            });
                         let p = ui.painter();
                         p.rect_filled(rect, 12.0, t.surface2);
                         p.rect_stroke(
@@ -1084,7 +1096,10 @@ mod tests {
             tx,
             rx,
         );
-        app.state.ollama = Some(None);
+        // The longest realistic pill: a connected server with a full URL.
+        app.state.ollama = Some(Some("0.12.10".into()));
+        app.state.ollama_host = "http://192.168.100.200:11434".into();
+        app.state.select(View::Browse);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 820.0));
         for _ in 0..4 {
             let input = egui::RawInput {

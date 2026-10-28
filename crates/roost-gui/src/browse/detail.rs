@@ -1352,6 +1352,21 @@ mod tests {
     }
 
     #[test]
+    fn import_steps_are_one_short_line_at_every_window_size() {
+        for size in SIZES {
+            for dark in [false, true] {
+                let mut app = laid_out(Kind::SafetensorsUnreachable, dark, size);
+                let line = app.state_mut().browse.probe.chips.clone();
+                assert_eq!(line.len(), 1, "{size:?} dark={dark}");
+                assert!(
+                    line[0].height() < 20.0,
+                    "{size:?} dark={dark}: wrapped {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn card_shows_chips_and_sizes_when_the_window_has_room() {
         for dark in [false, true] {
             let mut app = laid_out(Kind::SafetensorsUnreachable, dark, (1180.0, 820.0));
