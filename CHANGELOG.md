@@ -37,6 +37,8 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - **Models** is one view instead of Browse and Installed behind a switch: a list with the models Ollama has (with a usage bar) above the Hugging Face results, one search box that narrows both, and one detail pane. Filters are chips above the list (a Filters popover, Fits my machine, and the sort order) instead of a side rail.
 - Selecting an installed model shows **Chat**, **Work** and **Delete…** (two clicks, with the usual pause), then its details and where it came from; the source repository is a link that opens it in the same list.
+- The list: installed rows are taller, with the parameter count, quantization and size as pills; the disk-usage bar is a titled card with a legend; the sort order is a full-width dropdown with a filter button at its right end (the button keeps its place and shows how many filters are on; its popover holds every filter, including Only models that fit, and a Reset button). Hugging Face results default to GGUF only.
+- An installed model's page is three stacked bands in the theme's own colours: the header with the actions (tinted with the accent), the details, and the description.
 - A Hugging Face result for a repository you have imported from shows an **installed** tag. The installed model's detail ends with **About**: the source repository's description (or a note that models pulled from the Ollama library have none). An empty search is labelled **Popular on Hugging Face**.
 - The View menu has one Models entry (⌘3); ⌘4 and the separate Browse and Installed entries are gone.
 

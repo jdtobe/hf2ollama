@@ -13,6 +13,7 @@ pub enum Icon {
     Btw,
     Read,
     Stop,
+    Filter,
     Prev,
     Next,
 }
@@ -122,6 +123,20 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             ));
             painter.add(egui::Shape::line(
                 vec![p(12.6, 3.8), p(14.0, 8.0), p(12.6, 12.2)],
+                stroke,
+            ));
+        }
+        Icon::Filter => {
+            painter.add(egui::Shape::line(
+                vec![
+                    p(2.5, 3.5),
+                    p(13.5, 3.5),
+                    p(9.0, 8.5),
+                    p(9.0, 13.0),
+                    p(7.0, 12.0),
+                    p(7.0, 8.5),
+                    p(2.5, 3.5),
+                ],
                 stroke,
             ));
         }

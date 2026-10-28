@@ -34,6 +34,33 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     }
 }
 
+/// One full-width band of a detail page. The bands stack: the header
+/// (tinted with the theme's accent), the details (the second surface) and
+/// the description (the page surface), so every theme keeps its own look.
+pub fn band<R>(
+    ui: &mut egui::Ui,
+    fill: Color32,
+    line: Option<Color32>,
+    min_height: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> (R, egui::Rect) {
+    let out = egui::Frame::new()
+        .fill(fill)
+        .inner_margin(Margin::symmetric(24, 16))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(min_height);
+            ui.spacing_mut().item_spacing.y = 10.0;
+            add(ui)
+        });
+    let rect = out.response.rect;
+    if let Some(c) = line {
+        ui.painter()
+            .hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, c));
+    }
+    (out.inner, rect)
+}
+
 fn installed(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -45,25 +72,33 @@ fn installed(
     let now = Instant::now();
     let name = row.name().to_string();
     let panel = egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface)
-                .inner_margin(Margin::symmetric(24, 16)),
-        )
+        .frame(egui::Frame::new().fill(t.surface))
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 10.0;
-                    ui.add(
-                        egui::Label::new(RichText::new(&name).font(mono(18.0)).color(t.fg)).wrap(),
-                    );
-                    ui.label(RichText::new(facts(row)).size(13.0).color(t.fg2));
-                    actions(ui, app, out, row, now, dark);
-                    ui.add_space(6.0);
-                    details(ui, app, row, &t, dark);
-                    ui.add_space(6.0);
-                    about(ui, app, row, &t);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let view_h = ui.available_height();
+                    let (_, top) = band(ui, t.accent_soft, Some(t.line), 0.0, |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(&name).font(mono(18.0)).color(t.fg))
+                                .wrap(),
+                        );
+                        ui.label(RichText::new(facts(row)).size(13.0).color(t.fg2));
+                        actions(ui, app, out, row, now, dark);
+                    });
+                    let (_, mid) = band(ui, t.surface2, Some(t.line), 0.0, |ui| {
+                        details(ui, app, row, &t, dark);
+                    });
+                    let rest = (view_h - top.height() - mid.height() - 32.0).max(0.0);
+                    let (_, low) = band(ui, t.surface, None, rest, |ui| {
+                        about(ui, app, row, &t);
+                    });
+                    #[cfg(test)]
+                    {
+                        app.browse.probe.bands = vec![top, mid, low];
+                    }
+                    let _ = (top, mid, low);
                 });
         });
     #[cfg(test)]

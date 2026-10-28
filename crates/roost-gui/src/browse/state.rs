@@ -955,10 +955,14 @@ mod tests {
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut st = BrowseState::new(machine(32.0, Some(16.0)));
         st.tick("x", ms(0));
-        st.filters.safetensors = false;
+        assert_eq!(st.filters.query_formats(), vec![FormatFilter::Gguf]);
+        st.filters.safetensors = true;
         assert!(st.tick("x", ms(10)).is_none());
         let q = st.tick("x", ms(400)).expect("requery");
-        assert_eq!(q.formats, vec![FormatFilter::Gguf]);
+        assert_eq!(
+            q.formats,
+            vec![FormatFilter::Gguf, FormatFilter::Safetensors]
+        );
         st.filters.sort = roost_core::hf::SortKey::Updated;
         assert!(st.tick("x", ms(500)).is_none());
         let q = st.tick("x", ms(900)).expect("requery");

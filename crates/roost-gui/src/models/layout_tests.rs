@@ -438,3 +438,132 @@ fn a_library_model_says_it_has_no_hugging_face_description() {
     let t = texts(&mut app, &mut h, size);
     assert!(t.contains("no Hugging Face description"), "{t}");
 }
+
+#[test]
+fn installed_rows_have_room_and_show_their_facts_as_pills() {
+    for size in SIZES {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let rows = app.state_mut().browse.probe.installed_rows.clone();
+        for (name, r) in &rows {
+            assert!(
+                r.height() >= 76.0,
+                "{size:?}: {name} only {} px",
+                r.height()
+            );
+        }
+        let t = texts(&mut app, &mut h, size);
+        let lines: Vec<&str> = t.lines().collect();
+        for pill in ["7B", "Q4_K_M", "4.68 GB"] {
+            assert!(lines.contains(&pill), "{pill} pill missing in:\n{t}");
+        }
+        assert!(t.contains("Pulled from the Ollama library"), "{t}");
+    }
+}
+
+#[test]
+fn the_filter_bar_is_a_full_width_sort_and_a_filter_button_that_never_moves() {
+    for size in SIZES {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let list = app.state_mut().browse.probe.list.unwrap();
+        let before = app.state_mut().browse.probe.filters_chip.unwrap();
+        assert!(inside(before, list), "{size:?}");
+        assert!(
+            before.right() >= list.right() - 20.0,
+            "{size:?}: the button sits at the right end: {before:?} in {list:?}"
+        );
+        // Turning a filter on changes the button's look, not its place.
+        app.state_mut().browse.filters.only_fit = true;
+        run(&mut app, &mut h, size, 3);
+        let after = app.state_mut().browse.probe.filters_chip.unwrap();
+        assert_eq!(before, after, "{size:?}: the button moved");
+        let t = texts(&mut app, &mut h, size);
+        assert!(
+            !t.contains("Fits my machine"),
+            "no separate chip any more:\n{t}"
+        );
+    }
+}
+
+#[test]
+fn the_filter_popup_has_a_reset_and_the_fit_option() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let chip = app.state_mut().browse.probe.filters_chip.unwrap();
+    click(&mut app, &mut h, size, chip.center());
+    let t = texts(&mut app, &mut h, size);
+    for want in ["Reset", "Only models that fit", "Parameters"] {
+        assert!(
+            t.contains(want) || t.to_uppercase().contains(&want.to_uppercase()),
+            "{want:?} missing in:\n{t}"
+        );
+    }
+}
+
+#[test]
+fn the_detail_page_is_three_stacked_bands() {
+    for size in SIZES {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        select_first(&mut app, &mut h, size);
+        run(&mut app, &mut h, size, 2);
+        let p = app.state_mut().browse.probe.clone();
+        let detail = p.detail.unwrap();
+        assert_eq!(p.bands.len(), 3, "{size:?}");
+        for w in p.bands.windows(2) {
+            assert!(
+                (w[0].bottom() - w[1].top()).abs() < 1.0,
+                "{size:?}: gap in {:?}",
+                p.bands
+            );
+        }
+        for b in &p.bands {
+            assert!(
+                (b.width() - detail.width()).abs() < 20.0,
+                "{size:?}: band {b:?}"
+            );
+        }
+        // The buttons end well inside the top band.
+        let delete = p.delete_button.unwrap();
+        assert!(
+            p.bands[0].bottom() - delete.bottom() >= 12.0,
+            "{size:?}: {} px of padding under the buttons",
+            p.bands[0].bottom() - delete.bottom()
+        );
+    }
+}
+
+#[test]
+fn the_usage_card_names_its_segments_with_a_legend() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let (mut app, _rx) = models_app();
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 4);
+            let t = texts(&mut app, &mut h, size);
+            for want in [
+                "Disk used by models",
+                "Imported with Roost",
+                "Pulled from Ollama",
+                "14.04 GB",
+            ] {
+                assert!(
+                    t.contains(want),
+                    "{size:?} dark={dark}: {want:?} missing in:\n{t}"
+                );
+            }
+            let list = app.state_mut().browse.probe.list.unwrap();
+            let first = app.state_mut().browse.probe.installed_rows[0].1;
+            assert!(
+                first.top() > list.top() + 60.0,
+                "the card sits above the rows"
+            );
+        }
+    }
+}

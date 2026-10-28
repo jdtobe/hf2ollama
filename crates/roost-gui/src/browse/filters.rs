@@ -72,7 +72,9 @@ impl Default for Filters {
     fn default() -> Self {
         Filters {
             gguf: true,
-            safetensors: true,
+            // Safetensors repositories can rarely be imported, so they are
+            // left out until asked for.
+            safetensors: false,
             other: false,
             params: ParamRange::Any,
             only_fit: false,
@@ -225,7 +227,28 @@ fn choice(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
 /// never lands in a second popup).
 fn controls(ui: &mut egui::Ui, f: &mut Filters, machine: &Machine) {
     let t = tokens(ui);
-    ui.set_min_width(250.0);
+    ui.set_min_width(260.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Filters").strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let changed = *f
+                != Filters {
+                    sort: f.sort,
+                    ..Filters::default()
+                };
+            if ui
+                .add_enabled(
+                    changed,
+                    egui::Button::new(RichText::new("Reset").size(12.0)),
+                )
+                .on_hover_text("Back to the default filters")
+                .clicked()
+            {
+                *f = reset_filters(f);
+            }
+        });
+    });
+    ui.add_space(6.0);
     caption(ui, "Format");
     ui.checkbox(&mut f.gguf, "GGUF");
     ui.checkbox(&mut f.safetensors, "Safetensors");
@@ -253,36 +276,31 @@ fn controls(ui: &mut egui::Ui, f: &mut Filters, machine: &Machine) {
     ui.checkbox(&mut f.vision, "Vision / multimodal");
 }
 
-/// The chips row above the Models list: a Filters popover, a quick
-/// "Fits my machine" toggle and the sort order.
-pub fn chips(ui: &mut egui::Ui, app: &mut AppState) {
+/// The default filters; the sort order is a separate control and stays.
+pub fn reset_filters(f: &Filters) -> Filters {
+    Filters {
+        sort: f.sort,
+        ..Filters::default()
+    }
+}
+
+const FILTER_BTN: f32 = 32.0;
+
+/// The row above the Models list: the sort order across the full width and a
+/// filter button at its right end that opens every filter in a popover.
+pub fn filter_bar(ui: &mut egui::Ui, app: &mut AppState) {
     let t = tokens(ui);
     let before = app.browse.filters.clone();
     let machine = app.machine.clone();
     let f = &mut app.browse.filters;
-    let mut chip = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+    let mut button = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
         let n = active_count(f);
-        let label = if n == 0 {
-            "Filters ▾".to_string()
-        } else {
-            format!("Filters ({n}) ▾")
-        };
-        let r = ui.selectable_label(n > 0, RichText::new(label).size(12.5));
-        egui::Popup::from_toggle_button_response(&r)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| controls(ui, f, &machine));
-        chip = Some(r.rect);
-        if ui
-            .selectable_label(f.only_fit, RichText::new("Fits my machine").size(12.5))
-            .on_hover_text(machine_line(&machine))
-            .clicked()
-        {
-            f.only_fit = !f.only_fit;
-        }
+        let sort_w = (ui.available_width() - FILTER_BTN - ui.spacing().item_spacing.x).max(80.0);
         egui::ComboBox::from_id_salt("sort")
-            .selected_text(RichText::new(sort_label(f.sort)).size(12.5).color(t.fg2))
+            .selected_text(sort_label(f.sort))
+            .width(sort_w)
             .show_ui(ui, |ui| {
                 for s in [
                     SortKey::Downloads,
@@ -293,12 +311,49 @@ pub fn chips(ui: &mut egui::Ui, app: &mut AppState) {
                     ui.selectable_value(&mut f.sort, s, sort_label(s));
                 }
             });
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(FILTER_BTN, FILTER_BTN), egui::Sense::click());
+        let resp = resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(if n == 0 {
+                "Filters".to_string()
+            } else {
+                format!("Filters ({n} on)")
+            });
+        let fill = if n > 0 {
+            t.accent_soft
+        } else if resp.hovered() {
+            t.surface2
+        } else {
+            t.surface
+        };
+        ui.painter().rect(
+            rect,
+            6.0,
+            fill,
+            egui::Stroke::new(1.0, if n > 0 { t.accent } else { t.line }),
+            egui::StrokeKind::Inside,
+        );
+        crate::icons::paint(
+            ui.painter(),
+            rect,
+            crate::icons::Icon::Filter,
+            if n > 0 { t.accent } else { t.fg2 },
+        );
+        if n > 0 {
+            let c = rect.right_top() + egui::vec2(-3.0, 3.0);
+            ui.painter().circle_filled(c, 4.0, t.accent);
+        }
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| controls(ui, f, &machine));
+        button = Some(rect);
     });
     #[cfg(test)]
     {
-        app.browse.probe.filters_chip = chip;
+        app.browse.probe.filters_chip = button;
     }
-    let _ = chip;
+    let _ = button;
     if app.browse.filters != before {
         app.browse.apply_filters();
     }
@@ -307,6 +362,28 @@ pub fn chips(ui: &mut egui::Ui, app: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_restores_every_filter_but_keeps_the_sort() {
+        let f = Filters {
+            gguf: false,
+            only_fit: true,
+            params: ParamRange::Over40,
+            vision: false,
+            sort: SortKey::Likes,
+            ..Filters::default()
+        };
+        let r = reset_filters(&f);
+        assert_eq!(
+            r,
+            Filters {
+                sort: SortKey::Likes,
+                ..Filters::default()
+            }
+        );
+        assert_eq!(active_count(&f), 4);
+        assert_eq!(active_count(&r), 0);
+    }
 
     fn summary(params: Option<&str>, gguf: bool, st: bool, name: &str) -> ModelSummary {
         ModelSummary {
@@ -389,10 +466,17 @@ mod tests {
         let gguf = summary(None, true, false, "g");
         let st = summary(None, false, true, "s");
         let other = summary(None, false, false, "o");
+        // By default only GGUF shows.
         let f = Filters::default();
+        assert!(passes(&gguf, &f, &m) && !passes(&st, &f, &m) && !passes(&other, &f, &m));
+        let f = Filters {
+            safetensors: true,
+            ..Filters::default()
+        };
         assert!(passes(&gguf, &f, &m) && passes(&st, &f, &m) && !passes(&other, &f, &m));
         let f = Filters {
             gguf: false,
+            safetensors: true,
             ..Filters::default()
         };
         assert!(!passes(&gguf, &f, &m) && passes(&st, &f, &m));
