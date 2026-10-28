@@ -31,13 +31,23 @@ impl AutoDismiss {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeChoice {
+pub enum ThemeMode {
     #[serde(alias = "System")]
     System,
     #[serde(alias = "Light")]
     Light,
     #[serde(alias = "Dark")]
     Dark,
+}
+
+/// The colour family; each has a light and a dark variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeFamily {
+    Meadow,
+    Ember,
+    Plum,
+    Tide,
 }
 
 /// User settings, persisted as TOML.
@@ -52,7 +62,10 @@ pub struct Settings {
     pub auto_dismiss: AutoDismiss,
     pub hf_endpoint: String,
     pub hardware_override: Option<Machine>,
-    pub theme: ThemeChoice,
+    /// Saved as `theme` by earlier versions.
+    #[serde(alias = "theme")]
+    pub theme_mode: ThemeMode,
+    pub theme_family: ThemeFamily,
 }
 
 impl Default for Settings {
@@ -66,7 +79,8 @@ impl Default for Settings {
             auto_dismiss: AutoDismiss::Never,
             hf_endpoint: "https://huggingface.co".into(),
             hardware_override: None,
-            theme: ThemeChoice::System,
+            theme_mode: ThemeMode::System,
+            theme_family: ThemeFamily::Meadow,
         }
     }
 }
@@ -107,7 +121,8 @@ mod tests {
         assert_eq!(s.auto_dismiss, AutoDismiss::Never);
         assert_eq!(s.hf_endpoint, "https://huggingface.co");
         assert_eq!(s.hardware_override, None);
-        assert_eq!(s.theme, ThemeChoice::System);
+        assert_eq!(s.theme_mode, ThemeMode::System);
+        assert_eq!(s.theme_family, ThemeFamily::Meadow);
     }
 
     #[test]
@@ -126,7 +141,8 @@ mod tests {
                 ram_gb: 64.0,
                 vram_gb: Some(24.0),
             }),
-            theme: ThemeChoice::Dark,
+            theme_mode: ThemeMode::Dark,
+            theme_family: ThemeFamily::Tide,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
@@ -153,7 +169,8 @@ mod tests {
         let path = dir.path().join("p.toml");
         std::fs::write(&path, "theme = \"Light\"\n").unwrap();
         let s = Settings::load(&path).unwrap();
-        assert_eq!(s.theme, ThemeChoice::Light);
+        assert_eq!(s.theme_mode, ThemeMode::Light);
+        assert_eq!(s.theme_family, ThemeFamily::Meadow);
         assert_eq!(s.max_parallel, 2);
     }
 
@@ -190,13 +207,15 @@ mod tests {
         let path = dir.path().join("s.toml");
         let s = Settings {
             auto_dismiss: AutoDismiss::FiveMinutes,
-            theme: ThemeChoice::Dark,
+            theme_mode: ThemeMode::Dark,
+            theme_family: ThemeFamily::Plum,
             ..Settings::default()
         };
         s.save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("auto_dismiss = \"five-minutes\""), "{text}");
-        assert!(text.contains("theme = \"dark\""), "{text}");
+        assert!(text.contains("theme_mode = \"dark\""), "{text}");
+        assert!(text.contains("theme_family = \"plum\""), "{text}");
         assert!(
             !text.contains("FiveMinutes") && !text.contains("Dark"),
             "{text}"
@@ -221,12 +240,32 @@ mod tests {
             let s = Settings::load(&path).unwrap();
             assert_eq!(s.auto_dismiss, dismiss, "{old}");
             let want = match theme {
-                "System" => ThemeChoice::System,
-                "Light" => ThemeChoice::Light,
-                _ => ThemeChoice::Dark,
+                "System" => ThemeMode::System,
+                "Light" => ThemeMode::Light,
+                _ => ThemeMode::Dark,
             };
-            assert_eq!(s.theme, want, "{theme}");
+            assert_eq!(s.theme_mode, want, "{theme}");
         }
+    }
+
+    #[test]
+    fn new_theme_field_names_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("n.toml");
+        std::fs::write(&path, "theme_mode = \"dark\"\ntheme_family = \"ember\"\n").unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert_eq!(s.theme_mode, ThemeMode::Dark);
+        assert_eq!(s.theme_family, ThemeFamily::Ember);
+    }
+
+    #[test]
+    fn old_lowercase_theme_field_loads_with_default_family() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("o.toml");
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert_eq!(s.theme_mode, ThemeMode::Dark);
+        assert_eq!(s.theme_family, ThemeFamily::Meadow);
     }
 
     #[test]
@@ -239,14 +278,22 @@ mod tests {
             AutoDismiss::FiveMinutes,
             AutoDismiss::OneHour,
         ] {
-            for t in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
-                let s = Settings {
-                    auto_dismiss: d,
-                    theme: t,
-                    ..Settings::default()
-                };
-                s.save(&path).unwrap();
-                assert_eq!(Settings::load(&path).unwrap(), s);
+            for t in [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark] {
+                for f in [
+                    ThemeFamily::Meadow,
+                    ThemeFamily::Ember,
+                    ThemeFamily::Plum,
+                    ThemeFamily::Tide,
+                ] {
+                    let s = Settings {
+                        auto_dismiss: d,
+                        theme_mode: t,
+                        theme_family: f,
+                        ..Settings::default()
+                    };
+                    s.save(&path).unwrap();
+                    assert_eq!(Settings::load(&path).unwrap(), s);
+                }
             }
         }
     }

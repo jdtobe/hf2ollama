@@ -123,7 +123,7 @@ Dependabot proposes cargo and GitHub Actions updates weekly. Dependencies must k
 
 These environment variables only change how the GUI starts, and are always available:
 
-- `ROOST_THEME=light|dark` overrides the saved theme.
+- `ROOST_THEME` overrides the saved theme: `light` or `dark` change the mode only; `meadow-light`, `meadow-dark`, `ember-light`, `ember-dark`, `plum-light`, `plum-dark`, `tide-light` or `tide-dark` set family and mode.
 - `ROOST_SIZE=WxH` sets the initial window size (not below 900x640).
 - `ROOST_VIEW=browse|installed|settings` starts on that view.
 

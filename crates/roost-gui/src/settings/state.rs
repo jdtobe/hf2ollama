@@ -9,7 +9,7 @@ use super::validate::{
 use crate::browse::results::format_size;
 use crate::confirm::Confirm;
 use crate::runtime::{BackendRequest, CachedRow, HfToken, HfTokenStatus};
-use roost_core::config::{AutoDismiss, Settings, ThemeChoice};
+use roost_core::config::{AutoDismiss, Settings, ThemeFamily, ThemeMode};
 use roost_core::fit::Machine;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -397,9 +397,16 @@ impl SettingsState {
         }
     }
 
-    pub fn set_theme(&mut self, s: &mut Settings, v: ThemeChoice) -> SettingsChange {
+    pub fn set_theme(&mut self, s: &mut Settings, v: ThemeMode) -> SettingsChange {
         SettingsChange {
-            theme: Self::flag(&mut s.theme, v),
+            theme: Self::flag(&mut s.theme_mode, v),
+            ..Default::default()
+        }
+    }
+
+    pub fn set_theme_family(&mut self, s: &mut Settings, v: ThemeFamily) -> SettingsChange {
+        SettingsChange {
+            theme: Self::flag(&mut s.theme_family, v),
             ..Default::default()
         }
     }
@@ -748,7 +755,16 @@ mod tests {
             flags(st.set_auto_dismiss(&mut s, AutoDismiss::OneHour)),
             ["auto_dismiss"]
         );
-        assert_eq!(flags(st.set_theme(&mut s, ThemeChoice::Dark)), ["theme"]);
+        assert_eq!(flags(st.set_theme(&mut s, ThemeMode::Dark)), ["theme"]);
+        assert_eq!(
+            flags(st.set_theme_family(&mut s, ThemeFamily::Plum)),
+            ["theme"]
+        );
+        assert_eq!(s.theme_family, ThemeFamily::Plum);
+        assert_eq!(
+            flags(st.set_theme_family(&mut s, ThemeFamily::Plum)),
+            [] as [&str; 0]
+        );
         st.ollama_text = "http://box:11434".into();
         assert_eq!(flags(st.commit_ollama(&mut s)), ["ollama_url"]);
         st.hf_text = "https://mirror.example/".into();

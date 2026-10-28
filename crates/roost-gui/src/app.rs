@@ -145,7 +145,7 @@ impl AppState {
         }
         let settings = &self.settings;
         if change.theme {
-            crate::theme::apply_choice(ctx, settings.theme);
+            crate::theme::apply(ctx, settings.theme_family, settings.theme_mode);
         }
         if change.auto_dismiss {
             self.auto_dismiss = settings.auto_dismiss;
@@ -1349,12 +1349,29 @@ mod tests {
         let change = s
             .settings_view
             .state
-            .set_theme(&mut s.settings, roost_core::config::ThemeChoice::Dark);
+            .set_theme(&mut s.settings, roost_core::config::ThemeMode::Dark);
         only_apply(s.apply_change(change, &ctx));
         assert_eq!(
             ctx.options(|o| o.theme_preference),
             egui::ThemePreference::Dark
         );
+    }
+
+    #[test]
+    fn theme_family_change_applies_immediately_and_is_saved() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut s = settings_state(None);
+        let change = s
+            .settings_view
+            .state
+            .set_theme_family(&mut s.settings, roost_core::config::ThemeFamily::Tide);
+        let saved = only_apply(s.apply_change(change, &ctx));
+        assert_eq!(
+            crate::theme::family(&ctx),
+            roost_core::config::ThemeFamily::Tide
+        );
+        assert_eq!(saved.theme_family, roost_core::config::ThemeFamily::Tide);
     }
 
     #[test]

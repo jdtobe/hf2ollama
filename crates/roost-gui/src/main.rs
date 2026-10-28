@@ -11,23 +11,40 @@ mod runtime;
 mod settings;
 mod startup;
 mod theme;
+mod theme_tokens;
 mod widgets;
 
 use eframe::egui;
-use roost_core::config::ThemeChoice;
+use roost_core::config::{ThemeFamily, ThemeMode};
 use roost_core::paths::OsDirs;
 use std::io::Cursor;
 
-/// `ROOST_THEME=light|dark` overrides the saved theme. Only meant for taking
-/// screenshots of both themes; it is not a user-facing setting.
-fn theme_override() -> Option<ThemeChoice> {
+/// `ROOST_THEME` overrides the saved theme: `light` or `dark` change only the
+/// mode, `<family>-<mode>` (for example `ember-dark`) change both. Only meant
+/// for taking screenshots; it is not a user-facing setting.
+fn theme_override() -> Option<(Option<ThemeFamily>, ThemeMode)> {
     theme_override_with(|name| std::env::var(name).ok())
 }
 
-fn theme_override_with(lookup: impl FnOnce(&str) -> Option<String>) -> Option<ThemeChoice> {
-    match lookup("ROOST_THEME").as_deref() {
-        Some("light") => Some(ThemeChoice::Light),
-        Some("dark") => Some(ThemeChoice::Dark),
+fn theme_override_with(
+    lookup: impl FnOnce(&str) -> Option<String>,
+) -> Option<(Option<ThemeFamily>, ThemeMode)> {
+    let value = lookup("ROOST_THEME")?;
+    let (family, mode) = match value.split_once('-') {
+        Some((family, mode)) => (Some(family), mode),
+        None => (None, value.as_str()),
+    };
+    let family = match family {
+        None => None,
+        Some("meadow") => Some(ThemeFamily::Meadow),
+        Some("ember") => Some(ThemeFamily::Ember),
+        Some("plum") => Some(ThemeFamily::Plum),
+        Some("tide") => Some(ThemeFamily::Tide),
+        Some(_) => return None,
+    };
+    match mode {
+        "light" => Some((family, ThemeMode::Light)),
+        "dark" => Some((family, ThemeMode::Dark)),
         _ => None,
     }
 }
@@ -181,7 +198,8 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
-            theme::apply_choice(&cc.egui_ctx, theme_override().unwrap_or(settings.theme));
+            let (family, mode) = theme_override().unwrap_or((None, settings.theme_mode));
+            theme::apply(&cc.egui_ctx, family.unwrap_or(settings.theme_family), mode);
             let store = memory_token_store();
             #[cfg(feature = "dev-hooks")]
             let dev_store = store.is_some();
@@ -244,6 +262,28 @@ mod tests {
     }
 
     #[test]
+    fn theme_override_accepts_every_family_and_mode() {
+        let theme = |v: &'static str| {
+            theme_override_with(move |name| (name == "ROOST_THEME").then(|| v.to_string()))
+        };
+        for (name, family) in [
+            ("meadow", ThemeFamily::Meadow),
+            ("ember", ThemeFamily::Ember),
+            ("plum", ThemeFamily::Plum),
+            ("tide", ThemeFamily::Tide),
+        ] {
+            let light: &'static str = Box::leak(format!("{name}-light").into_boxed_str());
+            let dark: &'static str = Box::leak(format!("{name}-dark").into_boxed_str());
+            assert_eq!(theme(light), Some((Some(family), ThemeMode::Light)));
+            assert_eq!(theme(dark), Some((Some(family), ThemeMode::Dark)));
+        }
+        assert_eq!(theme("light"), Some((None, ThemeMode::Light)));
+        assert_eq!(theme("rose-dark"), None);
+        assert_eq!(theme("ember-system"), None);
+        assert_eq!(theme(""), None);
+    }
+
+    #[test]
     fn only_exact_one_enables_the_memory_store() {
         assert!(!dev_memory_store_enabled(None));
         for v in ["", "0", "true", "yes", " 1", "1 ", "11"] {
@@ -262,7 +302,7 @@ mod tests {
             "ROOST_VIEW" => Some("settings".to_string()),
             _ => None,
         };
-        assert_eq!(theme_override_with(lookup), Some(ThemeChoice::Dark));
+        assert_eq!(theme_override_with(lookup), Some((None, ThemeMode::Dark)));
         assert_eq!(size_override_with(lookup), Some(MIN_WINDOW));
         assert_eq!(
             preset_with(lookup),

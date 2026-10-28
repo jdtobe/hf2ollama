@@ -22,7 +22,7 @@ const CARD_NAMES: [&str; 5] = [
     "Hugging Face",
     "Hardware and appearance",
 ];
-const CONTROLS: [&str; 15] = [
+const CONTROLS: [&str; 16] = [
     "ollama-url",
     "ollama-test",
     "staging",
@@ -37,6 +37,7 @@ const CONTROLS: [&str; 15] = [
     "token-clear",
     "hf-endpoint",
     "toggle-override",
+    "select-family",
     "select-theme",
 ];
 
@@ -727,4 +728,28 @@ fn test_button_asks_the_backend_to_test_the_typed_address() {
         matches!(reqs.as_slice(), [BackendRequest::TestConnection(u)] if u == "http://localhost:11434"),
         "{reqs:?}"
     );
+}
+
+#[test]
+fn every_theme_family_and_mode_keeps_settings_usable_at_minimum_size() {
+    let size = SIZES[1];
+    for family in crate::theme_tokens::ALL_FAMILIES {
+        for dark in [false, true] {
+            let tag = format!("{family:?} dark={dark}");
+            let (mut app, _) = settings_app();
+            let mut h = Harness::themed(family, dark);
+            run(&mut app, &mut h, size, 6);
+            let p = probe(&mut app);
+            let view = p.viewport.expect("viewport");
+            assert!(inside(view, window(size)), "{tag}: viewport {view:?}");
+            assert!(
+                p.content_height <= view.height() + p.max_offset + 1.0,
+                "{tag}: content cannot be scrolled into view"
+            );
+            for name in CONTROLS {
+                let r = reveal(&mut app, &mut h, size, name);
+                assert!(inside(r, view), "{tag}: {name} {r:?} leaves {view:?}");
+            }
+        }
+    }
 }

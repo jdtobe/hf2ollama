@@ -14,7 +14,7 @@ use crate::widgets::toggle;
 use eframe::egui::{
     self, vec2, Align, Align2, CornerRadius, Layout, Margin, Rect, RichText, Sense, Stroke,
 };
-use roost_core::config::{AutoDismiss, Settings, ThemeChoice};
+use roost_core::config::{AutoDismiss, Settings, ThemeFamily, ThemeMode};
 use roost_core::fit::Machine;
 use state::{
     cached_total, connection_message, detected_line, has_clearable, token_badge, BadgeKind,
@@ -877,13 +877,24 @@ fn hardware_card(
                 },
             );
         }
+        row(ui, cx, "Colour family", "", FIELD_H, true, |ui, cx, _| {
+            let options = [
+                (ThemeFamily::Meadow, "Meadow"),
+                (ThemeFamily::Ember, "Ember"),
+                (ThemeFamily::Plum, "Plum"),
+                (ThemeFamily::Tide, "Tide"),
+            ];
+            if let Some(v) = select(ui, cx, "select-family", settings.theme_family, &options) {
+                change.merge(state.set_theme_family(settings, v));
+            }
+        });
         row(ui, cx, "Theme", "", FIELD_H, true, |ui, cx, _| {
             let options = [
-                (ThemeChoice::System, "Match system"),
-                (ThemeChoice::Light, "Light"),
-                (ThemeChoice::Dark, "Dark"),
+                (ThemeMode::System, "Match system"),
+                (ThemeMode::Light, "Light"),
+                (ThemeMode::Dark, "Dark"),
             ];
-            if let Some(v) = select(ui, cx, "select-theme", settings.theme, &options) {
+            if let Some(v) = select(ui, cx, "select-theme", settings.theme_mode, &options) {
                 change.merge(state.set_theme(settings, v));
             }
         });

@@ -135,6 +135,21 @@ pub(crate) mod test_util {
             Harness { ctx, time: 0.0 }
         }
 
+        /// A harness drawn in one concrete family and mode.
+        pub fn themed(family: roost_core::config::ThemeFamily, dark: bool) -> Harness {
+            let h = Harness::new(dark);
+            crate::theme::apply(
+                &h.ctx,
+                family,
+                if dark {
+                    roost_core::config::ThemeMode::Dark
+                } else {
+                    roost_core::config::ThemeMode::Light
+                },
+            );
+            h
+        }
+
         /// Like `frame`, returning the URLs the UI asked the OS to open.
         pub fn frame_urls(
             &mut self,
