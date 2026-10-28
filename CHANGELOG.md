@@ -33,6 +33,15 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### One Models tab
+
+- **Models** is one view instead of Browse and Installed behind a switch: a list with the models Ollama has (with a usage bar) above the Hugging Face results, one search box that narrows both, and one detail pane. Filters are chips above the list (a Filters popover, Fits my machine, and the sort order) instead of a side rail.
+- Selecting an installed model shows **Chat**, **Work** and **Delete…** (two clicks, with the usual pause), then its details and where it came from; the source repository is a link that opens it in the same list.
+- The list: installed rows are taller, with the parameter count, quantization and size as pills; the disk-usage bar is a titled card with a legend; the sort order is a full-width dropdown with a filter button at its right end (the button keeps its place and shows how many filters are on; its popover holds every filter, including Only models that fit, and a Reset button). Hugging Face results default to GGUF only.
+- Model pages are three stacked bands in the theme's own colours. An installed model: the header with Chat, Work and a red trash can (tinted with the accent), the details, then the description. A Hugging Face repository: the header with any warnings, the files to choose from, then the description (no more Files/About tabs). The import panel at the bottom appears only after you pick a file; nothing is picked for you any more (the recommended file is still marked).
+- A Hugging Face result for a repository you have imported from shows an **installed** tag. The installed model's detail ends with **About**: the source repository's description (or a note that models pulled from the Ollama library have none).
+- The View menu has one Models entry (⌘3); ⌘4 and the separate Browse and Installed entries are gone.
+
 ### A quieter window
 
 Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mockups.html`); the busiest screen went from about 25 visible controls to about 13.
@@ -56,6 +65,8 @@ Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mock
 - **Versions:** Regenerate and Edit keep what they replace. A message with other versions shows `‹ 2 / 3 ›` at the bottom-right of its row; the arrows switch between them (when no reply is running). Edit opens your message in place and sends it as a new version. Saved chats store the other versions; older files load unchanged.
 - **Branch:** the branch icon on a finished reply starts a new chat with the history up to that reply, on the same or another model. A branched chat shows `↳ Branched from …` at the top (each name opens that chat; long chains collapse) and says whether the original is unchanged, changed since, or deleted; a divider marks where the copied history ends. Branches are listed under their parent in the sidebar.
 - **Side questions (BTW):** the speech-bubble icon on a reply opens a popover where you ask something about the conversation up to that reply. It is answered separately (it works while a reply or agent run is going), is never added to the chat unless you press Add to chat, and is remembered per chat (newest first, up to 50, kept in the chat file; incognito chats keep them in memory). Earlier ones are listed under the answer, each with Add to chat and Delete.
+- **Read aloud:** the speaker icon on a finished reply reads it with the computer's own voice (it becomes a Stop button while reading). macOS uses `say`, Windows uses PowerShell's speech synthesizer, and Linux uses `spd-say`, `espeak-ng` or `espeak` when one is installed; otherwise the icon is greyed with the reason. Markdown marks and code blocks are not read. No speech library is added.
+- Fixed: the **+ New agent…** button did nothing while an agent chat was open. The New agent form now replaces the chat on screen.
 - **Settings ▸ Ollama ▸ Keep models in memory:** Ollama's default, 15 minutes, 1 hour, or until Ollama quits. Sent as `keep_alive` with chat requests only when you choose something other than the default.
 - **Downloads panel:** each job is two lines. The name (cut in the middle so the tag stays visible), size, a stage pill and the buttons; then a progress bar of the same width for every job with percent, bytes, speed and an estimate of the time left. The estimate uses a smoothed speed, waits for five seconds of data, is rounded, and does not jump about. The log drawer gained a Copy button.
 

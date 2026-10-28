@@ -3,7 +3,7 @@
 use crate::browse::state::BrowseState;
 use crate::dock::jobs::JobsState;
 use crate::dock::{self, DockAction, DockUi};
-use crate::installed::state::{InstalledState, ListStatus};
+use crate::installed::state::InstalledState;
 use crate::runtime::{BackendRequest, UiEvent};
 use crate::settings::{self, SettingsView};
 use crate::theme::{mono, semibold, tokens};
@@ -21,30 +21,26 @@ use std::time::Instant;
 pub enum View {
     Chat,
     Work,
-    Browse,
-    Installed,
+    /// Installed models and Hugging Face in one view.
+    Models,
     Settings,
 }
 
 impl View {
     #[cfg(test)]
-    pub(crate) const ALL: [View; 5] = [
-        View::Chat,
-        View::Work,
-        View::Browse,
-        View::Installed,
-        View::Settings,
-    ];
+    pub(crate) const ALL: [View; 4] = [View::Chat, View::Work, View::Models, View::Settings];
 }
 
 pub struct AppState {
+    /// Reads replies aloud (a fake in tests).
+    pub speaker: Box<dyn crate::speech::Speaker>,
     pub view: View,
     pub query: String,
     /// `None` until the first poll answers; then the version if reachable.
     pub ollama: Option<Option<String>>,
     pub installed: InstalledState,
-    #[cfg(test)]
-    pub installed_ui: crate::installed::InstalledUi,
+    /// The installed model shown in the detail pane, if that is what is selected.
+    pub models_installed: Option<String>,
     pub ollama_host: String,
     pub staging_dir: PathBuf,
     /// Where staging goes when the setting is empty.
@@ -62,7 +58,6 @@ pub struct AppState {
     /// The About window is open.
     pub show_about: bool,
     /// Which of Browse and Installed the Models tab opens to.
-    pub models_view: View,
     /// Which platform's menus to build (the real one, except in tests).
     pub platform: crate::menu::Platform,
     pub chat: crate::chat::ChatState,
@@ -106,12 +101,11 @@ impl AppState {
 
     pub fn new() -> AppState {
         AppState {
-            view: View::Browse,
+            view: View::Models,
             query: String::new(),
             ollama: None,
             installed: InstalledState::new(),
-            #[cfg(test)]
-            installed_ui: Default::default(),
+            models_installed: None,
             ollama_host: String::new(),
             staging_dir: PathBuf::new(),
             default_staging: PathBuf::new(),
@@ -128,8 +122,8 @@ impl AppState {
             }),
             jobs: JobsState::new(),
             running: Vec::new(),
+            speaker: Box::new(crate::speech::SystemSpeaker::detect()),
             show_about: false,
-            models_view: View::Browse,
             // Tests lay out the content alone; the bar is tested on its own.
             platform: if cfg!(test) {
                 crate::menu::Platform::Mac
@@ -155,9 +149,6 @@ impl AppState {
 
     pub fn select(&mut self, view: View) {
         self.view = view;
-        if matches!(view, View::Browse | View::Installed) {
-            self.models_view = view;
-        }
         if view == View::Settings {
             self.settings_view.state.on_opened();
         }
@@ -307,7 +298,7 @@ impl AppState {
             UiEvent::ChatUnavailable(why) => {
                 self.chat.recorded_unavailable(why.clone());
                 if self.view == View::Chat {
-                    self.select(View::Browse);
+                    self.select(View::Models);
                 }
                 None
             }
@@ -753,7 +744,7 @@ impl App {
                     let current = match self.state.view {
                         View::Chat => 0,
                         View::Work => 1,
-                        View::Browse | View::Installed => 2,
+                        View::Models => 2,
                         // Settings is the gear, not a tab.
                         View::Settings => usize::MAX,
                     };
@@ -761,24 +752,10 @@ impl App {
                     #[cfg(test)]
                     self.state.top_bar.push(("nav", _nav_rect));
                     if let Some(i) = picked {
-                        let view = [View::Chat, View::Work, self.state.models_view][i];
+                        let view = [View::Chat, View::Work, View::Models][i];
                         self.state.select(view);
                     }
-                    if matches!(self.state.view, View::Browse | View::Installed) {
-                        ui.add_space(6.0);
-                        let installed = (self.state.installed.status == ListStatus::Loaded)
-                            .then(|| self.state.installed.rows().len().to_string());
-                        let sub = ["Browse", "Installed"];
-                        let on = usize::from(self.state.view == View::Installed);
-                        let (picked, _sub_rect) = self.place_nav(ui, &sub, &[None, installed], on);
-                        #[cfg(test)]
-                        self.state.top_bar.push(("subnav", _sub_rect));
-                        if let Some(i) = picked {
-                            self.state.select([View::Browse, View::Installed][i]);
-                        }
-                    }
-
-                    if self.state.view == View::Browse {
+                    if self.state.view == View::Models {
                         ui.add_space(8.0);
                         // Whatever is left after the pill and a gap; hidden
                         // rather than overlapping when there is no room.
@@ -789,7 +766,7 @@ impl App {
                             let r = ui.add_sized(
                                 vec2(field_w, 32.0),
                                 egui::TextEdit::singleline(&mut self.state.query)
-                                    .hint_text("Search Hugging Face models")
+                                    .hint_text("Search installed models and Hugging Face")
                                     .margin(Margin {
                                         left: 10,
                                         right: if has_text { 10 + CLEAR_SIZE as i8 } else { 10 },
@@ -954,15 +931,9 @@ impl App {
             for r in requests {
                 let _ = self.tx.send(r);
             }
-        } else if self.state.view == View::Browse {
+        } else if self.state.view == View::Models {
             let mut requests = Vec::new();
-            crate::browse::show(ui, &mut self.state, &mut requests);
-            for r in requests {
-                let _ = self.tx.send(r);
-            }
-        } else if self.state.view == View::Installed {
-            let mut requests = Vec::new();
-            crate::installed::show(ui, &mut self.state, &mut requests);
+            crate::models::show(ui, &mut self.state, &mut requests);
             for r in requests {
                 let _ = self.tx.send(r);
             }
@@ -983,6 +954,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::installed::state::ListStatus;
     use crate::runtime::HfTokenStatus;
 
     #[test]
@@ -993,13 +965,13 @@ mod tests {
     #[test]
     fn nav_selection_changes_view_state() {
         let mut s = AppState::new();
-        assert_eq!(s.view, View::Browse);
-        s.select(View::Installed);
-        assert_eq!(s.view, View::Installed);
+        assert_eq!(s.view, View::Models);
+        s.select(View::Work);
+        assert_eq!(s.view, View::Work);
         s.select(View::Settings);
         assert_eq!(s.view, View::Settings);
-        s.select(View::Browse);
-        assert_eq!(s.view, View::Browse);
+        s.select(View::Models);
+        assert_eq!(s.view, View::Models);
     }
 
     #[test]
@@ -1099,7 +1071,7 @@ mod tests {
         // The longest realistic pill: a connected server with a full URL.
         app.state.ollama = Some(Some("0.12.10".into()));
         app.state.ollama_host = "http://192.168.100.200:11434".into();
-        app.state.select(View::Browse);
+        app.state.select(View::Models);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 820.0));
         for _ in 0..4 {
             let input = egui::RawInput {
@@ -1453,7 +1425,7 @@ mod tests {
                 template: None,
             }),
         );
-        s.installed.toggle_expanded("a:1");
+        s.installed.want_details("a:1");
         assert!(s.on_event(&details).is_none());
         assert!(matches!(
             s.installed.details_of("a:1"),
@@ -1833,7 +1805,7 @@ mod tests {
             "{reqs:?}"
         );
         // Coming back while the check runs does not repeat it.
-        s.select(View::Browse);
+        s.select(View::Models);
         s.select(View::Settings);
         let reqs = s.settings_view.state.take_requests();
         assert!(
@@ -1913,7 +1885,7 @@ mod tests {
                     rx,
                 );
                 app.state.ollama = Some(Some("0.9.2".to_string()));
-                app.state.view = View::Browse;
+                app.state.view = View::Models;
                 app.state.query = "qwen".into();
                 for _ in 0..4 {
                     h.frame(vec2(900.0, 640.0), vec![], |ui| app.show(ui));
@@ -1973,7 +1945,7 @@ mod tests {
             let input = shortcut_event(egui::Key::Num3, egui::Modifiers::COMMAND);
             ctx.run_ui(input, |ui| app.pump_menu(ui.ctx()))
                 .drop_without_applying_deltas();
-            assert_eq!(app.state.view, View::Browse, "{platform:?}");
+            assert_eq!(app.state.view, View::Models, "{platform:?}");
         }
     }
 
@@ -2044,39 +2016,16 @@ mod tests {
     }
 
     #[test]
-    fn browse_and_installed_live_under_one_models_tab_with_a_sub_nav() {
-        let (app, _h) = nav_app(View::Browse);
-        assert!(top_item(&app, "subnav").is_some(), "sub-nav inside Models");
-        let (app, _h) = nav_app(View::Installed);
-        assert!(top_item(&app, "subnav").is_some());
-        for v in [View::Chat, View::Work, View::Settings] {
+    fn models_is_one_tab_with_no_sub_nav() {
+        for v in View::ALL {
             let (app, _h) = nav_app(v);
             assert!(top_item(&app, "subnav").is_none(), "{v:?}");
         }
     }
 
     #[test]
-    fn the_models_tab_remembers_whether_you_were_in_browse_or_installed() {
-        let mut s = AppState::new();
-        assert_eq!(s.models_view, View::Browse);
-        s.select(View::Installed);
-        s.select(View::Chat);
-        assert_eq!(s.models_view, View::Installed);
-        s.select(View::Settings);
-        assert_eq!(
-            s.models_view,
-            View::Installed,
-            "Settings does not change it"
-        );
-        s.select(View::Browse);
-        assert_eq!(s.models_view, View::Browse);
-    }
-
-    #[test]
-    fn clicking_the_models_tab_opens_the_last_models_view() {
+    fn clicking_the_models_tab_opens_it() {
         let (mut app, mut h) = nav_app(View::Chat);
-        app.state.models_view = View::Installed;
-        h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
         let nav = top_item(&app, "nav").unwrap();
         // The third of three tabs is Models.
         click_at(
@@ -2084,7 +2033,7 @@ mod tests {
             &mut h,
             egui::pos2(nav.right() - 30.0, nav.center().y),
         );
-        assert_eq!(app.state.view, View::Installed);
+        assert_eq!(app.state.view, View::Models);
         click_at(
             &mut app,
             &mut h,

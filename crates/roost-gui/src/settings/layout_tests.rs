@@ -429,7 +429,7 @@ fn leaving_settings_wipes_the_token_field_and_its_undo_history() {
     run(&mut app, &mut h, size, 3);
     assert_eq!(app.state_mut().settings_view.state.token_input, TYPED);
 
-    app.state_mut().select(View::Installed);
+    app.state_mut().select(View::Models);
     run(&mut app, &mut h, size, 3);
     assert!(
         app.state_mut().settings_view.state.token_input.is_empty(),

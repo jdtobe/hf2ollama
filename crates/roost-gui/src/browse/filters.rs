@@ -4,7 +4,7 @@
 use crate::app::AppState;
 use crate::theme::tokens;
 use crate::widgets::caption;
-use eframe::egui::{self, Margin, RichText, Stroke};
+use eframe::egui::{self, RichText};
 use roost_core::fit::Machine;
 use roost_core::hf::{FormatFilter, ModelSummary, SortKey};
 
@@ -72,7 +72,9 @@ impl Default for Filters {
     fn default() -> Self {
         Filters {
             gguf: true,
-            safetensors: true,
+            // Safetensors repositories can rarely be imported, so they are
+            // left out until asked for.
+            safetensors: false,
             other: false,
             params: ParamRange::Any,
             only_fit: false,
@@ -202,84 +204,156 @@ fn sort_label(s: SortKey) -> &'static str {
     }
 }
 
-/// The left filter rail.
-pub fn show(ui: &mut egui::Ui, app: &mut AppState) {
+/// How many filters differ from the defaults, for the badge on the button.
+fn active_count(f: &Filters) -> usize {
+    let d = Filters::default();
+    [
+        f.gguf != d.gguf || f.safetensors != d.safetensors || f.other != d.other,
+        f.params != d.params,
+        f.only_fit != d.only_fit,
+        f.text != d.text || f.embeddings != d.embeddings || f.vision != d.vision,
+    ]
+    .into_iter()
+    .filter(|on| *on)
+    .count()
+}
+
+/// One selectable choice drawn as a small pill.
+fn choice(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
+    ui.selectable_label(on, RichText::new(label).size(12.5))
+}
+
+/// All filter controls, laid out for a popover (no combo boxes, so a click
+/// never lands in a second popup).
+fn controls(ui: &mut egui::Ui, f: &mut Filters, machine: &Machine) {
+    let t = tokens(ui);
+    ui.set_min_width(260.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Filters").strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let changed = *f
+                != Filters {
+                    sort: f.sort,
+                    ..Filters::default()
+                };
+            if ui
+                .add_enabled(
+                    changed,
+                    egui::Button::new(RichText::new("Reset").size(12.0)),
+                )
+                .on_hover_text("Back to the default filters")
+                .clicked()
+            {
+                *f = reset_filters(f);
+            }
+        });
+    });
+    ui.add_space(6.0);
+    caption(ui, "Format");
+    ui.checkbox(&mut f.gguf, "GGUF");
+    ui.checkbox(&mut f.safetensors, "Safetensors");
+    ui.checkbox(&mut f.other, "PyTorch / other");
+    ui.add_space(8.0);
+
+    caption(ui, "Parameters");
+    ui.horizontal_wrapped(|ui| {
+        for p in ParamRange::ALL {
+            if choice(ui, f.params == p, p.label()).clicked() {
+                f.params = p;
+            }
+        }
+    });
+    ui.add_space(8.0);
+
+    caption(ui, "Fits my machine");
+    ui.checkbox(&mut f.only_fit, "Only models that fit");
+    ui.add(egui::Label::new(RichText::new(machine_line(machine)).size(12.0).color(t.fg3)).wrap());
+    ui.add_space(8.0);
+
+    caption(ui, "Task");
+    ui.checkbox(&mut f.text, "Text generation");
+    ui.checkbox(&mut f.embeddings, "Embeddings");
+    ui.checkbox(&mut f.vision, "Vision / multimodal");
+}
+
+/// The default filters; the sort order is a separate control and stays.
+pub fn reset_filters(f: &Filters) -> Filters {
+    Filters {
+        sort: f.sort,
+        ..Filters::default()
+    }
+}
+
+const FILTER_BTN: f32 = 32.0;
+
+/// The row above the Models list: the sort order across the full width and a
+/// filter button at its right end that opens every filter in a popover.
+pub fn filter_bar(ui: &mut egui::Ui, app: &mut AppState) {
     let t = tokens(ui);
     let before = app.browse.filters.clone();
     let machine = app.machine.clone();
     let f = &mut app.browse.filters;
-    let panel = egui::Panel::left("filters")
-        .exact_size(200.0)
-        .resizable(false)
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface2)
-                .inner_margin(Margin::same(16))
-                .stroke(Stroke::new(1.0, t.line)),
-        )
-        .show(ui, |ui| {
-            // The rail never grows past the room it is given, so a tall
-            // dock cannot push it over the downloads.
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    caption(ui, "Format");
-                    ui.checkbox(&mut f.gguf, "GGUF");
-                    ui.checkbox(&mut f.safetensors, "Safetensors");
-                    ui.checkbox(&mut f.other, "PyTorch / other");
-                    ui.add_space(10.0);
-
-                    caption(ui, "Parameters");
-                    egui::ComboBox::from_id_salt("params")
-                        .selected_text(f.params.label())
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            for p in ParamRange::ALL {
-                                ui.selectable_value(&mut f.params, p, p.label());
-                            }
-                        });
-                    ui.add_space(10.0);
-
-                    caption(ui, "Fits my machine");
-                    ui.checkbox(&mut f.only_fit, "Only models that fit");
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(machine_line(&machine))
-                                .size(12.0)
-                                .color(t.fg3),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(10.0);
-
-                    caption(ui, "Task");
-                    ui.checkbox(&mut f.text, "Text generation");
-                    ui.checkbox(&mut f.embeddings, "Embeddings");
-                    ui.checkbox(&mut f.vision, "Vision / multimodal");
-                    ui.add_space(10.0);
-
-                    caption(ui, "Sort by");
-                    egui::ComboBox::from_id_salt("sort")
-                        .selected_text(sort_label(f.sort))
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            for s in [
-                                SortKey::Downloads,
-                                SortKey::Trending,
-                                SortKey::Updated,
-                                SortKey::Likes,
-                            ] {
-                                ui.selectable_value(&mut f.sort, s, sort_label(s));
-                            }
-                        });
-                });
-        });
+    let mut button = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let n = active_count(f);
+        let sort_w = (ui.available_width() - FILTER_BTN - ui.spacing().item_spacing.x).max(80.0);
+        egui::ComboBox::from_id_salt("sort")
+            .selected_text(sort_label(f.sort))
+            .width(sort_w)
+            .show_ui(ui, |ui| {
+                for s in [
+                    SortKey::Downloads,
+                    SortKey::Trending,
+                    SortKey::Updated,
+                    SortKey::Likes,
+                ] {
+                    ui.selectable_value(&mut f.sort, s, sort_label(s));
+                }
+            });
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(FILTER_BTN, FILTER_BTN), egui::Sense::click());
+        let resp = resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(if n == 0 {
+                "Filters".to_string()
+            } else {
+                format!("Filters ({n} on)")
+            });
+        let fill = if n > 0 {
+            t.accent_soft
+        } else if resp.hovered() {
+            t.surface2
+        } else {
+            t.surface
+        };
+        ui.painter().rect(
+            rect,
+            6.0,
+            fill,
+            egui::Stroke::new(1.0, if n > 0 { t.accent } else { t.line }),
+            egui::StrokeKind::Inside,
+        );
+        crate::icons::paint(
+            ui.painter(),
+            rect,
+            crate::icons::Icon::Filter,
+            if n > 0 { t.accent } else { t.fg2 },
+        );
+        if n > 0 {
+            let c = rect.right_top() + egui::vec2(-3.0, 3.0);
+            ui.painter().circle_filled(c, 4.0, t.accent);
+        }
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| controls(ui, f, &machine));
+        button = Some(rect);
+    });
     #[cfg(test)]
     {
-        app.browse.probe.rail = Some(panel.response.rect);
+        app.browse.probe.filters_chip = button;
     }
-    #[cfg(not(test))]
-    let _ = panel;
+    let _ = button;
     if app.browse.filters != before {
         app.browse.apply_filters();
     }
@@ -288,6 +362,28 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_restores_every_filter_but_keeps_the_sort() {
+        let f = Filters {
+            gguf: false,
+            only_fit: true,
+            params: ParamRange::Over40,
+            vision: false,
+            sort: SortKey::Likes,
+            ..Filters::default()
+        };
+        let r = reset_filters(&f);
+        assert_eq!(
+            r,
+            Filters {
+                sort: SortKey::Likes,
+                ..Filters::default()
+            }
+        );
+        assert_eq!(active_count(&f), 4);
+        assert_eq!(active_count(&r), 0);
+    }
 
     fn summary(params: Option<&str>, gguf: bool, st: bool, name: &str) -> ModelSummary {
         ModelSummary {
@@ -370,10 +466,17 @@ mod tests {
         let gguf = summary(None, true, false, "g");
         let st = summary(None, false, true, "s");
         let other = summary(None, false, false, "o");
+        // By default only GGUF shows.
         let f = Filters::default();
+        assert!(passes(&gguf, &f, &m) && !passes(&st, &f, &m) && !passes(&other, &f, &m));
+        let f = Filters {
+            safetensors: true,
+            ..Filters::default()
+        };
         assert!(passes(&gguf, &f, &m) && passes(&st, &f, &m) && !passes(&other, &f, &m));
         let f = Filters {
             gguf: false,
+            safetensors: true,
             ..Filters::default()
         };
         assert!(!passes(&gguf, &f, &m) && passes(&st, &f, &m));

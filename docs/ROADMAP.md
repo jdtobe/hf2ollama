@@ -47,6 +47,7 @@ Known limitations to address after the first release candidate:
 
 ## Later
 
+- A less mechanical voice for Read aloud (the system tools use the default synthetic voices).
 - VRAM detection beyond NVIDIA and Apple Silicon (for example AMD and Intel), subject to reliable detection.
 - Accessibility improvements; egui has weaker accessibility than native toolkits.
 - A command-line front end on top of `Roost-core` (the library split leaves room for it; not planned in detail).

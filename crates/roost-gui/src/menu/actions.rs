@@ -156,7 +156,7 @@ mod tests {
     fn views_and_settings_switch_the_view() {
         let ctx = egui::Context::default();
         let mut app = AppState::new();
-        for v in [View::Chat, View::Installed, View::Browse] {
+        for v in [View::Chat, View::Work, View::Models] {
             pass(&ctx, |c| handle(&mut app, c, MenuAction::ShowView(v)));
             assert_eq!(app.view, v);
         }
@@ -185,7 +185,7 @@ mod tests {
     fn new_chat_creates_a_session_with_the_default_model_and_shows_chat() {
         let ctx = egui::Context::default();
         let mut app = with_model();
-        app.view = View::Browse;
+        app.view = View::Models;
         let (reqs, _) = pass(&ctx, |c| handle(&mut app, c, MenuAction::NewChat));
         assert!(matches!(
             reqs.as_slice(),
@@ -228,10 +228,10 @@ mod tests {
     fn new_chat_without_a_model_does_nothing() {
         let ctx = egui::Context::default();
         let mut app = AppState::new();
-        app.view = View::Browse;
+        app.view = View::Models;
         let (reqs, _) = pass(&ctx, |c| handle(&mut app, c, MenuAction::NewChat));
         assert!(reqs.is_empty());
-        assert_eq!(app.view, View::Browse);
+        assert_eq!(app.view, View::Models);
     }
 
     #[test]

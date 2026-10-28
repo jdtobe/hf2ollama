@@ -7,11 +7,13 @@ mod icons;
 mod identity;
 mod installed;
 mod menu;
+mod models;
 mod quit;
 #[cfg(test)]
 mod quit_tests;
 mod runtime;
 mod settings;
+mod speech;
 mod startup;
 mod theme;
 mod theme_tokens;
@@ -99,7 +101,7 @@ fn preset_with(lookup: impl Fn(&str) -> Option<String>) -> (Option<String>, Opti
     (lookup("ROOST_QUERY"), lookup("ROOST_SELECT"))
 }
 
-/// `ROOST_VIEW=chat|installed|settings|browse` starts on that view. Only meant for
+/// `ROOST_VIEW=chat|work|models|settings` starts on that view. Only meant for
 /// screenshots; inert unless set.
 fn view_override() -> Option<app::View> {
     view_override_with(|name| std::env::var(name).ok())
@@ -108,9 +110,8 @@ fn view_override() -> Option<app::View> {
 fn view_override_with(lookup: impl FnOnce(&str) -> Option<String>) -> Option<app::View> {
     match lookup("ROOST_VIEW").as_deref() {
         Some("chat") => Some(app::View::Chat),
-        Some("installed") => Some(app::View::Installed),
+        Some("models" | "browse" | "installed") => Some(app::View::Models),
         Some("settings") => Some(app::View::Settings),
-        Some("browse") => Some(app::View::Browse),
         _ => None,
     }
 }
