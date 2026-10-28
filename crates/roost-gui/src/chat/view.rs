@@ -258,6 +258,18 @@ fn rail(
             }
         });
     if let Some(id) = open_id {
+        // Leaving a saved session lets the manager unload it (a running one
+        // finishes first). Incognito sessions must never be closed here: that
+        // would destroy them.
+        let leaving = app
+            .chat
+            .open
+            .as_ref()
+            .filter(|s| s.id != id && s.lifetime == SessionLifetime::Persisted)
+            .map(|s| s.id);
+        if let Some(prev) = leaving {
+            out.push(BackendRequest::Chat(ChatCommand::Close(prev)));
+        }
         let bad_row = app
             .chat
             .rows()
@@ -359,6 +371,13 @@ fn pane(
     installed: &[String],
     now: Instant,
 ) {
+    if !app.chat.warnings.is_empty() {
+        banner(ui, t.warn, t.warn_soft, &app.chat.warnings.join("  "));
+        if small_button(ui, "Dismiss") {
+            app.chat.dismiss_warnings();
+        }
+        ui.add_space(4.0);
+    }
     if app.ollama == Some(None) {
         banner(
             ui,

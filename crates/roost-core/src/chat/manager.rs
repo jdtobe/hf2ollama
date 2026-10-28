@@ -23,7 +23,6 @@ pub const CHAT_SYSTEM_PROMPT: &str = "You are Roost, a helpful assistant running
 const FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 const COALESCE: Duration = Duration::from_millis(30);
 const SHUTDOWN_LIMIT: Duration = Duration::from_secs(3);
-const HALT_LIMIT: Duration = Duration::from_secs(1);
 
 pub struct ChatConfig {
     pub ollama: OllamaClient,
@@ -128,6 +127,8 @@ struct Live {
     slot: Slot,
     close_when_idle: bool,
     last_flush: Instant,
+    /// Text arrived since the last write to disk.
+    dirty: bool,
 }
 
 impl Live {
@@ -137,6 +138,7 @@ impl Live {
             slot: Slot::Idle,
             close_when_idle: false,
             last_flush: Instant::now(),
+            dirty: false,
         }
     }
 }
@@ -443,12 +445,11 @@ impl Manager {
 
     /// Tells a run to stop and waits briefly for its task to finish.
     async fn halt(&self, live: Live) {
+        // The run task owns no session state and the manager ignores
+        // anything it sends later, so it can simply be cut off.
         if let Slot::Running(run) = live.slot {
             let _ = run.stop.send(true);
-            let mut join = run.join;
-            if tokio::time::timeout(HALT_LIMIT, &mut join).await.is_err() {
-                join.abort();
-            }
+            run.join.abort();
         }
     }
 
@@ -540,10 +541,14 @@ impl Manager {
                     live.s.updated_at_ms = before;
                 }
                 live.slot = Slot::Idle;
+                let close = live.close_when_idle;
                 self.emit(ChatEvent::SendRejected {
                     session: id,
                     reason: SendRejection::TooLarge(e.to_string()),
                 });
+                if close {
+                    self.sessions.remove(&id);
+                }
                 return;
             }
         };
@@ -673,17 +678,34 @@ impl Manager {
                 }
                 match event {
                     StreamEvent::Content(c) => {
+                        live.dirty = true;
                         live.s.append_assistant(run.assistant, &c, "");
                         run.content.push_str(&c);
                     }
                     StreamEvent::Thinking(t) => {
+                        live.dirty = true;
                         live.s.append_assistant(run.assistant, "", &t);
                         run.thinking.push_str(&t);
                     }
                     StreamEvent::Done {
-                        prompt_eval_count, ..
+                        prompt_eval_count,
+                        done_reason,
+                        ..
                     } => {
-                        self.finalize(session, TurnOutcome::Completed, None, prompt_eval_count)
+                        // A reply that hit the window or output limit is cut
+                        // off, not finished: keep the text, offer Retry.
+                        let (outcome, message) = if done_reason.as_deref() == Some("length") {
+                            (
+                                TurnOutcome::Failed,
+                                Some(
+                                    "The reply was cut off because it reached the length limit."
+                                        .to_string(),
+                                ),
+                            )
+                        } else {
+                            (TurnOutcome::Completed, None)
+                        };
+                        self.finalize(session, outcome, message, prompt_eval_count)
                             .await;
                         return;
                     }
@@ -805,7 +827,9 @@ impl Manager {
                     }
                     if now >= l.last_flush + flush_every {
                         l.last_flush = now;
-                        save = Some(l.s.clone());
+                        if std::mem::take(&mut l.dirty) {
+                            save = Some(l.s.clone());
+                        }
                     }
                 }
             }

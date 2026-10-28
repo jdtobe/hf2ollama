@@ -9,6 +9,7 @@ use roost_core::store::{IndexRow, RowStatus};
 use std::collections::{HashMap, HashSet};
 
 const DAY_MS: u64 = 86_400_000;
+const MAX_WARNINGS: usize = 5;
 
 /// The local calendar day of a timestamp, as a day number.
 pub fn local_day(ms: u64) -> i64 {
@@ -98,17 +99,26 @@ impl ChatState {
             ChatEvent::Rows(rows) => {
                 // Sessions that left the list (deleted, incognito closed or
                 // cleared) take their draft and open transcript with them.
+                // Only sessions the list used to show count as gone: a new chat
+                // whose first save failed was never listed, and must survive.
                 let present: HashSet<SessionId> = rows.iter().map(|r| r.id).collect();
+                let known: HashSet<SessionId> = self.rows.iter().map(|r| r.id).collect();
                 let gone: Vec<SessionId> = self
                     .drafts
                     .keys()
                     .copied()
                     .chain(self.open.as_ref().map(|s| s.id))
                     .chain(self.runs.keys().copied())
-                    .filter(|id| !present.contains(id))
+                    .filter(|id| known.contains(id) && !present.contains(id))
                     .collect();
                 for id in gone {
                     self.forget(id);
+                }
+                if let Some((id, model)) = &self.model_missing {
+                    let changed = rows.iter().any(|r| r.id == *id && r.model != *model);
+                    if changed || !present.contains(id) && known.contains(id) {
+                        self.model_missing = None;
+                    }
                 }
                 self.rows = rows;
                 self.loaded = true;
@@ -119,6 +129,13 @@ impl ChatState {
             }
             ChatEvent::Appended { session, message } => self.appended(session, *message),
             ChatEvent::TurnStarted { session, turn } => {
+                if self
+                    .model_missing
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == session)
+                {
+                    self.model_missing = None;
+                }
                 self.runs.insert(session, (turn, RunBadge::Running));
                 self.omitted.remove(&session);
                 self.sending.remove(&session);
@@ -171,8 +188,18 @@ impl ChatState {
             ChatEvent::ModelMissing { session, model } => {
                 self.model_missing = Some((session, model));
             }
-            ChatEvent::StoreWarning(m) => self.warnings.push(m),
-            ChatEvent::SessionError { message, .. } => self.notice = Some(message),
+            ChatEvent::StoreWarning(m) => {
+                self.warnings.push(m);
+                if self.warnings.len() > MAX_WARNINGS {
+                    self.warnings.remove(0);
+                }
+            }
+            ChatEvent::SessionError { session, message } => {
+                if let Some(id) = session {
+                    self.sending.remove(&id);
+                }
+                self.notice = Some(message);
+            }
         }
     }
 
@@ -327,6 +354,10 @@ impl ChatState {
             group.push(row);
         }
         rail
+    }
+
+    pub fn dismiss_warnings(&mut self) {
+        self.warnings.clear();
     }
 
     pub fn recorded_unavailable(&mut self, why: String) {
@@ -604,6 +635,7 @@ mod tests {
     #[test]
     fn rows_without_a_session_drop_its_draft_open_transcript_and_run() {
         let (mut st, s, _turn) = started();
+        st.fold(ChatEvent::Rows(vec![roost_core_row(&s)]));
         *st.draft_mut(s.id) = "secret".into();
         st.fold(ChatEvent::Rows(vec![]));
         assert_eq!(st.draft(s.id), "");
@@ -618,5 +650,69 @@ mod tests {
         st.forget(s.id);
         assert_eq!(st.draft(s.id), "");
         assert!(st.open.is_none());
+    }
+
+    #[test]
+    fn a_session_the_list_never_contained_is_not_discarded() {
+        // A failed first save means the list may never show a new chat.
+        let mut st = ChatState::default();
+        let s = Session::new_chat("m", SessionLifetime::Persisted, 1);
+        st.fold(ChatEvent::Opened(Box::new(s.clone())));
+        *st.draft_mut(s.id) = "typed".into();
+        st.fold(ChatEvent::Rows(vec![]));
+        assert!(st.open.is_some());
+        assert_eq!(st.draft(s.id), "typed");
+    }
+
+    #[test]
+    fn a_rejected_retry_does_not_leave_the_session_stuck() {
+        let mut st = ChatState::default();
+        let s = Session::new_chat("m", SessionLifetime::Persisted, 1);
+        st.fold(ChatEvent::Opened(Box::new(s.clone())));
+        assert!(matches!(st.try_retry(s.id), SendAttempt::Sent(_)));
+        assert!(st.is_running(s.id));
+        st.fold(ChatEvent::SessionError {
+            session: Some(s.id),
+            message: "There is nothing to retry.".into(),
+        });
+        assert!(!st.is_running(s.id));
+        assert!(matches!(st.try_retry(s.id), SendAttempt::Sent(_)));
+    }
+
+    #[test]
+    fn the_missing_model_banner_clears_when_the_model_changes_or_a_turn_starts() {
+        let mut st = ChatState::default();
+        let s = Session::new_chat("gone:1", SessionLifetime::Persisted, 1);
+        let mut r = roost_core_row(&s);
+        st.fold(ChatEvent::Rows(vec![r.clone()]));
+        st.fold(ChatEvent::ModelMissing {
+            session: s.id,
+            model: "gone:1".into(),
+        });
+        assert!(st.model_missing.is_some());
+        r.model = "new:2".into();
+        st.fold(ChatEvent::Rows(vec![r]));
+        assert!(st.model_missing.is_none(), "cleared by a model change");
+        st.fold(ChatEvent::ModelMissing {
+            session: s.id,
+            model: "new:2".into(),
+        });
+        st.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        assert!(st.model_missing.is_none(), "cleared when a turn starts");
+    }
+
+    #[test]
+    fn warnings_are_capped_and_can_be_dismissed() {
+        let mut st = ChatState::default();
+        for i in 0..20 {
+            st.fold(ChatEvent::StoreWarning(format!("w{i}")));
+        }
+        assert_eq!(st.warnings.len(), 5);
+        assert_eq!(st.warnings.last().unwrap(), "w19");
+        st.dismiss_warnings();
+        assert!(st.warnings.is_empty());
     }
 }

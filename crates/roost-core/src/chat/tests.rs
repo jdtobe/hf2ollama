@@ -1044,3 +1044,60 @@ async fn opening_a_running_session_flushes_pending_text_before_the_snapshot() {
         "pending text must be sent before the snapshot"
     );
 }
+
+#[tokio::test]
+async fn a_reply_cut_off_by_the_length_limit_is_failed_not_completed() {
+    let cut = b"{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"length\"}\n".to_vec();
+    let srv = fake(vec![chat_route(vec![
+        Step::Write(line("half an ans")),
+        Step::Write(cut),
+        Step::Close,
+    ])])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait_ended(1).await;
+    let (outcome, msg) = ended(&h.events())[0].clone();
+    assert_eq!(outcome, TurnOutcome::Failed);
+    assert!(msg.unwrap().contains("length limit"));
+    h.wait("saved", |_| {
+        texts(&h.read(id))
+            .last()
+            .is_some_and(|m| m.0 == "assistant:Failed")
+    })
+    .await;
+    assert_eq!(texts(&h.read(id)).last().unwrap().1, "half an ans");
+}
+
+#[tokio::test]
+async fn an_unchanged_transcript_is_not_rewritten_on_every_flush() {
+    let (release, hold) = oneshot::channel();
+    let srv = fake(vec![chat_route(vec![
+        Step::Write(line("x")),
+        Step::WaitFor(hold),
+        Step::Write(done()),
+        Step::Close,
+    ])])
+    .await;
+    let h = start_in(TempDir::new().unwrap(), client(&srv), |cfg| {
+        cfg.flush_interval = Duration::from_millis(20)
+    })
+    .await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait("flushed", |_| {
+        std::fs::read(h.file(id)).is_ok_and(|b| String::from_utf8_lossy(&b).contains("\"x\""))
+    })
+    .await;
+    // Nothing new is streaming now: the file must stop being rewritten.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let stamp = std::fs::metadata(h.file(id)).unwrap().modified().unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        std::fs::metadata(h.file(id)).unwrap().modified().unwrap(),
+        stamp
+    );
+    release.send(()).unwrap();
+    h.wait_ended(1).await;
+}

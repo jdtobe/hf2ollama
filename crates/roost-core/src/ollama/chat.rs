@@ -118,6 +118,9 @@ impl ChatStream {
                     while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
                         let line: Vec<u8> = self.buf.drain(..=pos).collect();
                         self.parse(&line);
+                        if self.finished {
+                            break;
+                        }
                     }
                 }
                 None => {
@@ -140,6 +143,10 @@ impl ChatStream {
     }
 
     fn parse(&mut self, line: &[u8]) {
+        // `Done` is the last event; anything after it is ignored.
+        if self.finished {
+            return;
+        }
         let text = String::from_utf8_lossy(line);
         let text = text.trim();
         if text.is_empty() {
@@ -465,5 +472,16 @@ mod tests {
             panic!("expected a network error, got {err:?}")
         };
         assert!(m.contains("loading"), "{m}");
+    }
+
+    #[tokio::test]
+    async fn lines_after_done_in_the_same_chunk_are_ignored() {
+        let mut chunk = done_line();
+        chunk.extend(line("stray", ""));
+        chunk.extend(b"{\"error\":\"late\"}\n".to_vec());
+        let (ev, err) = run(vec![Step::Write(chunk), Step::Close]).await;
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(ev.len(), 1);
+        assert!(matches!(ev[0], StreamEvent::Done { .. }));
     }
 }

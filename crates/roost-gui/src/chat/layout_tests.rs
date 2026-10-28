@@ -393,7 +393,9 @@ fn errored_rows_open_an_explanation_with_delete_only() {
         .expect("bad row painted");
     click(&mut f.app, &mut h, size, target.center());
     assert!(
-        sent_chat_commands(&f.sent).is_empty(),
+        !sent_chat_commands(&f.sent)
+            .iter()
+            .any(|c| matches!(c, ChatCommand::Open(_))),
         "an errored row is not opened"
     );
     let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
@@ -401,4 +403,29 @@ fn errored_rows_open_an_explanation_with_delete_only() {
     assert!(all.contains("damaged"), "{all}");
     assert!(all.contains("Delete"), "{all}");
     assert!(!all.contains("Rename") && !all.contains("Send"), "{all}");
+}
+
+#[test]
+fn switching_sessions_closes_the_previous_saved_one_so_it_can_be_evicted() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(2);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let previous = f.open.id;
+    let target = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .rows
+        .iter()
+        .find(|(id, _)| *id != previous && *id != f.bad.id)
+        .map(|(id, r)| (*id, *r))
+        .expect("another row");
+    click(&mut f.app, &mut h, size, target.1.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Close(a), ChatCommand::Open(b)] if *a == previous && *b == target.0),
+        "{cmds:?}"
+    );
 }
