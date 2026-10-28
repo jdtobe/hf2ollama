@@ -429,3 +429,234 @@ fn switching_sessions_closes_the_previous_saved_one_so_it_can_be_evicted() {
         "{cmds:?}"
     );
 }
+
+fn rail_row_of(app: &mut App, id: roost_core::session::SessionId) -> Rect {
+    app.state_mut()
+        .chat_ui
+        .probe
+        .rows
+        .iter()
+        .find(|(r, _)| *r == id)
+        .map(|(_, r)| *r)
+        .expect("row painted")
+}
+
+fn rail_delete_of(app: &mut App, id: roost_core::session::SessionId) -> Option<(Rect, bool)> {
+    app.state_mut()
+        .chat_ui
+        .probe
+        .rail_delete
+        .iter()
+        .find(|(r, _, _)| *r == id)
+        .map(|(_, rect, armed)| (*rect, *armed))
+}
+
+#[test]
+fn hovering_a_rail_row_shows_a_delete_control_inside_the_row() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(3);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let target = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .rows
+        .iter()
+        .map(|(id, _)| *id)
+        .find(|id| *id != f.open.id && *id != f.bad.id)
+        .unwrap();
+    assert!(
+        rail_delete_of(&mut f.app, target).is_none(),
+        "hidden until hovered"
+    );
+    let row = rail_row_of(&mut f.app, target);
+    h.frame(
+        vec2(size.0, size.1),
+        vec![egui::Event::PointerMoved(row.center())],
+        |ui| f.app.show(ui),
+    );
+    run(&mut f.app, &mut h, size, 2);
+    let (del, armed) = rail_delete_of(&mut f.app, target).expect("delete control on hover");
+    assert!(!armed);
+    assert!(inside(del, rail_row_of(&mut f.app, target)), "{del:?}");
+    // The selected row always shows it, so it is one click away.
+    assert!(rail_delete_of(&mut f.app, f.open.id).is_some());
+}
+
+#[test]
+fn rail_delete_takes_a_click_and_a_confirm_after_a_short_pause() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(3);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let target = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .rows
+        .iter()
+        .map(|(id, _)| *id)
+        .find(|id| *id != f.open.id && *id != f.bad.id)
+        .unwrap();
+    let row = rail_row_of(&mut f.app, target);
+    h.frame(
+        vec2(size.0, size.1),
+        vec![egui::Event::PointerMoved(row.center())],
+        |ui| f.app.show(ui),
+    );
+    run(&mut f.app, &mut h, size, 2);
+    let (del, _) = rail_delete_of(&mut f.app, target).unwrap();
+    click(&mut f.app, &mut h, size, del.center());
+    let (del, armed) = rail_delete_of(&mut f.app, target).expect("still shown while armed");
+    assert!(armed, "the first click arms");
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, ChatCommand::Delete(_) | ChatCommand::Open(_))),
+        "{cmds:?}"
+    );
+    // An immediate second click is inside the pause and must not delete.
+    click(&mut f.app, &mut h, size, del.center());
+    assert!(!sent_chat_commands(&f.sent)
+        .iter()
+        .any(|c| matches!(c, ChatCommand::Delete(_))));
+    std::thread::sleep(std::time::Duration::from_millis(650));
+    let (del, _) = rail_delete_of(&mut f.app, target).unwrap();
+    click(&mut f.app, &mut h, size, del.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Delete(d)] if *d == target),
+        "{cmds:?}"
+    );
+}
+
+fn loaded(name: &str, expires: &str) -> roost_core::ollama::RunningModel {
+    roost_core::ollama::RunningModel {
+        name: name.into(),
+        size: 4_700_000_000,
+        size_vram: 4_700_000_000,
+        expires_at: Some(expires.into()),
+    }
+}
+
+fn unload_requests(rx: &Receiver<BackendRequest>) -> Vec<String> {
+    rx.try_iter()
+        .filter_map(|r| match r {
+            BackendRequest::UnloadModel(n) => Some(n),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_header_shows_whether_the_chat_model_is_loaded_and_unloads_it() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(2);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    assert!(
+        f.app.state_mut().chat_ui.probe.header_unload.is_none(),
+        "nothing loaded yet"
+    );
+    let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
+    assert!(texts.iter().any(|t| t.contains("Not loaded")), "{texts:?}");
+
+    f.app.state_mut().running = vec![loaded(LONG_MODEL, "2099-01-01T00:00:00Z")];
+    run(&mut f.app, &mut h, size, 3);
+    let button = f
+        .app
+        .state_mut()
+        .chat_ui
+        .probe
+        .header_unload
+        .expect("unload button");
+    let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Loaded") && t.contains("stays loaded")),
+        "{texts:?}"
+    );
+
+    click(&mut f.app, &mut h, size, button.center());
+    assert_eq!(unload_requests(&f.sent), vec![LONG_MODEL.to_string()]);
+    assert!(
+        f.app.state_mut().running.is_empty(),
+        "optimistically marked unloaded"
+    );
+}
+
+#[test]
+fn the_rail_footer_lists_loaded_models_inside_the_rail_at_minimum_size() {
+    for size in SIZES {
+        let mut f = fixture();
+        f.app.state_mut().running = vec![
+            loaded(LONG_MODEL, "2099-01-01T00:00:00Z"),
+            loaded("llama3.2:3b", "2099-01-01T00:00:00Z"),
+        ];
+        let mut h = Harness::new(true);
+        run(&mut f.app, &mut h, size, 4);
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let (rail, footer) = (p.rail.unwrap(), p.loaded_footer.expect("footer"));
+        assert!(inside(footer, rail), "{size:?}: {footer:?} not in {rail:?}");
+        assert_eq!(p.footer_unload.len(), 2, "{size:?}");
+        for b in &p.footer_unload {
+            assert!(inside(*b, footer), "{size:?}: {b:?} not in {footer:?}");
+        }
+        assert!(
+            p.rows.iter().any(|(_, r)| r.bottom() <= footer.top() + 0.5),
+            "{size:?}"
+        );
+        let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
+        assert!(
+            texts.iter().any(|t| t.to_uppercase().contains("IN MEMORY")),
+            "{texts:?}"
+        );
+    }
+}
+
+#[test]
+fn the_rail_footer_says_when_nothing_is_loaded() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(2);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let texts = h.frame_texts(vec2(size.0, size.1), vec![], |ui| f.app.show(ui));
+    assert!(
+        texts.iter().any(|t| t.contains("Nothing loaded")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn unload_notes_read_naturally() {
+    use super::view::unload_note;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T12:00:00Z")
+        .unwrap()
+        .to_utc();
+    assert_eq!(
+        unload_note("2026-10-27T12:05:00Z", now).as_deref(),
+        Some("unloads in 5 min")
+    );
+    assert_eq!(
+        unload_note("2026-10-27T12:00:20Z", now).as_deref(),
+        Some("unloads in under a minute")
+    );
+    assert_eq!(
+        unload_note("2026-10-27T11:59:00Z", now).as_deref(),
+        Some("unloading")
+    );
+    assert_eq!(
+        unload_note("2318-01-01T00:00:00Z", now).as_deref(),
+        Some("stays loaded")
+    );
+    assert_eq!(unload_note("not a time", now), None);
+    assert_eq!(
+        unload_note("2026-10-27T05:10:00.123456-07:00", now).as_deref(),
+        Some("unloads in 11 min")
+    );
+}

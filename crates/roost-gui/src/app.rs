@@ -57,6 +57,8 @@ pub struct AppState {
     pub machine: Machine,
     pub browse: BrowseState,
     pub jobs: JobsState,
+    /// Models Ollama has loaded right now.
+    pub running: Vec<roost_core::ollama::RunningModel>,
     pub chat: crate::chat::ChatState,
     pub chat_ui: crate::chat::view::ChatUi,
     pub dock: DockUi,
@@ -119,6 +121,7 @@ impl AppState {
                 vram_gb: None,
             }),
             jobs: JobsState::new(),
+            running: Vec::new(),
             chat: crate::chat::ChatState::default(),
             chat_ui: crate::chat::view::ChatUi::default(),
             dock: DockUi::default(),
@@ -267,6 +270,17 @@ impl AppState {
             }
             UiEvent::CachedLoaded(r) => {
                 self.settings_view.state.on_cached_loaded(r);
+                None
+            }
+            UiEvent::RunningLoaded(models) => {
+                self.running = models.clone();
+                None
+            }
+            UiEvent::UnloadDone(name, result) => {
+                match result {
+                    Ok(()) => self.running.retain(|m| m.name != *name),
+                    Err(e) => self.chat.notice = Some(format!("Could not unload {name}: {e}")),
+                }
                 None
             }
             UiEvent::Chat(ev) => {

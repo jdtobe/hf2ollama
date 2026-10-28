@@ -47,6 +47,11 @@ pub struct ChatProbe {
     pub header: Option<egui::Rect>,
     pub rows: Vec<(SessionId, egui::Rect)>,
     pub send_button: Option<(egui::Rect, &'static str)>,
+    /// The delete control of each rail row that shows one, and whether it is armed.
+    pub rail_delete: Vec<(SessionId, egui::Rect, bool)>,
+    pub header_unload: Option<egui::Rect>,
+    pub loaded_footer: Option<egui::Rect>,
+    pub footer_unload: Vec<egui::Rect>,
     pub delete_button: Option<(egui::Rect, String)>,
 }
 
@@ -184,6 +189,20 @@ fn rail(
     t: &Tokens,
     installed: &[String],
 ) {
+    let now = Instant::now();
+    if app.ollama.as_ref().is_some_and(|o| o.is_some()) {
+        egui::Panel::bottom("chat_loaded")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().inner_margin(Margin::symmetric(0, 6)))
+            .show(ui, |ui| {
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.loaded_footer = Some(ui.max_rect());
+                }
+                loaded_footer(ui, app, out, t);
+            });
+    }
     let model = app.chat.default_model(installed);
     ui.horizontal(|ui| {
         let ready = model.is_some();
@@ -224,7 +243,7 @@ fn rail(
                 }
                 section_label(ui, t, label);
                 for row in rows {
-                    if rail_row(ui, t, row, selected == Some(row.id), app) {
+                    if rail_row(ui, t, row, selected == Some(row.id), app, out, now) {
                         open_id = Some(row.id);
                     }
                 }
@@ -247,7 +266,7 @@ fn rail(
                     .wrap(),
                 );
                 for row in &rail.incognito {
-                    if rail_row(ui, t, row, selected == Some(row.id), app) {
+                    if rail_row(ui, t, row, selected == Some(row.id), app, out, now) {
                         open_id = Some(row.id);
                     }
                 }
@@ -310,22 +329,34 @@ fn row_note(row: &RailRow) -> Option<(&'static str, bool)> {
     }
 }
 
+/// One rail row. Clicking it opens the session; the delete control at its
+/// right (shown on hover, on the selected row and while armed) takes a click
+/// and a confirming second click after a short pause.
 fn rail_row(
     ui: &mut egui::Ui,
     t: &Tokens,
     row: &RailRow,
     selected: bool,
     app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    now: Instant,
 ) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     #[cfg(test)]
     app.chat_ui.probe.rows.push((row.id, rect));
-    let _ = &app;
+    let key = row.id.to_string();
+    let armed = app.chat_ui.confirm.is_armed(&key, now);
+    let show_delete = selected || armed || ui.rect_contains_pointer(rect);
     if selected {
         ui.painter().rect_filled(rect, 8.0, t.accent_soft);
-    } else if resp.hovered() {
+    } else if show_delete {
         ui.painter().rect_filled(rect, 8.0, t.surface2);
     }
+    let reserved = match (show_delete, armed) {
+        (false, _) => 0.0,
+        (true, false) => 30.0,
+        (true, true) => 76.0,
+    };
     let left = rect.left() + 10.0 + if row.pinned { 10.0 } else { 0.0 };
     if row.pinned {
         ui.painter().circle_filled(
@@ -334,7 +365,7 @@ fn rail_row(
             t.accent,
         );
     }
-    let width = rect.right() - left - 10.0;
+    let width = rect.right() - left - 10.0 - reserved;
     let title = truncated(ui, &row.title, FontId::proportional(13.5), t.fg, width);
     ui.painter()
         .galley(egui::pos2(left, rect.top() + 7.0), title, t.fg);
@@ -342,10 +373,69 @@ fn rail_row(
         Some((text, bad)) => (text.to_string(), if bad { t.bad } else { t.accent }),
         None => (row.model.clone(), t.fg3),
     };
-    let sub = truncated(ui, &sub, FontId::proportional(11.5), color, width);
+    let sub_width = rect.right() - left - 10.0;
+    let sub = truncated(ui, &sub, FontId::proportional(11.5), color, sub_width);
     ui.painter()
         .galley(egui::pos2(left, rect.top() + 26.0), sub, color);
-    resp.clicked()
+
+    let mut delete_clicked = false;
+    if show_delete {
+        let del_rect = if armed {
+            egui::Rect::from_min_max(
+                egui::pos2(rect.right() - 8.0 - 62.0, rect.top() + 6.0),
+                egui::pos2(rect.right() - 8.0, rect.top() + 28.0),
+            )
+        } else {
+            egui::Rect::from_center_size(
+                egui::pos2(rect.right() - 17.0, rect.top() + 17.0),
+                vec2(22.0, 22.0),
+            )
+        };
+        #[cfg(test)]
+        app.chat_ui
+            .probe
+            .rail_delete
+            .push((row.id, del_rect, armed));
+        let hit = ui
+            .interact(del_rect, resp.id.with("delete"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(if armed {
+                "Click again to delete this chat"
+            } else {
+                "Delete chat"
+            });
+        if armed {
+            ui.painter().rect_filled(del_rect, 6.0, t.bad_soft);
+            ui.painter().text(
+                del_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Delete?",
+                semibold(12.0),
+                t.bad,
+            );
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        } else {
+            if hit.hovered() {
+                ui.painter()
+                    .circle_filled(del_rect.center(), 11.0, t.surface);
+            }
+            let c = del_rect.center();
+            let arm = 3.5;
+            let stroke = Stroke::new(1.5, if hit.hovered() { t.bad } else { t.fg3 });
+            ui.painter()
+                .line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
+            ui.painter()
+                .line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
+        }
+        if hit.clicked() {
+            delete_clicked = true;
+            if app.chat_ui.confirm.click(&key, now) {
+                out.push(BackendRequest::Chat(ChatCommand::Delete(row.id)));
+            }
+        }
+    }
+    resp.clicked() && !delete_clicked
 }
 
 // ---------------------------------------------------------- the conversation
@@ -580,9 +670,19 @@ fn header(
             }
         }
         _ => {
-            ui.add(
-                egui::Label::new(RichText::new(&title).font(semibold(16.0)).color(t.fg)).truncate(),
-            );
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    loaded_status(ui, app, out, t, &model);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&title).font(semibold(16.0)).color(t.fg),
+                            )
+                            .truncate(),
+                        );
+                    });
+                });
+            });
         }
     }
     #[cfg(test)]
@@ -720,6 +820,118 @@ fn inspect(
     if r.clicked() && app.chat_ui.confirm.click(&key, now) {
         out.push(BackendRequest::Chat(ChatCommand::Delete(id)));
         app.chat_ui.inspect = None;
+    }
+}
+
+// ------------------------------------------------------------ loaded models
+
+/// Ollama lists `llama3` and `llama3:latest` for the same model.
+fn same_model(a: &str, b: &str) -> bool {
+    a.strip_suffix(":latest").unwrap_or(a) == b.strip_suffix(":latest").unwrap_or(b)
+}
+
+/// "unloads in 5 min", "stays loaded" and so on, from Ollama's `expires_at`.
+pub(super) fn unload_note(expires_at: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let at = chrono::DateTime::parse_from_rfc3339(expires_at)
+        .ok()?
+        .to_utc();
+    let left = at - now;
+    Some(if left > chrono::Duration::hours(24) {
+        "stays loaded".to_string()
+    } else if left <= chrono::Duration::zero() {
+        "unloading".to_string()
+    } else if left < chrono::Duration::minutes(1) {
+        "unloads in under a minute".to_string()
+    } else {
+        format!(
+            "unloads in {} min",
+            (left.num_milliseconds() + 59_999) / 60_000
+        )
+    })
+}
+
+/// Right end of the conversation title line: whether this chat's model is in
+/// memory, and a button to unload it.
+fn loaded_status(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    model: &str,
+) {
+    if !app.ollama.as_ref().is_some_and(|o| o.is_some()) {
+        return;
+    }
+    let found = app
+        .running
+        .iter()
+        .find(|m| same_model(&m.name, model))
+        .cloned();
+    match found {
+        Some(m) => {
+            let note = m
+                .expires_at
+                .as_deref()
+                .and_then(|e| unload_note(e, chrono::Utc::now()));
+            let r = secondary(ui, "Unload", true).on_hover_text("Free this model's memory now");
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.header_unload = Some(r.rect);
+            }
+            if r.clicked() {
+                out.push(BackendRequest::UnloadModel(m.name.clone()));
+                app.running.retain(|x| x.name != m.name);
+            }
+            let text = match note {
+                Some(n) => format!("● Loaded · {n}"),
+                None => "● Loaded".to_string(),
+            };
+            ui.label(RichText::new(text).size(12.0).color(t.ok));
+        }
+        None => {
+            ui.label(RichText::new("○ Not loaded").size(12.0).color(t.fg3))
+                .on_hover_text("Ollama loads it when you send a message");
+        }
+    }
+}
+
+/// "In memory" at the bottom of the rail: what Ollama holds, with Unload.
+fn loaded_footer(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>, t: &Tokens) {
+    section_label(ui, t, "In memory");
+    if app.running.is_empty() {
+        ui.label(RichText::new("Nothing loaded").size(12.0).color(t.fg3));
+        return;
+    }
+    let shown: Vec<_> = app.running.iter().take(3).cloned().collect();
+    for m in &shown {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let r = secondary(ui, "Unload", true);
+                #[cfg(test)]
+                app.chat_ui.probe.footer_unload.push(r.rect);
+                if r.clicked() {
+                    out.push(BackendRequest::UnloadModel(m.name.clone()));
+                    app.running.retain(|x| x.name != m.name);
+                }
+                ui.label(
+                    RichText::new(crate::browse::results::format_size(m.size))
+                        .size(11.5)
+                        .color(t.fg3),
+                );
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&m.name).size(12.0).color(t.fg2)).truncate(),
+                    );
+                });
+            });
+        });
+    }
+    if app.running.len() > shown.len() {
+        ui.label(
+            RichText::new(format!("and {} more", app.running.len() - shown.len()))
+                .size(11.5)
+                .color(t.fg3),
+        );
     }
 }
 

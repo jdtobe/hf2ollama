@@ -7,7 +7,7 @@ use roost_core::config::Settings;
 use roost_core::events::{Command, JobEvent, JobId};
 use roost_core::hf::{HfClient, ModelCard, ModelInfo, ModelSummary, SearchQuery};
 use roost_core::history::History;
-use roost_core::ollama::{InstalledModel, ModelDetails, OllamaClient};
+use roost_core::ollama::{InstalledModel, ModelDetails, OllamaClient, RunningModel};
 use roost_core::paths::Paths;
 use roost_core::pipeline::{JobManager, PipelineCtx};
 use roost_core::secrets::{promote_legacy_token, KeychainStore, LegacyTokenMigration, TokenStore};
@@ -65,6 +65,8 @@ pub enum BackendRequest {
     ClearCached,
     /// An intent for the chat manager.
     Chat(ChatCommand),
+    /// Asks Ollama to drop a model from memory.
+    UnloadModel(String),
     /// Stops chat runs and writes partial replies; answered on the sender.
     ShutdownChat(Sender<()>),
 }
@@ -120,6 +122,9 @@ pub enum UiEvent {
     /// Bytes freed by `ClearCached`.
     CachedCleared(Result<u64, String>),
     Chat(ChatEvent),
+    /// The models Ollama has loaded (empty when none or unreachable).
+    RunningLoaded(Vec<RunningModel>),
+    UnloadDone(String, Result<(), String>),
     /// History cannot be used (another Roost holds it, or the folder failed).
     ChatUnavailable(String),
 }
@@ -234,7 +239,7 @@ struct Shared {
     job_tx: Sender<JobEvent>,
     handle: tokio::runtime::Handle,
     out: Emitter,
-    recheck: Notify,
+    recheck: Arc<Notify>,
     chat: Option<ChatHandle>,
 }
 
@@ -449,7 +454,8 @@ fn run(
         legacy_store,
         gate: token_gate,
     } = stores;
-    let chat = start_chat(&runtime, &paths, &settings, &out);
+    let recheck = Arc::new(Notify::new());
+    let chat = start_chat(&runtime, &paths, &settings, &out, Arc::clone(&recheck));
     let token = store.get().ok().flatten();
     let shared = Arc::new(Shared {
         clients: Mutex::new(Clients {
@@ -467,7 +473,7 @@ fn run(
         job_tx,
         handle: runtime.handle().clone(),
         out,
-        recheck: Notify::new(),
+        recheck,
         chat,
     });
     shared.install_settings(&settings);
@@ -491,7 +497,14 @@ async fn poll_status(shared: Arc<Shared>) {
     loop {
         let ollama = shared.clients().ollama.clone();
         let version = ollama.version().await.ok();
+        let reachable = version.is_some();
         shared.out.emit(UiEvent::OllamaStatus(version));
+        let running = if reachable {
+            ollama.running().await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        shared.out.emit(UiEvent::RunningLoaded(running));
         tokio::select! {
             _ = tokio::time::sleep(STATUS_POLL) => {}
             _ = shared.recheck.notified() => {}
@@ -506,12 +519,22 @@ fn start_chat(
     paths: &Paths,
     settings: &Settings,
     out: &Emitter,
+    recheck: Arc<Notify>,
 ) -> Option<ChatHandle> {
     match Store::open(&paths.sessions_dir) {
         Ok((store, warnings)) => {
             let writer = Writer::spawn(store, warnings);
             let emitter = out.clone();
-            let sink: EventSink = Arc::new(move |e| emitter.emit(UiEvent::Chat(e)));
+            // A reply starting or ending changes what is loaded: look again soon.
+            let sink: EventSink = Arc::new(move |e| {
+                if matches!(
+                    e,
+                    ChatEvent::TurnStarted { .. } | ChatEvent::TurnEnded { .. }
+                ) {
+                    recheck.notify_one();
+                }
+                emitter.emit(UiEvent::Chat(e));
+            });
             let cfg = ChatConfig::new(OllamaClient::new(&settings.ollama_url));
             Some(ChatManager::spawn(runtime.handle(), writer, cfg, sink))
         }
@@ -671,6 +694,11 @@ async fn serve(shared: &Shared, req: BackendRequest) {
                 chat.send(ChatCommand::InstalledChanged);
             }
             UiEvent::DeleteDone(name, r)
+        }
+        BackendRequest::UnloadModel(name) => {
+            let r = text(ollama.unload(&name).await);
+            shared.recheck.notify_one();
+            UiEvent::UnloadDone(name, r)
         }
         BackendRequest::TestConnection(url) => {
             UiEvent::ConnectionTest(text(OllamaClient::new(&url).version().await))
@@ -1386,7 +1414,19 @@ mod tests {
         let h = harness_with("http://127.0.0.1:1", &hf.uri(), &[], store);
         assert_eq!(status(&h), HfTokenStatus::Saved);
         std::thread::sleep(Duration::from_millis(200));
-        assert!(hf.received_requests().await.unwrap().is_empty());
+        // Only the token check matters here. Other tests' backends may poll
+        // a port this server later reused, so unrelated paths are ignored.
+        let seen: Vec<String> = hf
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.path().to_string())
+            .collect();
+        assert!(
+            !seen.iter().any(|p| p.starts_with("/api/whoami")),
+            "startup asked Hugging Face to check the token: {seen:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1806,5 +1846,64 @@ mod tests {
         let (ack, done) = std::sync::mpsc::channel();
         h.tx.send(BackendRequest::ShutdownChat(ack)).unwrap();
         assert!(done.recv_timeout(Duration::from_secs(4)).is_ok());
+    }
+
+    // ------------------------------------------------- loaded models
+
+    async fn ps_server(ps_body: &str) -> MockServer {
+        let server = version_server("0.9.2").await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ps_body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_status_poll_reports_loaded_models() {
+        let server = ps_server(
+            r#"{"models":[{"name":"llama3:8b","size":5000,"size_vram":4000,"expires_at":"2099-01-01T00:00:00Z"}]}"#,
+        )
+        .await;
+        let h = harness(&server.uri(), "http://127.0.0.1:9");
+        let running = wait_for(&h.rx, |e| match e {
+            UiEvent::RunningLoaded(m) if !m.is_empty() => Some(m.clone()),
+            _ => None,
+        });
+        assert_eq!(running[0].name, "llama3:8b");
+        assert_eq!(running[0].size_vram, 4000);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unloading_asks_ollama_and_answers() {
+        let server = ps_server(r#"{"models":[]}"#).await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .and(body_json(
+                serde_json::json!({"model": "llama3:8b", "keep_alive": 0}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"done":true}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let h = harness(&server.uri(), "http://127.0.0.1:9");
+        h.tx.send(BackendRequest::UnloadModel("llama3:8b".into()))
+            .unwrap();
+        let done = wait_for(&h.rx, |e| match e {
+            UiEvent::UnloadDone(n, r) => Some((n.clone(), r.clone())),
+            _ => None,
+        });
+        assert_eq!(done, ("llama3:8b".to_string(), Ok(())));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreachable_ollama_reports_nothing_loaded() {
+        let h = harness("http://127.0.0.1:9", "http://127.0.0.1:9");
+        let running = wait_for(&h.rx, |e| match e {
+            UiEvent::RunningLoaded(m) => Some(m.clone()),
+            _ => None,
+        });
+        assert!(running.is_empty());
     }
 }

@@ -6,6 +6,13 @@ Written 2026-10-22, refreshed 2026-10-23 after PRs #1-#4 were merged, so a new s
 
 Stage 2 (streaming chat, per-session storage, incognito, history rail with pinning) is on branch `feat/roost-chat`; see `docs/superpowers/specs/2026-10-27-roost-chat-design.md` and `docs/superpowers/plans/2026-10-27-roost-chat.md`. Not pushed or merged. Manual verification still owed: a real Ollama (chat, stop, a model that is not installed), the look of all four themes, and Windows/Linux. Known gaps: markdown rendering, copy, regenerate, rail search, empty chats are saved at creation and not pruned, Earlier is not paginated. Stage 3 (agents) is next.
 
+### UI refinement backlog (from the first hands-on test of chat)
+
+- Done: delete control on every rail row (hover or selected row; click, pause, click to confirm).
+- Done: loaded models (`GET /api/ps`) shown in the chat header and an "In memory" list in the rail, with manual Unload (`POST /api/generate` with `keep_alive: 0`). Not done: a keep-alive preference (unload after N minutes or right after each reply) and a Chat-tab indicator beyond the rail.
+- Keep in mind: a real menubar. People look there for themes (and likely settings); the current top bar has no menubar.
+- Also: interim titles instead of "Untitled", markdown/copy/regenerate, rail search, images (see the discussion of a "media" stage and a provider layer).
+
 ## Update 2026-10-27 (earlier)
 
 - The repository was renamed `hf2ollama` -> `roost` on GitHub (`origin` is `https://github.com/jdtobe/roost.git`). Everything below this section was written before the rename and still uses the hf2ollama names; the identity scan allows that for this file.
