@@ -59,3 +59,11 @@ pencil. When there are meaningful extra actions (export or copy as Markdown,
 duplicate, history manager actions), bring "···" back on the **left** end of
 the button stack, so it does not interrupt the right-in scan of the pin and
 the trash can. Not before there is a second such action.
+
+## Execute (X) is opt-in (decided 2026-10-29)
+
+Running commands is off until the user turns it on in Settings, with a warning
+that says what a command can do (it runs with the user's own rights and is not
+limited to the agent's folder). Until then the X chip and the shell tools are
+hidden everywhere. Once enabled, X is still Off per session by default, asks
+first, and shows the exact command on the approval card.
