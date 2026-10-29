@@ -815,6 +815,8 @@ fn agent_settings(
                                     ),
                                 ],
                             ),
+                            // The Run row arrives with the Settings switch.
+                            Capability::Run => continue,
                         };
                         ui.label(RichText::new(title).font(semibold(13.0)).color(t.fg));
                         ui.label(RichText::new(sub).size(11.5).color(t.fg3));

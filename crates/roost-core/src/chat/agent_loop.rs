@@ -543,9 +543,11 @@ impl Manager {
                 &name,
                 &args,
                 &Limits::default(),
-                approved,
-                room,
-                &stop,
+                &registry::Options {
+                    approved,
+                    undo_room: room,
+                    cancel: &stop,
+                },
             );
             let _ = tx.send(RunMsg::ToolDone {
                 session: id,

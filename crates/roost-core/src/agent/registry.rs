@@ -11,6 +11,27 @@ use std::sync::atomic::AtomicBool;
 /// For callers that cannot be cancelled.
 static NO_CANCEL: AtomicBool = AtomicBool::new(false);
 
+/// How one tool call is run, beyond what it is.
+pub struct Options<'a> {
+    /// The user said yes to a tool that asks.
+    pub approved: bool,
+    /// Bytes of originals that may still be kept for undo.
+    pub undo_room: usize,
+    /// Set to end a running command.
+    pub cancel: &'a AtomicBool,
+}
+
+impl Options<'static> {
+    /// No undo limit and no way to cancel.
+    pub fn once(approved: bool) -> Options<'static> {
+        Options {
+            approved,
+            undo_room: usize::MAX,
+            cancel: &NO_CANCEL,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     Files,
@@ -299,17 +320,7 @@ pub fn call(
     args: &Value,
     limits: &Limits,
 ) -> Result<String, ToolError> {
-    run(
-        ws,
-        config,
-        name,
-        args,
-        limits,
-        false,
-        usize::MAX,
-        &NO_CANCEL,
-    )
-    .0
+    run(ws, config, name, args, limits, &Options::once(false)).0
 }
 
 /// Like `call`, for a call the user approved: a tool set to Ask may run. A
@@ -321,7 +332,7 @@ pub fn call_approved(
     args: &Value,
     limits: &Limits,
 ) -> Result<String, ToolError> {
-    run(ws, config, name, args, limits, true, usize::MAX, &NO_CANCEL).0
+    run(ws, config, name, args, limits, &Options::once(true)).0
 }
 
 /// Like `call` or `call_approved`, for the chat core: also hands back the
@@ -334,11 +345,9 @@ pub fn call_tracked(
     name: &str,
     args: &Value,
     limits: &Limits,
-    approved: bool,
-    undo_room: usize,
-    cancel: &AtomicBool,
+    opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
-    run(ws, config, name, args, limits, approved, undo_room, cancel)
+    run(ws, config, name, args, limits, opts)
 }
 
 fn run(
@@ -347,10 +356,9 @@ fn run(
     name: &str,
     args: &Value,
     limits: &Limits,
-    approved: bool,
-    undo_room: usize,
-    cancel: &AtomicBool,
+    opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
+    let (approved, undo_room, cancel) = (opts.approved, opts.undo_room, opts.cancel);
     let spec = match specs().into_iter().find(|s| s.name == name) {
         Some(s) => s,
         None => return (Err(ToolError::UnknownTool(name.to_string())), None),
@@ -506,9 +514,11 @@ mod tests {
             "write_file",
             &args,
             &Limits::default(),
-            false,
-            50,
-            &AtomicBool::new(false),
+            &Options {
+                approved: false,
+                undo_room: 50,
+                cancel: &AtomicBool::new(false),
+            },
         );
         assert!(r.is_err() && change.is_none());
         assert_eq!(
@@ -521,9 +531,11 @@ mod tests {
             "write_file",
             &args,
             &Limits::default(),
-            false,
-            100,
-            &AtomicBool::new(false),
+            &Options {
+                approved: false,
+                undo_room: 100,
+                cancel: &AtomicBool::new(false),
+            },
         );
         assert!(r.is_ok());
         assert_eq!(change.unwrap().before.unwrap().len(), 100);

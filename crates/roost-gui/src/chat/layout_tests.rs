@@ -1874,6 +1874,7 @@ fn ask_for_approval(app: &mut App, session: roost_core::session::SessionId) {
         name: "read_file".into(),
         arguments: serde_json::json!({"path": "src/main.rs"}),
         preview: None,
+        run: None,
     });
 }
 
@@ -2221,6 +2222,7 @@ fn ask_to_write(app: &mut App, session: roost_core::session::SessionId) {
             ],
             more: 4,
         }),
+        run: None,
     });
 }
 
