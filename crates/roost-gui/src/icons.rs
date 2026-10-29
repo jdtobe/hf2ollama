@@ -14,6 +14,10 @@ pub enum Icon {
     Read,
     Stop,
     Filter,
+    Chat,
+    Agent,
+    Gear,
+    Pin,
     Trash,
     Prev,
     Next,
@@ -140,6 +144,81 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 ],
                 stroke,
             ));
+        }
+        Icon::Chat => {
+            painter.add(egui::Shape::line(
+                vec![
+                    p(2.0, 3.0),
+                    p(14.0, 3.0),
+                    p(14.0, 11.0),
+                    p(7.5, 11.0),
+                    p(4.5, 14.0),
+                    p(4.5, 11.0),
+                    p(2.0, 11.0),
+                    p(2.0, 3.0),
+                ],
+                stroke,
+            ));
+        }
+        Icon::Agent => {
+            painter.add(egui::Shape::line(
+                vec![
+                    p(2.0, 3.0),
+                    p(14.0, 3.0),
+                    p(14.0, 11.0),
+                    p(7.5, 11.0),
+                    p(4.5, 14.0),
+                    p(4.5, 11.0),
+                    p(2.0, 11.0),
+                    p(2.0, 3.0),
+                ],
+                stroke,
+            ));
+            // A spark in the bubble.
+            painter.add(egui::Shape::line(
+                vec![
+                    p(8.0, 4.8),
+                    p(8.7, 6.6),
+                    p(10.5, 7.0),
+                    p(8.7, 7.6),
+                    p(8.0, 9.4),
+                    p(7.3, 7.6),
+                    p(5.5, 7.0),
+                    p(7.3, 6.6),
+                    p(8.0, 4.8),
+                ],
+                Stroke::new(1.2, color),
+            ));
+        }
+        Icon::Gear => {
+            painter.circle_stroke(p(8.0, 8.0), 2.3, stroke);
+            for (a, b) in [
+                ((8.0, 1.6), (8.0, 3.4)),
+                ((8.0, 12.6), (8.0, 14.4)),
+                ((1.6, 8.0), (3.4, 8.0)),
+                ((12.6, 8.0), (14.4, 8.0)),
+                ((3.5, 3.5), (4.7, 4.7)),
+                ((11.3, 11.3), (12.5, 12.5)),
+                ((3.5, 12.5), (4.7, 11.3)),
+                ((11.3, 4.7), (12.5, 3.5)),
+            ] {
+                painter.line_segment([p(a.0, a.1), p(b.0, b.1)], stroke);
+            }
+        }
+        Icon::Pin => {
+            painter.line_segment([p(5.0, 2.5), p(11.0, 2.5)], stroke);
+            painter.add(egui::Shape::line(
+                vec![
+                    p(6.2, 2.5),
+                    p(6.2, 7.0),
+                    p(4.0, 9.2),
+                    p(12.0, 9.2),
+                    p(9.8, 7.0),
+                    p(9.8, 2.5),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(8.0, 9.2), p(8.0, 14.0)], stroke);
         }
         Icon::Trash => {
             painter.line_segment([p(2.5, 4.0), p(13.5, 4.0)], stroke);

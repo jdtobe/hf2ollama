@@ -4,8 +4,9 @@
 
 use super::view::{composer_id, same_model, secondary, tool_card, truncate_chars, unload_note};
 use crate::app::AppState;
+use crate::icons::Icon;
 use crate::runtime::BackendRequest;
-use crate::theme::{semibold, Tokens};
+use crate::theme::{mono, semibold, Tokens};
 use crate::widgets::tag;
 use eframe::egui::{
     self,
@@ -24,15 +25,74 @@ fn sticky() -> MenuConfig {
     MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside)
 }
 
-/// The folder's own name, for the chip.
-fn folder_name(s: &Session) -> String {
-    s.workspace
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .map_or_else(
-            || "folder".to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        )
+/// The folder with the home directory written as `~`.
+pub(super) fn home_relative(path: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    if let Some(home) = home
+        .map(std::path::PathBuf::from)
+        .filter(|h| !h.as_os_str().is_empty())
+    {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return if rest.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+            };
+        }
+    }
+    path.display().to_string()
+}
+
+/// What the status dot says: idle, working (with the step of an agent) or
+/// waiting for the user's answer.
+pub(super) fn status_of(app: &AppState, s: &Session) -> (StatusKind, String) {
+    if app.chat.approval(s.id).is_some() {
+        return (StatusKind::Waiting, "Waiting for you".to_string());
+    }
+    if app.chat.is_running(s.id) {
+        let label = match (s.mode, app.chat.step_of(s.id)) {
+            (SessionMode::Agent, n) if n > 0 => {
+                format!("Working · step {n} of {}", s.step_budget)
+            }
+            (SessionMode::Agent, _) => "Working".to_string(),
+            _ => "Replying".to_string(),
+        };
+        return (StatusKind::Working, label);
+    }
+    (StatusKind::Idle, "Idle".to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StatusKind {
+    Idle,
+    Working,
+    Waiting,
+}
+
+/// Height of the square icon buttons in the header.
+const HEADER_BTN: f32 = 32.0;
+
+/// A bordered square icon button.
+fn icon_button(ui: &mut egui::Ui, t: &Tokens, icon: Icon, tip: &str) -> egui::Response {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(HEADER_BTN, HEADER_BTN), egui::Sense::click());
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tip);
+    let fill = if resp.hovered() {
+        t.surface2
+    } else {
+        t.surface
+    };
+    ui.painter().rect(
+        rect,
+        8.0,
+        fill,
+        egui::Stroke::new(1.0, t.line),
+        egui::StrokeKind::Inside,
+    );
+    crate::icons::paint(ui.painter(), rect, icon, t.fg2);
+    resp
 }
 
 pub(super) fn header(
@@ -44,39 +104,85 @@ pub(super) fn header(
     now: Instant,
 ) {
     let row = app.chat.rows().iter().find(|r| r.id == s.id).cloned();
-    let title = row.as_ref().map_or(s.title.clone(), |r| r.title.clone());
     let shown = row
         .as_ref()
         .map_or(s.title.clone(), super::state::display_title);
     let pinned = row.as_ref().is_some_and(|r| r.pinned);
     let incognito = s.lifetime == SessionLifetime::Incognito;
-    #[cfg(test)]
-    let top = ui.cursor().min.y;
+    let (kind, status) = status_of(app, s);
+    // The band is painted behind the content once its height is known.
+    let band = ui.painter().add(egui::Shape::Noop);
+    let pane = ui.max_rect();
+    let start = ui.cursor().min.y;
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            more_menu(ui, app, out, t, s, &title, pinned, incognito, now);
+            header_actions(ui, app, out, t, s, pinned, incognito, now);
             if s.mode == SessionMode::Agent {
-                agent_chip(ui, app, out, t, s);
+                agent_settings(ui, app, out, t, s);
             }
             if incognito {
                 tag(ui, "Incognito", t.accent, t.accent_soft);
             }
+            let (colour, glow) = match kind {
+                StatusKind::Idle => (t.fg3, false),
+                StatusKind::Working => (t.accent, true),
+                StatusKind::Waiting => (t.warn, true),
+            };
+            let label = ui.label(RichText::new(&status).size(12.5).color(t.fg2));
+            let dot = egui::Rect::from_center_size(
+                egui::pos2(label.rect.left() - 10.0, label.rect.center().y),
+                egui::vec2(9.0, 9.0),
+            );
+            ui.add_space(14.0);
+            if glow {
+                ui.painter()
+                    .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
+            }
+            ui.painter().circle_filled(dot.center(), 4.5, colour);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                title_or_rename(ui, app, out, t, s, &shown);
+                title_block(ui, app, out, t, s, &shown);
             });
         });
     });
     #[cfg(test)]
     {
-        app.chat_ui.probe.header = Some(egui::Rect::from_min_max(
-            egui::pos2(ui.max_rect().left(), top),
-            egui::pos2(ui.max_rect().right(), ui.cursor().min.y),
-        ));
+        app.chat_ui.probe.status_label = Some(status.clone());
     }
-    ui.add_space(6.0);
+    ui.add_space(10.0);
+    let bottom = ui.cursor().min.y;
+    // Reach over the pane's margins; with nothing above the header the band
+    // starts at the top edge of the pane.
+    let top = if start - pane.top() < 1.0 {
+        pane.top() - super::view::PANE_MARGIN_Y
+    } else {
+        start - 8.0
+    };
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(pane.left() - super::view::PANE_MARGIN_X, top),
+        egui::pos2(pane.right() + super::view::PANE_MARGIN_X, bottom),
+    );
+    ui.painter().set(
+        band,
+        egui::Shape::Vec(vec![
+            egui::Shape::rect_filled(rect, 0.0, t.header),
+            egui::Shape::hline(
+                rect.x_range(),
+                rect.bottom(),
+                egui::Stroke::new(1.0, t.line),
+            ),
+        ]),
+    );
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.header = Some(rect);
+    }
+    ui.add_space(12.0);
 }
 
-fn title_or_rename(
+/// The kind-of-session tile, the title (or the rename field) and, for an
+/// agent, its folder.
+fn title_block(
     ui: &mut egui::Ui,
     app: &mut AppState,
     out: &mut Vec<BackendRequest>,
@@ -84,91 +190,269 @@ fn title_or_rename(
     s: &Session,
     shown: &str,
 ) {
-    match app.chat_ui.renaming.clone() {
-        Some((id, mut text)) if id == s.id => {
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .desired_width(ui.available_width())
-                    .font(semibold(16.0)),
-            );
-            if !edit.has_focus() && !edit.lost_focus() {
-                edit.request_focus();
-            }
-            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-            let escape = ui.input(|i| i.key_pressed(Key::Escape));
-            if enter {
-                out.push(BackendRequest::Chat(ChatCommand::Rename(id, text.clone())));
-                app.chat_ui.renaming = None;
-            } else if escape || edit.lost_focus() {
-                app.chat_ui.renaming = None;
-            } else {
-                app.chat_ui.renaming = Some((id, text));
-            }
+    let agent = s.mode == SessionMode::Agent;
+    let (tile, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+    ui.painter().rect_filled(tile, 9.0, t.accent);
+    crate::icons::paint(
+        ui.painter(),
+        tile,
+        if agent { Icon::Agent } else { Icon::Chat },
+        t.accent_fg,
+    );
+    ui.add_space(4.0);
+    if app
+        .chat_ui
+        .renaming
+        .as_ref()
+        .is_some_and(|(id, _)| *id == s.id)
+    {
+        title_or_rename(ui, app, out, t, s, shown);
+        return;
+    }
+    let untitled = shown.trim().is_empty() || shown == roost_core::session::UNTITLED;
+    let text = if untitled {
+        "Untitled".to_string()
+    } else {
+        shown.to_string()
+    };
+    let font = semibold(21.0);
+    let natural = ui
+        .painter()
+        .layout_no_wrap(text.clone(), font.clone(), t.fg)
+        .size()
+        .x;
+    let path = s
+        .workspace
+        .as_ref()
+        .filter(|_| agent)
+        .map(|p| (home_relative(p), p.display().to_string()));
+    let room = ui.available_width();
+    // The title keeps what it needs; the folder gets what is left.
+    let title_w = if path.is_some() {
+        natural.min(room * 0.62)
+    } else {
+        room
+    };
+    let mut rename = false;
+    ui.scope(|ui| {
+        ui.set_max_width(title_w);
+        let mut rich = RichText::new(&text)
+            .font(font)
+            .color(if untitled { t.fg3 } else { t.fg });
+        if untitled {
+            rich = rich.italics();
         }
-        _ => {
-            ui.add(
-                egui::Label::new(RichText::new(shown).font(semibold(16.0)).color(t.fg)).truncate(),
-            );
+        // Double-clicking the title edits it too.
+        let label = ui.add(
+            egui::Label::new(rich)
+                .truncate()
+                .sense(egui::Sense::click()),
+        );
+        rename |= label.double_clicked();
+    });
+    // A small pencil beside the title, quiet until pointed at.
+    let (pencil, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Rename");
+    if resp.hovered() {
+        ui.painter().rect_filled(pencil, 6.0, t.surface);
+    }
+    crate::icons::paint(
+        ui.painter(),
+        pencil,
+        Icon::Edit,
+        if resp.hovered() { t.fg } else { t.fg2 },
+    );
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.rename_button = Some(pencil);
+    }
+    rename |= resp.clicked();
+    if rename {
+        app.chat_ui.renaming = Some((s.id, shown.to_string()));
+    }
+    if let Some((short, full)) = path {
+        ui.add_space(8.0);
+        let room = ui.available_width().max(40.0);
+        let label = format!("({short})");
+        let shown = crate::widgets::ellipsize_middle(ui, &label, mono(12.5), room);
+        let cut = shown != label;
+        let r = ui.label(RichText::new(shown).font(mono(12.5)).color(t.fg2));
+        // Always say where it is on hover; the full path is the point when
+        // it was cut.
+        r.on_hover_text(if cut {
+            full
+        } else {
+            format!("The agent works in {full}")
+        });
+    }
+}
+
+fn title_or_rename(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    _t: &Tokens,
+    s: &Session,
+    _shown: &str,
+) {
+    if let Some((id, mut text)) = app.chat_ui.renaming.clone().filter(|(id, _)| *id == s.id) {
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .desired_width(ui.available_width())
+                .font(semibold(18.0)),
+        );
+        if !edit.has_focus() && !edit.lost_focus() {
+            edit.request_focus();
+        }
+        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        let escape = ui.input(|i| i.key_pressed(Key::Escape));
+        if escape {
+            app.chat_ui.renaming = None;
+        } else if enter || edit.lost_focus() {
+            // Enter, or clicking away, keeps the new name.
+            if !text.trim().is_empty() {
+                out.push(BackendRequest::Chat(ChatCommand::Rename(id, text.clone())));
+            }
+            app.chat_ui.renaming = None;
+        } else {
+            app.chat_ui.renaming = Some((id, text));
         }
     }
 }
 
-/// Rename, pin and delete: the actions needed rarely.
+/// Pin and delete, as icons: a pin that fills when the session is pinned, and
+/// a red trash can that asks twice (the second time it says so).
 #[allow(clippy::too_many_arguments)]
-fn more_menu(
+fn header_actions(
     ui: &mut egui::Ui,
     app: &mut AppState,
     out: &mut Vec<BackendRequest>,
     t: &Tokens,
     s: &Session,
-    title: &str,
     pinned: bool,
     incognito: bool,
     now: Instant,
 ) {
-    let (button, _) = MenuButton::new(RichText::new("···").size(14.0))
-        .config(sticky())
-        .ui(ui, |ui| {
-            ui.set_min_width(150.0);
-            if ui.button("Rename").clicked() {
-                app.chat_ui.renaming = Some((s.id, title.to_string()));
-                ui.close();
-            }
-            if !incognito && ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
-                out.push(BackendRequest::Chat(ChatCommand::SetPinned(s.id, !pinned)));
-                ui.close();
-            }
-            ui.separator();
-            let key = s.id.to_string();
-            let armed = app.chat_ui.confirm.is_armed(&key, now);
-            let label = if armed {
-                "Click again to delete"
+    // Right to left: the trash can sits at the far edge, pin next to it.
+    let key = s.id.to_string();
+    let armed = app.chat_ui.confirm.is_armed(&key, now);
+    let del = if armed {
+        let label = "Click again to delete";
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(),
+            egui::FontId::proportional(12.5),
+            egui::Color32::WHITE,
+        );
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(galley.size().x + 24.0, HEADER_BTN),
+            egui::Sense::click(),
+        );
+        ui.painter().rect_filled(rect, 8.0, t.bad);
+        ui.painter().galley(
+            rect.center() - galley.size() / 2.0,
+            galley,
+            egui::Color32::WHITE,
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+        resp
+    } else {
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(HEADER_BTN, HEADER_BTN), egui::Sense::click());
+        let resp = resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Delete this session…");
+        ui.painter().rect(
+            rect,
+            8.0,
+            if resp.hovered() {
+                t.bad_soft
             } else {
-                "Delete…"
-            };
-            let del = ui.button(RichText::new(label).color(t.bad));
-            #[cfg(test)]
-            {
-                app.chat_ui.probe.delete_button = Some((del.rect, label.to_string()));
-            }
-            if armed {
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-            }
-            if del.clicked() && app.chat_ui.confirm.click(&key, now) {
-                out.push(BackendRequest::Chat(ChatCommand::Delete(s.id)));
-                ui.close();
-            }
-        });
+                t.surface
+            },
+            egui::Stroke::new(1.0, t.bad.gamma_multiply(0.6)),
+            egui::StrokeKind::Inside,
+        );
+        crate::icons::paint(ui.painter(), rect, Icon::Trash, t.bad);
+        resp
+    };
     #[cfg(test)]
     {
-        app.chat_ui.probe.more_button = Some(button.rect);
+        let label = if armed {
+            "Click again to delete"
+        } else {
+            "Delete…"
+        };
+        app.chat_ui.probe.delete_button = Some((del.rect, label.to_string()));
     }
-    let _ = button;
+    if del.clicked() && app.chat_ui.confirm.click(&key, now) {
+        out.push(BackendRequest::Chat(ChatCommand::Delete(s.id)));
+    }
+    if !incognito {
+        let pin = icon_button(
+            ui,
+            t,
+            Icon::Pin,
+            if pinned {
+                "Unpin"
+            } else {
+                "Pin to the top of the list"
+            },
+        );
+        if pinned {
+            // Filled and in the accent while pinned.
+            ui.painter()
+                .rect_filled(pin.rect.shrink(1.0), 7.0, t.accent_soft);
+            crate::icons::paint(ui.painter(), pin.rect, Icon::Pin, t.accent);
+        }
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.pin_button = Some(pin.rect);
+        }
+        if pin.clicked() {
+            out.push(BackendRequest::Chat(ChatCommand::SetPinned(s.id, !pinned)));
+        }
+    }
 }
 
-/// An agent's folder, step budget and tools behind one chip.
-fn agent_chip(
+/// A card inside the agent settings: a small heading over a rounded panel.
+fn settings_card<R>(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    title: &str,
+    note: &str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    egui::Frame::new()
+        .fill(t.surface2)
+        .stroke(egui::Stroke::new(1.0, t.line))
+        .corner_radius(9.0)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(title.to_uppercase())
+                        .font(semibold(11.0))
+                        .color(t.fg3),
+                );
+                if !note.is_empty() {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(note).size(11.5).color(t.fg3));
+                    });
+                }
+            });
+            add(ui)
+        })
+        .inner
+}
+
+/// The agent's folder, step budget and tools, behind one button that says
+/// so.
+fn agent_settings(
     ui: &mut egui::Ui,
     app: &mut AppState,
     out: &mut Vec<BackendRequest>,
@@ -177,85 +461,130 @@ fn agent_chip(
 ) {
     let running = app.chat.is_running(s.id);
     let id = s.id;
-    let label = format!("Folder: {}", truncate_chars(&folder_name(s), 22));
-    let (chip, _) = MenuButton::new(RichText::new(label).size(12.0))
-        .config(sticky())
-        .ui(ui, |ui| {
-            ui.set_min_width(280.0);
-            ui.label(RichText::new("Folder").font(semibold(11.0)).color(t.fg3));
-            let path = s
-                .workspace
-                .as_ref()
-                .map_or(String::new(), |p| p.display().to_string());
-            ui.add(egui::Label::new(RichText::new(path).size(12.0).color(t.fg2)).wrap());
-            if secondary(ui, "Change folder…", !running).clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Choose the agent's folder")
-                    .pick_folder()
-                {
-                    out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
-                }
-            }
-            ui.add_space(6.0);
-            ui.add_enabled_ui(!running, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Step budget").size(12.0).color(t.fg2));
-                    let mut steps = s.step_budget;
-                    if ui
-                        .add(egui::DragValue::new(&mut steps).range(1..=100))
-                        .changed()
+    let label = "Agent settings";
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), t.fg);
+    let size = egui::vec2(galley.size().x + 44.0, HEADER_BTN);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("The folder this agent works in, its step budget and its tools");
+    ui.painter().rect(
+        rect,
+        8.0,
+        if resp.hovered() {
+            t.surface2
+        } else {
+            t.surface
+        },
+        egui::Stroke::new(1.0, t.line),
+        egui::StrokeKind::Inside,
+    );
+    crate::icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 18.0, rect.center().y),
+            egui::vec2(20.0, 20.0),
+        ),
+        Icon::Gear,
+        t.fg2,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        t.fg,
+    );
+    egui::Popup::from_toggle_button_response(&resp)
+        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_width(340.0);
+            ui.spacing_mut().item_spacing.y = 10.0;
+            settings_card(ui, t, "Folder", "the agent works here", |ui| {
+                let path = s
+                    .workspace
+                    .as_ref()
+                    .map_or(String::new(), |p| p.display().to_string());
+                ui.add(egui::Label::new(RichText::new(path).font(mono(12.0)).color(t.fg2)).wrap());
+                if secondary(ui, "Change…", !running).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Choose the agent's folder")
+                        .pick_folder()
                     {
-                        out.push(BackendRequest::Chat(ChatCommand::SetStepBudget(id, steps)));
+                        out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
                     }
-                });
-                ui.add_space(6.0);
-                ui.label(RichText::new("Tools").font(semibold(11.0)).color(t.fg3));
-                // Off, Ask each time, or Auto for the Files · Read tools.
-                let current = s
-                    .effective_tools
-                    .capabilities
-                    .get("files.read")
-                    .copied()
-                    .unwrap_or(Permission::Auto);
-                #[cfg(test)]
-                {
-                    app.chat_ui.probe.permission_buttons.clear();
                 }
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Files · Read").size(12.5).color(t.fg2));
-                    for (value, label, tip) in [
-                        (Permission::Off, "Off", "The agent cannot read files"),
-                        (Permission::Ask, "Ask", "Ask before each file is read"),
-                        (Permission::Auto, "Auto", "Read files without asking"),
-                    ] {
-                        let r = ui
-                            .selectable_label(current == value, RichText::new(label).size(12.5))
-                            .on_hover_text(tip);
-                        #[cfg(test)]
-                        app.chat_ui.probe.permission_buttons.push(r.rect);
-                        if r.clicked() && current != value {
-                            out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+            });
+            settings_card(ui, t, "Run", "", |ui| {
+                ui.add_enabled_ui(!running, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Step budget").size(12.5).color(t.fg2));
+                        let mut steps = s.step_budget;
+                        if ui
+                            .add(egui::DragValue::new(&mut steps).range(1..=100))
+                            .changed()
+                        {
+                            out.push(BackendRequest::Chat(ChatCommand::SetStepBudget(id, steps)));
+                        }
+                    });
+                });
+            });
+            settings_card(ui, t, "Tools", "Files · Read", |ui| {
+                ui.add_enabled_ui(!running, |ui| {
+                    let current = s
+                        .effective_tools
+                        .capabilities
+                        .get("files.read")
+                        .copied()
+                        .unwrap_or(Permission::Auto);
+                    #[cfg(test)]
+                    {
+                        app.chat_ui.probe.permission_buttons.clear();
+                    }
+                    let mut rects = Vec::new();
+                    let chosen = match current {
+                        Permission::Off => 0,
+                        Permission::Ask => 1,
+                        Permission::Auto => 2,
+                    };
+                    let picked = crate::widgets::segmented(
+                        ui,
+                        t,
+                        &[
+                            ("Off", "The agent cannot read files"),
+                            ("Ask", "Ask before each file is read"),
+                            ("Auto", "Read files without asking"),
+                        ],
+                        chosen,
+                        &mut rects,
+                    );
+                    #[cfg(test)]
+                    {
+                        app.chat_ui.probe.permission_buttons = rects;
+                    }
+                    if let Some(i) = picked {
+                        let value = [Permission::Off, Permission::Ask, Permission::Auto][i];
+                        out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                            id,
+                            "files.read".into(),
+                            value,
+                        )));
+                    }
+                    for spec in registry::specs() {
+                        let mut on = registry::tool_enabled(&s.effective_tools, &spec);
+                        if ui
+                            .checkbox(&mut on, spec.name)
+                            .on_hover_text(spec.description)
+                            .changed()
+                        {
+                            out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
                                 id,
-                                "files.read".into(),
-                                value,
+                                spec.name.into(),
+                                on,
                             )));
                         }
                     }
                 });
-                for spec in registry::specs() {
-                    let mut on = registry::tool_enabled(&s.effective_tools, &spec);
-                    if ui
-                        .checkbox(&mut on, spec.name)
-                        .on_hover_text(spec.description)
-                        .changed()
-                    {
-                        out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
-                            id,
-                            spec.name.into(),
-                            on,
-                        )));
-                    }
-                }
             });
             if running {
                 ui.label(
@@ -267,9 +596,8 @@ fn agent_chip(
         });
     #[cfg(test)]
     {
-        app.chat_ui.probe.agent_chip = Some(chip.rect);
+        app.chat_ui.probe.agent_chip = Some(rect);
     }
-    let _ = chip;
 }
 
 /// One line above the input: progress of a running agent, then any notice.

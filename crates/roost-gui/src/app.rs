@@ -82,6 +82,9 @@ pub struct AppState {
     /// Where each top bar item was last painted (for layout tests).
     #[cfg(test)]
     pub top_bar: Vec<(&'static str, egui::Rect)>,
+    /// The family dots of the theme popover.
+    #[cfg(test)]
+    pub theme_dots: Vec<egui::Rect>,
 }
 
 impl AppState {
@@ -144,6 +147,8 @@ impl AppState {
             startup_notice: None,
             #[cfg(test)]
             top_bar: Vec::new(),
+            #[cfg(test)]
+            theme_dots: Vec::new(),
         }
     }
 
@@ -451,6 +456,71 @@ pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui:
 }
 
 /// What Ollama holds in memory, opened from the status pill.
+/// The theme switcher behind a right-click on the app name: one dot per
+/// family in its own accent, and System / Light / Dark. Returns the dots'
+/// rectangles.
+fn theme_popover(
+    ui: &mut egui::Ui,
+    t: &crate::theme_tokens::Tokens,
+    settings: &Settings,
+    actions: &mut Vec<crate::menu::MenuAction>,
+) -> Vec<egui::Rect> {
+    use crate::menu::MenuAction;
+    use roost_core::config::{ThemeFamily, ThemeMode};
+    let dark = ui.visuals().dark_mode;
+    ui.set_min_width(210.0);
+    ui.label(RichText::new("Theme").font(semibold(12.0)).color(t.fg3));
+    let mut dots = Vec::new();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (family, name) in [
+            (ThemeFamily::Meadow, "Meadow"),
+            (ThemeFamily::Ember, "Ember"),
+            (ThemeFamily::Plum, "Plum"),
+            (ThemeFamily::Tide, "Tide"),
+        ] {
+            let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+            let resp = resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(name);
+            let accent = crate::theme_tokens::palette(family, dark).accent;
+            ui.painter().circle_filled(rect.center(), 10.0, accent);
+            if settings.theme_family == family {
+                ui.painter()
+                    .circle_stroke(rect.center(), 13.0, Stroke::new(2.0, t.fg));
+            } else if resp.hovered() {
+                ui.painter()
+                    .circle_stroke(rect.center(), 13.0, Stroke::new(1.0, t.line));
+            }
+            if resp.clicked() {
+                actions.push(MenuAction::SetFamily(family));
+            }
+            dots.push(rect);
+        }
+    });
+    ui.add_space(6.0);
+    let modes = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
+    let chosen = modes
+        .iter()
+        .position(|m| *m == settings.theme_mode)
+        .unwrap_or(0);
+    let mut rects = Vec::new();
+    if let Some(i) = crate::widgets::segmented(
+        ui,
+        t,
+        &[
+            ("System", "Follow the system"),
+            ("Light", "Always light"),
+            ("Dark", "Always dark"),
+        ],
+        chosen,
+        &mut rects,
+    ) {
+        actions.push(MenuAction::SetMode(modes[i]));
+    }
+    dots
+}
+
 fn memory_popover(
     pill: &egui::Response,
     state: &mut AppState,
@@ -712,6 +782,7 @@ impl App {
         }
 
         let mut pill_requests: Vec<BackendRequest> = Vec::new();
+        let mut theme_actions: Vec<crate::menu::MenuAction> = Vec::new();
         egui::Panel::top("top")
             .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
             .show(ui, |ui| {
@@ -730,6 +801,21 @@ impl App {
                         self.state.top_bar.push(("logo", _logo));
                         self.state.top_bar.push(("wordmark", _word.rect));
                     }
+                    // A quiet way to change the theme: right-click the name.
+                    let name = ui
+                        .interact(
+                            _logo.union(_word.rect),
+                            ui.scope_id().with("app-name"),
+                            Sense::click(),
+                        )
+                        .on_hover_text("Right-click for themes");
+                    egui::Popup::context_menu(&name).show(|ui| {
+                        let _dots = theme_popover(ui, &t, &self.state.settings, &mut theme_actions);
+                        #[cfg(test)]
+                        {
+                            self.state.theme_dots = _dots;
+                        }
+                    });
                     ui.add_space(8.0);
 
                     // Chat, Work and Models; Browse and Installed live inside Models.
@@ -866,6 +952,10 @@ impl App {
             });
         for r in pill_requests {
             let _ = self.tx.send(r);
+        }
+        if !theme_actions.is_empty() {
+            let ctx = ui.ctx().clone();
+            self.run_menu_actions(&ctx, theme_actions);
         }
 
         // Free space of the staging folder is not exposed by the core, so the
@@ -2013,6 +2103,41 @@ mod tests {
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, r)| *r)
+    }
+
+    #[test]
+    fn right_clicking_the_app_name_offers_the_themes() {
+        use roost_core::config::{ThemeFamily, ThemeMode};
+        let (mut app, mut h) = nav_app(View::Models);
+        let word = top_item(&app, "wordmark").expect("app name");
+        let size = vec2(1180.0, 820.0);
+        let at = word.center();
+        h.frame(size, vec![egui::Event::PointerMoved(at)], |ui| app.show(ui));
+        for pressed in [true, false] {
+            h.frame(
+                size,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+                |ui| app.show(ui),
+            );
+        }
+        for _ in 0..2 {
+            h.frame(size, vec![], |ui| app.show(ui));
+        }
+        let dots = app.state.theme_dots.clone();
+        assert_eq!(dots.len(), 4, "one dot per family");
+        let texts = h.frame_texts(size, vec![], |ui| app.show(ui)).join("\n");
+        for want in ["System", "Light", "Dark"] {
+            assert!(texts.contains(want), "{want}: {texts}");
+        }
+        // Pick Tide: the dots are in the order Meadow, Ember, Plum, Tide.
+        click_at(&mut app, &mut h, dots[3].center());
+        assert_eq!(app.state.settings.theme_family, ThemeFamily::Tide);
+        let _ = ThemeMode::System;
     }
 
     #[test]

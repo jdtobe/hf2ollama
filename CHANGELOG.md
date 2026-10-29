@@ -33,6 +33,13 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### Chat and Work header
+
+- The title row is a header band (the theme's header tone): a tile showing the kind of session (a speech bubble for a chat, a bubble with a spark for an agent), the title in a larger, bolder type (an untitled session reads "Untitled" in grey italics), and for an agent its folder in parentheses with the home directory written as `~`, cut in the middle when it does not fit and shown in full on hover. On the right: a status dot with Idle, Working (with the step) or Waiting for you; for an agent an **Agent settings** button with a gear; a pin that fills when the session is pinned (not offered for incognito chats) and a red trash can that asks twice, the second time saying "Click again to delete". A pencil beside the title (or a double-click on it) edits the name; Enter or clicking away keeps it, Escape cancels.
+- Agent settings opens as three cards (Folder, Run, Tools); the Off / Ask / Auto choice is a segmented control with the chosen segment filled.
+- A tool approval question now sits above the message box instead of at the end of the conversation, so it cannot scroll out of sight.
+- Right-click the app name for a quick theme switcher: one dot per family and System / Light / Dark.
+
 ### Theme roles
 
 - Every theme family gains a **second hue** (steel blue for Meadow, deep teal for Ember, rose for Plum, violet for Tide, each with a soft background and a darker/lighter pair for dark mode) and a **header** tone. Links and the "installed" tag use the second hue; the page headers on the Models tab use the header tone instead of the accent tint; your chat messages sit on the raised surface with an accent edge instead of a filled accent bubble. The accent keeps primary actions and selection. A test checks the text contrast of the new pairs in all eight palettes.
