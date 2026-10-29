@@ -2538,6 +2538,228 @@ async fn a_write_set_to_allow_runs_without_asking_and_can_still_be_undone() {
     assert_eq!(changes_of(&h.events()).len(), 1);
 }
 
+/// An agent that may run commands (the Settings switch is on) and asks first.
+async fn commanding_agent(routes: Vec<Route>) -> (TcpScript, H, SessionId, TempDir) {
+    let (srv, h, id, ws) = asking_agent(routes).await;
+    h.cmd(ChatCommand::SetRunAllowed(true));
+    h.cmd(ChatCommand::SetCapability(
+        id,
+        "shell.run".into(),
+        crate::session::Permission::Ask,
+    ));
+    h.wait("run set to ask", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.capabilities.get("shell.run")
+                == Some(&crate::session::Permission::Ask)
+        })
+    })
+    .await;
+    (srv, h, id, ws)
+}
+
+fn run_preview_of(e: &[ChatEvent]) -> Option<crate::agent::command::RunPreview> {
+    e.iter().rev().find_map(|e| match e {
+        ChatEvent::ApprovalRequested { run, .. } => run.clone(),
+        _ => None,
+    })
+}
+
+fn tool_outputs(e: &[ChatEvent]) -> Vec<String> {
+    e.iter()
+        .filter_map(|e| match e {
+            ChatEvent::ToolFinished { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn commands_are_not_offered_unless_settings_and_the_agent_both_allow_them() {
+    let (srv, h, id, _ws) = asking_agent(vec![chat_route(reply("Hi."))]).await;
+    // The agent says Ask, but the Settings switch was never turned on.
+    h.cmd(ChatCommand::SetCapability(
+        id,
+        "shell.run".into(),
+        crate::session::Permission::Ask,
+    ));
+    h.send(id, "hello").await;
+    h.wait_run_ended(1).await;
+    let names: Vec<_> = chat_bodies(&srv)[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!names.contains(&"run_command".to_string()), "{names:?}");
+}
+
+#[tokio::test]
+async fn a_command_waits_shows_exactly_what_will_run_and_runs_once_allowed() {
+    let (_srv, h, id, ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "echo -roost-says-hi"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "say hi").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let p = run_preview_of(&h.events()).expect("a command shows what it will run");
+    assert_eq!(p.command, "echo -roost-says-hi");
+    assert_eq!(p.folder, ws.path());
+    assert_eq!(p.prefix.as_deref(), Some("echo"));
+    assert_eq!((p.timeout_secs, p.output_kb), (120, 20));
+    assert!(
+        tool_outputs(&h.events()).is_empty(),
+        "nothing ran before the answer"
+    );
+    allow_next(&h, id);
+    h.wait_run_ended(1).await;
+    let out = tool_outputs(&h.events());
+    assert!(
+        out.iter()
+            .any(|o| o.contains("-roost-says-hi") && o.contains("exit code: 0")),
+        "{out:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_denied_command_does_not_run() {
+    let (_srv, h, id, ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "echo nope > denied.txt"}),
+        )),
+        chat_route(reply("Understood.")),
+    ])
+    .await;
+    h.send(id, "write a file by shell").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+    assert!(!ws.path().join("denied.txt").exists());
+}
+
+#[tokio::test]
+async fn allowing_a_command_prefix_covers_that_prefix_only() {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "echo -one"}),
+        )),
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "echo -two"}),
+        )),
+        // Chained onto an allowed prefix: must ask again.
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "echo -three && echo -four"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "echo things").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    // "echo two" runs without a question; the chained one asks.
+    h.wait("asked about the chained command", |e| {
+        count_approvals(e) == 2
+    })
+    .await;
+    let out = tool_outputs(&h.events());
+    assert!(
+        out.iter().any(|o| o.contains("-one")) && out.iter().any(|o| o.contains("-two")),
+        "{out:?}"
+    );
+    assert!(
+        !out.iter().any(|o| o.contains("-four")),
+        "the chained command waits"
+    );
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+    // The capability itself never became automatic.
+    let s = h.try_read(id).unwrap();
+    assert_eq!(
+        s.effective_tools.capabilities.get("shell.run"),
+        Some(&crate::session::Permission::Ask)
+    );
+}
+
+#[tokio::test]
+async fn a_command_that_cannot_be_covered_offers_no_allowance_and_asks_every_time() {
+    let (_srv, h, id, _ws) = commanding_agent(vec![
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "rm -rf build"}),
+        )),
+        chat_route(calls(
+            "run_command",
+            serde_json::json!({"command": "rm -rf build"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "clean").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    assert_eq!(run_preview_of(&h.events()).unwrap().prefix, None);
+    // Even if "allow for this session" arrives anyway, it runs this one only.
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    h.wait("asked again", |e| count_approvals(e) == 2).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stopping_the_agent_ends_a_running_command() {
+    let (_srv, h, id, ws) = commanding_agent(vec![chat_route(calls(
+        "run_command",
+        serde_json::json!({"command": "sleep 3; echo late > late.txt"}),
+    ))])
+    .await;
+    h.send(id, "run it").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    allow_next(&h, id);
+    h.wait("started", |e| {
+        e.iter().any(|e| matches!(e, ChatEvent::ToolStarted { .. }))
+    })
+    .await;
+    h.cmd(ChatCommand::Stop(id));
+    h.wait_run_ended(1).await;
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert!(
+        !ws.path().join("late.txt").exists(),
+        "the command was killed, not left running"
+    );
+}
+
 #[tokio::test]
 async fn a_denied_write_changes_nothing() {
     let (_srv, h, id, ws) = asking_agent(vec![

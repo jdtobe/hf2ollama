@@ -2,6 +2,7 @@
 //! registry that decides which tools may run. No UI and no model calls here.
 
 pub mod change;
+pub mod command;
 pub mod registry;
 pub mod tools;
 pub mod workspace;

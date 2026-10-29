@@ -24,6 +24,10 @@ pub struct Limits {
     pub line_chars: usize,
     pub read_file_bytes: u64,
     pub search_file_bytes: u64,
+    /// A command is stopped after this long.
+    pub run_timeout: std::time::Duration,
+    /// A command's output is cut here.
+    pub run_output_bytes: usize,
 }
 
 impl Default for Limits {
@@ -41,6 +45,8 @@ impl Default for Limits {
             line_chars: 300,
             read_file_bytes: 16 * 1024 * 1024,
             search_file_bytes: 2 * 1024 * 1024,
+            run_timeout: std::time::Duration::from_secs(120),
+            run_output_bytes: 20 * 1024,
         }
     }
 }
