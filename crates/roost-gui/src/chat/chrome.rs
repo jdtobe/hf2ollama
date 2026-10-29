@@ -104,7 +104,6 @@ pub(super) fn header(
     now: Instant,
 ) {
     let row = app.chat.rows().iter().find(|r| r.id == s.id).cloned();
-    let title = row.as_ref().map_or(s.title.clone(), |r| r.title.clone());
     let shown = row
         .as_ref()
         .map_or(s.title.clone(), super::state::display_title);
@@ -118,7 +117,7 @@ pub(super) fn header(
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            more_menu(ui, app, out, t, s, &title, pinned, incognito, now);
+            header_actions(ui, app, out, t, s, pinned, incognito, now);
             if s.mode == SessionMode::Agent {
                 agent_settings(ui, app, out, t, s);
             }
@@ -234,6 +233,7 @@ fn title_block(
     } else {
         room
     };
+    let mut rename = false;
     ui.scope(|ui| {
         ui.set_max_width(title_w);
         let mut rich = RichText::new(&text)
@@ -242,8 +242,36 @@ fn title_block(
         if untitled {
             rich = rich.italics();
         }
-        ui.add(egui::Label::new(rich).truncate());
+        // Double-clicking the title edits it too.
+        let label = ui.add(
+            egui::Label::new(rich)
+                .truncate()
+                .sense(egui::Sense::click()),
+        );
+        rename |= label.double_clicked();
     });
+    // A small pencil beside the title, quiet until pointed at.
+    let (pencil, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Rename");
+    if resp.hovered() {
+        ui.painter().rect_filled(pencil, 6.0, t.surface);
+    }
+    crate::icons::paint(
+        ui.painter(),
+        pencil,
+        Icon::Edit,
+        if resp.hovered() { t.fg } else { t.fg2 },
+    );
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.rename_button = Some(pencil);
+    }
+    rename |= resp.clicked();
+    if rename {
+        app.chat_ui.renaming = Some((s.id, shown.to_string()));
+    }
     if let Some((short, full)) = path {
         ui.add_space(8.0);
         let room = ui.available_width().max(40.0);
@@ -280,10 +308,13 @@ fn title_or_rename(
         }
         let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
         let escape = ui.input(|i| i.key_pressed(Key::Escape));
-        if enter {
-            out.push(BackendRequest::Chat(ChatCommand::Rename(id, text.clone())));
+        if escape {
             app.chat_ui.renaming = None;
-        } else if escape || edit.lost_focus() {
+        } else if enter || edit.lost_focus() {
+            // Enter, or clicking away, keeps the new name.
+            if !text.trim().is_empty() {
+                out.push(BackendRequest::Chat(ChatCommand::Rename(id, text.clone())));
+            }
             app.chat_ui.renaming = None;
         } else {
             app.chat_ui.renaming = Some((id, text));
@@ -291,57 +322,98 @@ fn title_or_rename(
     }
 }
 
-/// Rename, pin and delete: the actions needed rarely.
+/// Pin and delete, as icons: a pin that fills when the session is pinned, and
+/// a red trash can that asks twice (the second time it says so).
 #[allow(clippy::too_many_arguments)]
-fn more_menu(
+fn header_actions(
     ui: &mut egui::Ui,
     app: &mut AppState,
     out: &mut Vec<BackendRequest>,
     t: &Tokens,
     s: &Session,
-    title: &str,
     pinned: bool,
     incognito: bool,
     now: Instant,
 ) {
-    let button = icon_button(ui, t, Icon::Dots, "Rename, pin or delete this session");
-    egui::Popup::menu(&button)
-        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.set_min_width(150.0);
-            if ui.button("Rename").clicked() {
-                app.chat_ui.renaming = Some((s.id, title.to_string()));
-                ui.close();
-            }
-            if !incognito && ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
-                out.push(BackendRequest::Chat(ChatCommand::SetPinned(s.id, !pinned)));
-                ui.close();
-            }
-            ui.separator();
-            let key = s.id.to_string();
-            let armed = app.chat_ui.confirm.is_armed(&key, now);
-            let label = if armed {
-                "Click again to delete"
+    // Right to left: the trash can sits at the far edge, pin next to it.
+    let key = s.id.to_string();
+    let armed = app.chat_ui.confirm.is_armed(&key, now);
+    let del = if armed {
+        let label = "Click again to delete";
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(),
+            egui::FontId::proportional(12.5),
+            egui::Color32::WHITE,
+        );
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(galley.size().x + 24.0, HEADER_BTN),
+            egui::Sense::click(),
+        );
+        ui.painter().rect_filled(rect, 8.0, t.bad);
+        ui.painter().galley(
+            rect.center() - galley.size() / 2.0,
+            galley,
+            egui::Color32::WHITE,
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+        resp
+    } else {
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(HEADER_BTN, HEADER_BTN), egui::Sense::click());
+        let resp = resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Delete this session…");
+        ui.painter().rect(
+            rect,
+            8.0,
+            if resp.hovered() {
+                t.bad_soft
             } else {
-                "Delete…"
-            };
-            let del = ui.button(RichText::new(label).color(t.bad));
-            #[cfg(test)]
-            {
-                app.chat_ui.probe.delete_button = Some((del.rect, label.to_string()));
-            }
-            if armed {
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-            }
-            if del.clicked() && app.chat_ui.confirm.click(&key, now) {
-                out.push(BackendRequest::Chat(ChatCommand::Delete(s.id)));
-                ui.close();
-            }
-        });
+                t.surface
+            },
+            egui::Stroke::new(1.0, t.bad.gamma_multiply(0.6)),
+            egui::StrokeKind::Inside,
+        );
+        crate::icons::paint(ui.painter(), rect, Icon::Trash, t.bad);
+        resp
+    };
     #[cfg(test)]
     {
-        app.chat_ui.probe.more_button = Some(button.rect);
+        let label = if armed {
+            "Click again to delete"
+        } else {
+            "Delete…"
+        };
+        app.chat_ui.probe.delete_button = Some((del.rect, label.to_string()));
+    }
+    if del.clicked() && app.chat_ui.confirm.click(&key, now) {
+        out.push(BackendRequest::Chat(ChatCommand::Delete(s.id)));
+    }
+    if !incognito {
+        let pin = icon_button(
+            ui,
+            t,
+            Icon::Pin,
+            if pinned {
+                "Unpin"
+            } else {
+                "Pin to the top of the list"
+            },
+        );
+        if pinned {
+            // Filled and in the accent while pinned.
+            ui.painter()
+                .rect_filled(pin.rect.shrink(1.0), 7.0, t.accent_soft);
+            crate::icons::paint(ui.painter(), pin.rect, Icon::Pin, t.accent);
+        }
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.pin_button = Some(pin.rect);
+        }
+        if pin.clicked() {
+            out.push(BackendRequest::Chat(ChatCommand::SetPinned(s.id, !pinned)));
+        }
     }
 }
 

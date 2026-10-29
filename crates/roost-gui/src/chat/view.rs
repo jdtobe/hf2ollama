@@ -121,7 +121,8 @@ pub struct ChatProbe {
     pub send_button: Option<(egui::Rect, &'static str)>,
     /// The delete control of each rail row that shows one, and whether it is armed.
     pub rail_delete: Vec<(SessionId, egui::Rect, bool)>,
-    pub more_button: Option<egui::Rect>,
+    pub pin_button: Option<egui::Rect>,
+    pub rename_button: Option<egui::Rect>,
     pub new_button: Option<egui::Rect>,
     pub agent_chip: Option<egui::Rect>,
     pub model_chip: Option<egui::Rect>,

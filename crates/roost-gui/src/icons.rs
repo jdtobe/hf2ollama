@@ -17,7 +17,7 @@ pub enum Icon {
     Chat,
     Agent,
     Gear,
-    Dots,
+    Pin,
     Trash,
     Prev,
     Next,
@@ -205,10 +205,20 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 painter.line_segment([p(a.0, a.1), p(b.0, b.1)], stroke);
             }
         }
-        Icon::Dots => {
-            for x in [3.5, 8.0, 12.5] {
-                painter.circle_filled(p(x, 8.0), 1.2, color);
-            }
+        Icon::Pin => {
+            painter.line_segment([p(5.0, 2.5), p(11.0, 2.5)], stroke);
+            painter.add(egui::Shape::line(
+                vec![
+                    p(6.2, 2.5),
+                    p(6.2, 7.0),
+                    p(4.0, 9.2),
+                    p(12.0, 9.2),
+                    p(9.8, 7.0),
+                    p(9.8, 2.5),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(8.0, 9.2), p(8.0, 14.0)], stroke);
         }
         Icon::Trash => {
             painter.line_segment([p(2.5, 4.0), p(13.5, 4.0)], stroke);

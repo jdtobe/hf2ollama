@@ -206,8 +206,8 @@ fn every_theme_family_and_mode_keeps_chat_usable_at_minimum_size() {
                     inside(send, composer),
                     "{tag}: send {send:?} composer {composer:?}"
                 );
-                let more = p.more_button.expect("overflow menu button");
-                assert!(inside(more, header), "{tag}: {more:?} not in {header:?}");
+                let trash = p.delete_button.clone().expect("trash can").0;
+                assert!(inside(trash, header), "{tag}: {trash:?} not in {header:?}");
                 let chip = p.model_chip.expect("model chip");
                 assert!(
                     inside(chip, composer),
@@ -801,40 +801,27 @@ fn texts_of(app: &mut App, h: &mut Harness, size: (f32, f32)) -> String {
 }
 
 #[test]
-fn the_title_row_has_a_title_and_one_overflow_menu_and_deleting_takes_two_clicks() {
+fn the_title_row_has_a_pencil_a_pin_and_a_trash_can_and_deleting_takes_two_clicks() {
     let size = (1180.0, 820.0);
     let mut f = fixture_with(2);
     let mut h = Harness::new(false);
     run(&mut f.app, &mut h, size, 3);
-    let more = f
-        .app
-        .state_mut()
-        .chat_ui
-        .probe
-        .more_button
-        .expect("overflow button");
-    let shown = texts_of(&mut f.app, &mut h, size);
-    for gone in ["Rename", "Pin", "Delete", "Unload"] {
-        assert!(
-            !shown.lines().any(|l| l == gone),
-            "{gone} should be inside the menu: {shown}"
-        );
-    }
-    open_menu(&mut f.app, &mut h, size, more);
-    let opened = texts_of(&mut f.app, &mut h, size);
-    assert!(
-        opened.contains("Rename") && opened.contains("Pin"),
-        "{opened}"
-    );
-    let (del, label) = f
-        .app
-        .state_mut()
-        .chat_ui
-        .probe
-        .delete_button
-        .clone()
-        .expect("delete item");
+    let p = f.app.state_mut().chat_ui.probe.clone();
+    let header = p.header.unwrap();
+    let (pencil, pin) = (p.rename_button.expect("pencil"), p.pin_button.expect("pin"));
+    let (del, label) = p.delete_button.clone().expect("trash can");
     assert_eq!(label, "Delete…");
+    for r in [pencil, pin, del] {
+        assert!(inside(r, header), "{r:?} not in {header:?}");
+    }
+    assert!(pin.right() <= del.left(), "pin is left of the trash can");
+    // No overflow menu is left.
+    let shown = texts_of(&mut f.app, &mut h, size);
+    assert!(
+        !shown.lines().any(|l| l == "Rename" || l == "Delete"),
+        "{shown}"
+    );
+
     click(&mut f.app, &mut h, size, del.center());
     let (del, label) = f
         .app
@@ -852,6 +839,70 @@ fn the_title_row_has_a_title_and_one_overflow_menu_and_deleting_takes_two_clicks
             .any(|c| matches!(c, ChatCommand::Delete(_))),
         "a quick second click must not delete"
     );
+}
+
+#[test]
+fn the_pin_toggles_and_an_incognito_chat_has_none() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let id = f.open.id;
+    let pin = f.app.state_mut().chat_ui.probe.pin_button.unwrap();
+    let _ = sent_chat_commands(&f.sent);
+    click(&mut f.app, &mut h, size, pin.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::SetPinned(i, true)] if *i == id),
+        "{cmds:?}"
+    );
+    // An incognito chat is never saved, so it cannot be pinned.
+    let inc = Session::new_chat("qwen2.5:7b", SessionLifetime::Incognito, now_ms());
+    f.app
+        .state_mut()
+        .chat
+        .fold(ChatEvent::Opened(Box::new(inc)));
+    run(&mut f.app, &mut h, size, 3);
+    assert!(f.app.state_mut().chat_ui.probe.pin_button.is_none());
+    assert!(f.app.state_mut().chat_ui.probe.delete_button.is_some());
+}
+
+#[test]
+fn the_pencil_and_a_double_click_make_the_title_editable() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let id = f.open.id;
+    let pencil = f.app.state_mut().chat_ui.probe.rename_button.unwrap();
+    assert!(f.app.state_mut().chat_ui.renaming.is_none());
+    click(&mut f.app, &mut h, size, pencil.center());
+    assert_eq!(
+        f.app.state_mut().chat_ui.renaming.as_ref().map(|r| r.0),
+        Some(id)
+    );
+    // Enter keeps the new name.
+    f.app.state_mut().chat_ui.renaming = Some((id, "A better name".into()));
+    run(&mut f.app, &mut h, size, 3);
+    let _ = sent_chat_commands(&f.sent);
+    h.frame(
+        vec2(size.0, size.1),
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        |ui| f.app.show(ui),
+    );
+    run(&mut f.app, &mut h, size, 2);
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Rename(i, name)] if *i == id && name == "A better name"),
+        "{cmds:?}"
+    );
+    assert!(f.app.state_mut().chat_ui.renaming.is_none());
 }
 
 #[test]
@@ -987,7 +1038,7 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
                     (p.pane.unwrap(), p.composer.unwrap(), p.header.unwrap());
                 assert!(inside(pane, window) && inside(composer, window), "{tag}");
                 let chip = p.agent_chip.expect("agent chip");
-                let more = p.more_button.expect("overflow");
+                let more = p.delete_button.clone().expect("trash can").0;
                 assert!(
                     inside(chip, header) && inside(more, header),
                     "{tag}: {chip:?} {more:?} {header:?}"
@@ -1945,7 +1996,7 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
         let p = app.state_mut().chat_ui.probe.clone();
         let header = p.header.unwrap();
         let settings = p.agent_chip.unwrap();
-        let more = p.more_button.unwrap();
+        let more = p.delete_button.clone().unwrap().0;
         assert!(inside(settings, header) && inside(more, header), "{size:?}");
         assert!(
             settings.right() <= more.left(),
