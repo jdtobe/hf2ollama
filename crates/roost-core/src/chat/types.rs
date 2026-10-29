@@ -34,6 +34,14 @@ pub enum ChatCommand {
     /// The app-wide switch for agents writing files (Settings). Off makes
     /// every agent read-only, whatever its own configuration says.
     SetWritesAllowed(bool),
+    /// Puts a file an agent changed back as it was. Refused if the file was
+    /// edited since or a run is active.
+    UndoChange {
+        session: SessionId,
+        change: u32,
+    },
+    /// Undoes every change, newest first, stopping at one that cannot be.
+    UndoAll(SessionId),
     SetCapability(SessionId, String, Permission),
     Rename(SessionId, String),
     SetPinned(SessionId, bool),
@@ -223,6 +231,17 @@ pub enum ChatEvent {
         arguments: serde_json::Value,
         /// For a write, what it would change.
         preview: Option<crate::agent::change::ChangePreview>,
+    },
+    /// The files an agent has changed in this chat, after any change.
+    Changes {
+        session: SessionId,
+        changes: Vec<crate::session::ChangeRecord>,
+    },
+    /// An undo that could not be done, and why.
+    UndoRefused {
+        session: SessionId,
+        change: u32,
+        reason: String,
     },
     /// A side question was sent.
     BtwStarted {

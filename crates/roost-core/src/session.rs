@@ -323,9 +323,39 @@ pub struct Session {
     /// Other versions of parts of the conversation (see `Fork`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forks: Vec<Fork>,
+    /// Files an agent changed, oldest first, each with what it takes to undo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<ChangeRecord>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub messages: Vec<Message>,
+}
+
+/// The most the originals kept for undo may add up to in one session. A write
+/// that would go past it is refused, so every change stays undoable.
+pub const MAX_UNDO_BYTES: usize = 8 * 1024 * 1024;
+
+/// One file change an agent made, with what is needed to take it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeRecord {
+    /// 1, 2, 3 … within the session.
+    pub id: u32,
+    /// The tool message that made it.
+    pub message: MessageId,
+    /// Workspace-relative path.
+    pub path: String,
+    /// The file did not exist before.
+    pub created: bool,
+    /// The text before the change; empty for a new file, and again once the
+    /// change was undone (the copy is no longer needed).
+    pub before: String,
+    /// Fingerprint of the text the agent wrote, to notice later edits.
+    pub after_hash: u64,
+    pub added: u32,
+    pub removed: u32,
+    /// The changed lines, for "Show diff".
+    pub preview: crate::agent::change::ChangePreview,
+    pub undone: bool,
 }
 
 fn check_workspace(path: &Path) -> Result<(), SessionError> {
@@ -366,6 +396,7 @@ impl Session {
             origin_hash: None,
             btw: Vec::new(),
             forks: Vec::new(),
+            changes: Vec::new(),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             messages: Vec::new(),
@@ -763,6 +794,39 @@ impl Session {
             *status = new_status;
         }
         self.updated_at_ms = now_ms;
+    }
+
+    /// Bytes of originals still held for undo.
+    pub fn undo_bytes_used(&self) -> usize {
+        self.changes.iter().map(|c| c.before.len()).sum()
+    }
+
+    /// How much more a write may need to keep.
+    pub fn undo_room(&self) -> usize {
+        MAX_UNDO_BYTES.saturating_sub(self.undo_bytes_used())
+    }
+
+    /// Notes a change the agent made through tool message `message`.
+    pub fn record_change(
+        &mut self,
+        message: MessageId,
+        change: &crate::agent::change::Change,
+    ) -> u32 {
+        let id = self.changes.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+        let (added, removed) = change.stats();
+        self.changes.push(ChangeRecord {
+            id,
+            message,
+            path: change.path.clone(),
+            created: change.before.is_none(),
+            before: change.before.clone().unwrap_or_default(),
+            after_hash: crate::agent::change::fingerprint(&change.after),
+            added,
+            removed,
+            preview: change.card(),
+            undone: false,
+        });
+        id
     }
 
     /// Changes an agent's workspace (the caller makes sure no run is active).

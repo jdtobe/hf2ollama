@@ -238,6 +238,15 @@ impl Workspace {
             .map_err(|e| map_io(rel, e))
     }
 
+    /// Removes a file inside the workspace (used to undo a file the agent
+    /// created). A folder is never removed.
+    pub fn remove_file(&self, rel: &Path) -> Result<(), ToolError> {
+        if rel.as_os_str().is_empty() {
+            return Err(ToolError::InvalidPath("give a file path".into()));
+        }
+        self.dir.remove_file(rel).map_err(|e| map_io(rel, e))
+    }
+
     /// Opens a regular file for reading. Sensitive names are refused first,
     /// whether or not the file exists.
     pub fn open_file(&self, rel: &Path) -> Result<(File, u64), ToolError> {
@@ -282,6 +291,23 @@ mod tests {
             w.read_text_for_edit(Path::new("sub")),
             Err(ToolError::NotAFile(_))
         ));
+    }
+
+    #[test]
+    fn remove_file_removes_a_file_but_not_a_folder_or_anything_outside() {
+        let (root, outside, w) = ws();
+        w.remove_file(Path::new("a.txt")).unwrap();
+        assert!(!root.path().join("a.txt").exists());
+        assert!(w.remove_file(Path::new("sub")).is_err());
+        assert!(root.path().join("sub").exists());
+        assert!(w.remove_file(Path::new("../x")).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), root.path().join("link")).unwrap();
+            assert!(w.remove_file(Path::new("link/secret.txt")).is_err());
+            assert!(outside.path().join("secret.txt").exists());
+        }
+        let _ = outside;
     }
 
     #[test]

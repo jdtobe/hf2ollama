@@ -57,13 +57,12 @@ pub fn capability_key(family: Family, capability: Capability) -> String {
     format!("{f}.{c}")
 }
 
-/// The most a capability may be set to. Reading may be `Auto`. Writing asks
-/// every time for now: it becomes `Auto` once every write is kept for undo.
+/// The most a capability may be set to. Reading and writing files in the
+/// agent's folder may be `Auto`: every write keeps the original for undo.
 /// Whatever a session's file says, `permission_of` never goes above this.
 pub fn max_permission(_family: Family, capability: Capability) -> Permission {
     match capability {
-        Capability::Read => Permission::Auto,
-        Capability::Write => Permission::Ask,
+        Capability::Read | Capability::Write => Permission::Auto,
     }
 }
 
@@ -180,6 +179,7 @@ pub fn permission_of(config: &EffectiveToolConfig, spec: &ToolSpec) -> Permissio
     // Auto > Ask > Off: a setting above the maximum is lowered to it.
     match (wanted, max_permission(spec.family, spec.capability)) {
         (Permission::Auto, Permission::Ask) => Permission::Ask,
+        (Permission::Auto | Permission::Ask, Permission::Off) => Permission::Off,
         (w, _) => w,
     }
 }
@@ -256,7 +256,7 @@ pub fn call(
     args: &Value,
     limits: &Limits,
 ) -> Result<String, ToolError> {
-    run(ws, config, name, args, limits, false)
+    run(ws, config, name, args, limits, false, usize::MAX).0
 }
 
 /// Like `call`, for a call the user approved: a tool set to Ask may run. A
@@ -268,7 +268,23 @@ pub fn call_approved(
     args: &Value,
     limits: &Limits,
 ) -> Result<String, ToolError> {
-    run(ws, config, name, args, limits, true)
+    run(ws, config, name, args, limits, true, usize::MAX).0
+}
+
+/// Like `call` or `call_approved`, for the chat core: also hands back the
+/// change a write made, so it can be kept for undo. `undo_room` is how many
+/// bytes of originals may still be kept; a write that needs more is refused
+/// before anything is touched.
+pub fn call_tracked(
+    ws: &Workspace,
+    config: &EffectiveToolConfig,
+    name: &str,
+    args: &Value,
+    limits: &Limits,
+    approved: bool,
+    undo_room: usize,
+) -> (Result<String, ToolError>, Option<change::Change>) {
+    run(ws, config, name, args, limits, approved, undo_room)
 }
 
 fn run(
@@ -278,33 +294,65 @@ fn run(
     args: &Value,
     limits: &Limits,
     approved: bool,
-) -> Result<String, ToolError> {
-    let spec = specs()
-        .into_iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
+    undo_room: usize,
+) -> (Result<String, ToolError>, Option<change::Change>) {
+    let spec = match specs().into_iter().find(|s| s.name == name) {
+        Some(s) => s,
+        None => return (Err(ToolError::UnknownTool(name.to_string())), None),
+    };
     match check(config, &spec) {
         Err(ToolError::NeedsApproval(_)) if approved => {}
-        other => other?,
+        Err(e) => return (Err(e), None),
+        Ok(()) => {}
     }
     // A model that sends no arguments means "defaults".
     let empty = json!({});
     let args = if args.is_null() { &empty } else { args };
     if !args.is_object() {
-        return Err(ToolError::InvalidArguments(
-            "arguments must be an object".into(),
-        ));
+        return (
+            Err(ToolError::InvalidArguments(
+                "arguments must be an object".into(),
+            )),
+            None,
+        );
     }
     match name {
-        "list_dir" => tools::list_dir(ws, args, limits),
-        "read_file" => tools::read_file(ws, args, limits),
-        "find_files" => tools::find_files(ws, args, limits),
-        "search_text" => tools::search_text(ws, args, limits),
-        "write_file" | "edit_file" => match change::plan(ws, name, args)? {
-            Some(c) => change::apply(ws, &c),
-            None => Err(ToolError::UnknownTool(name.to_string())),
-        },
-        other => Err(ToolError::UnknownTool(other.to_string())),
+        "list_dir" => (tools::list_dir(ws, args, limits), None),
+        "read_file" => (tools::read_file(ws, args, limits), None),
+        "find_files" => (tools::find_files(ws, args, limits), None),
+        "search_text" => (tools::search_text(ws, args, limits), None),
+        "write_file" | "edit_file" => write(ws, name, args, undo_room),
+        other => (Err(ToolError::UnknownTool(other.to_string())), None),
+    }
+}
+
+/// Plans a write, checks the original can be kept, then applies it.
+fn write(
+    ws: &Workspace,
+    name: &str,
+    args: &Value,
+    undo_room: usize,
+) -> (Result<String, ToolError>, Option<change::Change>) {
+    let change = match change::plan(ws, name, args) {
+        Ok(Some(c)) => c,
+        Ok(None) => return (Err(ToolError::UnknownTool(name.to_string())), None),
+        Err(e) => return (Err(e), None),
+    };
+    let needed = change.before.as_ref().map_or(0, String::len);
+    if needed > undo_room {
+        return (
+            Err(ToolError::InvalidArguments(
+                "this session cannot keep another copy for undo; nothing was changed. Ask the user to undo or start a new session".into(),
+            )),
+            None,
+        );
+    }
+    match change::apply(ws, &change) {
+        Ok(msg) => {
+            let kept = (change.before.as_deref() != Some(change.after.as_str())).then_some(change);
+            (Ok(msg), kept)
+        }
+        Err(e) => (Err(e), None),
     }
 }
 
@@ -362,7 +410,28 @@ mod tests {
     }
 
     #[test]
-    fn writing_can_be_turned_off_but_never_made_automatic() {
+    fn a_write_that_would_not_fit_in_the_undo_room_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("big.txt"), "x".repeat(100)).unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let mut c = cfg();
+        c.capabilities
+            .insert("files.write".into(), Permission::Auto);
+        let args = json!({"path": "big.txt", "content": "y"});
+        let (r, change) = call_tracked(&ws, &c, "write_file", &args, &Limits::default(), false, 50);
+        assert!(r.is_err() && change.is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("big.txt")).unwrap(),
+            "x".repeat(100)
+        );
+        let (r, change) =
+            call_tracked(&ws, &c, "write_file", &args, &Limits::default(), false, 100);
+        assert!(r.is_ok());
+        assert_eq!(change.unwrap().before.unwrap().len(), 100);
+    }
+
+    #[test]
+    fn writing_can_be_off_ask_or_allowed() {
         let mut c = cfg();
         c.capabilities.insert("files.write".into(), Permission::Off);
         assert_eq!(
@@ -372,11 +441,11 @@ mod tests {
         );
         c.capabilities
             .insert("files.write".into(), Permission::Auto);
-        // Writing asks every time for now, whatever the file says.
-        assert!(needs_approval(&c, "write_file"));
+        // Every write can be undone, so it may be allowed outright.
+        assert!(!needs_approval(&c, "write_file"));
         assert_eq!(
             max_permission(Family::Files, Capability::Write),
-            Permission::Ask
+            Permission::Auto
         );
     }
 

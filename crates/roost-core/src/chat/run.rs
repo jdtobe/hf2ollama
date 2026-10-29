@@ -26,6 +26,8 @@ pub(super) enum RunMsg {
         run: RunId,
         call_id: String,
         result: Result<String, ToolError>,
+        /// What a write changed, for undo.
+        change: Option<crate::agent::change::Change>,
     },
     /// A side question finished (its answer, or why not).
     Btw {

@@ -478,10 +478,11 @@ impl Manager {
             return;
         };
         live.s.start_tool(call.msg);
-        let (workspace, config, run) = (
+        let (workspace, config, run, room) = (
             Arc::clone(&agent.workspace),
             gated(&live.s.effective_tools, writes),
             agent.run,
+            live.s.undo_room(),
         );
         let (tx, name, args, call_id) = (
             self.run_tx.clone(),
@@ -490,16 +491,21 @@ impl Manager {
             call.call_id.clone(),
         );
         let join = tokio::task::spawn_blocking(move || {
-            let result = if approved {
-                registry::call_approved(&workspace, &config, &name, &args, &Limits::default())
-            } else {
-                registry::call(&workspace, &config, &name, &args, &Limits::default())
-            };
+            let (result, change) = registry::call_tracked(
+                &workspace,
+                &config,
+                &name,
+                &args,
+                &Limits::default(),
+                approved,
+                room,
+            );
             let _ = tx.send(RunMsg::ToolDone {
                 session: id,
                 run,
                 call_id,
                 result,
+                change,
             });
         });
         live.slot = Slot::Tools(Box::new(ToolRun {
@@ -567,6 +573,7 @@ impl Manager {
                     self.current_run(id),
                     call.call_id,
                     Err(ToolError::Declined),
+                    None,
                 )
                 .await;
             }
@@ -586,7 +593,13 @@ impl Manager {
         run: RunId,
         call_id: String,
         result: Result<String, ToolError>,
+        change: Option<change::Change>,
     ) {
+        // A write that happened is kept for undo even if the run was stopped
+        // meanwhile and nobody is waiting for the answer any more.
+        if let Some(ch) = &change {
+            self.record_change(id, &call_id, ch);
+        }
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -617,6 +630,142 @@ impl Manager {
             output,
         });
         self.run_next_tool(id).await;
+    }
+
+    /// Keeps a change for undo, saves it and tells the window.
+    fn record_change(&mut self, id: SessionId, call_id: &str, ch: &change::Change) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let msg = match &live.slot {
+            Slot::Tools(t) if t.call_id == call_id => t.msg,
+            _ => MessageId::new(),
+        };
+        live.s.record_change(msg, ch);
+        let (s, changes) = (live.s.clone(), live.s.changes.clone());
+        self.save(&s);
+        self.emit(ChatEvent::Changes {
+            session: id,
+            changes,
+        });
+    }
+
+    /// Puts changed files back as they were: one change, or all of them
+    /// newest first. A file edited since is left alone, and nothing is undone
+    /// while the agent is working.
+    pub(super) fn undo(&mut self, id: SessionId, only: Option<u32>) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let refuse = |this: &mut Self, change: u32, reason: &str| {
+            this.emit(ChatEvent::UndoRefused {
+                session: id,
+                change,
+                reason: reason.to_string(),
+            });
+        };
+        let ids: Vec<u32> = match only {
+            Some(one) => vec![one],
+            None => live
+                .s
+                .changes
+                .iter()
+                .rev()
+                .filter(|c| !c.undone)
+                .map(|c| c.id)
+                .collect(),
+        };
+        if !matches!(live.slot, Slot::Idle) {
+            let first = ids.first().copied().unwrap_or(0);
+            refuse(
+                self,
+                first,
+                "Stop the agent first; changes can be undone when it is idle.",
+            );
+            return;
+        }
+        let Some(root) = live.s.workspace.clone() else {
+            refuse(
+                self,
+                ids.first().copied().unwrap_or(0),
+                "This chat has no folder.",
+            );
+            return;
+        };
+        let ws = match Workspace::open(&root) {
+            Ok(w) => w,
+            Err(e) => {
+                refuse(self, ids.first().copied().unwrap_or(0), &e.to_string());
+                return;
+            }
+        };
+        let mut changed = false;
+        for cid in ids {
+            let Some(live) = self.sessions.get_mut(&id) else {
+                return;
+            };
+            let Some(rec) = live.s.changes.iter().find(|c| c.id == cid).cloned() else {
+                refuse(self, cid, "That change is not in this chat.");
+                break;
+            };
+            if rec.undone {
+                refuse(self, cid, "That change was already undone.");
+                break;
+            }
+            let rel = std::path::PathBuf::from(&rec.path);
+            let now = match ws.read_text_for_edit(&rel) {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    refuse(
+                        self,
+                        cid,
+                        &format!(
+                            "{} is gone, so there is nothing to put back over.",
+                            rec.path
+                        ),
+                    );
+                    break;
+                }
+                Err(e) => {
+                    refuse(self, cid, &e.to_string());
+                    break;
+                }
+            };
+            if change::fingerprint(&now) != rec.after_hash {
+                refuse(
+                    self,
+                    cid,
+                    &format!("{} was changed after the agent wrote it, so it was left alone. Undo later changes first, or restore it yourself.", rec.path),
+                );
+                break;
+            }
+            let done = if rec.created {
+                ws.remove_file(&rel)
+            } else {
+                ws.write_text(&rel, &rec.before)
+            };
+            if let Err(e) = done {
+                refuse(self, cid, &e.to_string());
+                break;
+            }
+            if let Some(live) = self.sessions.get_mut(&id) {
+                if let Some(c) = live.s.changes.iter_mut().find(|c| c.id == cid) {
+                    c.undone = true;
+                    c.before.clear();
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            if let Some(live) = self.sessions.get(&id) {
+                let (s, changes) = (live.s.clone(), live.s.changes.clone());
+                self.save(&s);
+                self.emit(ChatEvent::Changes {
+                    session: id,
+                    changes,
+                });
+            }
+        }
     }
 
     /// A safe point (no reply streaming, no tool running): apply waiting

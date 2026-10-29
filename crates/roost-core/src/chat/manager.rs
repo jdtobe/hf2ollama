@@ -366,6 +366,8 @@ impl Manager {
             ChatCommand::CheckModel(model) => self.check_model(model),
             ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
             ChatCommand::SetWritesAllowed(on) => self.writes_allowed = on,
+            ChatCommand::UndoChange { session, change } => self.undo(session, Some(change)),
+            ChatCommand::UndoAll(session) => self.undo(session, None),
             ChatCommand::SetStepBudget(id, steps) => {
                 self.edit_idle(id, move |s| {
                     s.step_budget = steps.clamp(1, 100);
@@ -459,7 +461,14 @@ impl Manager {
             });
         }
         if let Some(s) = snapshot {
+            let changes = s.changes.clone();
             self.emit(ChatEvent::Opened(Box::new(s)));
+            if !changes.is_empty() {
+                self.emit(ChatEvent::Changes {
+                    session: id,
+                    changes,
+                });
+            }
         }
         if let Some((call_id, name, arguments, preview)) = waiting {
             self.emit(ChatEvent::ApprovalRequested {
@@ -1112,7 +1121,8 @@ impl Manager {
                 run,
                 call_id,
                 result,
-            } => self.tool_done(session, run, call_id, result).await,
+                change,
+            } => self.tool_done(session, run, call_id, result, change).await,
             RunMsg::Event {
                 session,
                 turn,

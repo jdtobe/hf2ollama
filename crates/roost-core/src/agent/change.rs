@@ -3,6 +3,7 @@
 //! the new text; nothing is written until `apply`.
 
 use super::workspace::{is_sensitive, ToolError, Workspace};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
@@ -22,14 +23,14 @@ pub struct Change {
     pub after: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LineKind {
     Same,
     Added,
     Removed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffLine {
     pub kind: LineKind,
     pub text: String,
@@ -75,7 +76,7 @@ impl Change {
 }
 
 /// What an approval card shows about a pending change.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangePreview {
     pub path: String,
     /// The file does not exist yet.
