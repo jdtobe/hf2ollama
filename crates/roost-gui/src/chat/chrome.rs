@@ -72,6 +72,10 @@ pub(super) enum StatusKind {
 /// Side of the rename pencil beside the title.
 const PENCIL_W: f32 = 24.0;
 
+/// The folder under an agent's title: smaller than body text so it stays
+/// quiet and fits more of the path.
+const PATH_FONT: f32 = 11.0;
+
 /// Below this pane width the Agent settings button is the gear alone.
 const COMPACT_PANE_W: f32 = 600.0;
 
@@ -289,9 +293,9 @@ fn title_block(
         });
         if let Some((short, full)) = path {
             let room = ui.available_width().max(0.0);
-            let cut_to = crate::widgets::ellipsize_middle(ui, &short, mono(12.5), room);
+            let cut_to = crate::widgets::ellipsize_middle(ui, &short, mono(PATH_FONT), room);
             let cut = cut_to != short;
-            let r = ui.label(RichText::new(cut_to).font(mono(12.5)).color(t.fg2));
+            let r = ui.label(RichText::new(cut_to).font(mono(PATH_FONT)).color(t.fg2));
             #[cfg(test)]
             {
                 app.chat_ui.probe.path_rect = Some(r.rect);
