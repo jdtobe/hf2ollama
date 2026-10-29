@@ -232,7 +232,7 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             if have.contains(&m.id.to_lowercase()) {
-                                tag(ui, "installed", t.accent, t.accent_soft);
+                                tag(ui, "installed", t.accent2, t.accent2_soft);
                             }
                             if m.is_safetensors && !m.is_gguf {
                                 tag(ui, "Safetensors", t.warn, t.warn_soft);
