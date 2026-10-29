@@ -49,6 +49,13 @@ pub struct Entry {
     pub kind: EntryKind,
 }
 
+/// What `Workspace::stat` found out about an entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stat {
+    pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
+}
+
 pub struct Workspace {
     root: PathBuf,
     dir: Dir,
@@ -196,6 +203,18 @@ impl Workspace {
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+
+    /// Size and last-modified time of an entry (not following a symlink), for
+    /// sorting. An entry that cannot be read counts as empty and oldest.
+    pub fn stat(&self, rel: &Path) -> Stat {
+        match self.dir.symlink_metadata(Self::here(rel)) {
+            Ok(m) => Stat {
+                size: if m.is_dir() { 0 } else { m.len() },
+                modified: m.modified().ok().map(|t| t.into_std()),
+            },
+            Err(_) => Stat::default(),
+        }
     }
 
     /// The text of a file about to be changed: `None` when it does not exist.

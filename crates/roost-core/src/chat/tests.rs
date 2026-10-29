@@ -2618,7 +2618,9 @@ async fn a_command_waits_shows_exactly_what_will_run_and_runs_once_allowed() {
     assert_eq!(p.command, "echo -roost-says-hi");
     assert_eq!(p.folder, ws.path());
     assert_eq!(p.prefix.as_deref(), Some("echo"));
-    assert_eq!((p.timeout_secs, p.output_kb), (120, 20));
+    // The card states what will really be kept: the setting's 20 KB, cut to
+    // the share of this model's 8192-token window one result may take.
+    assert_eq!((p.timeout_secs, p.output_kb), (120, 4));
     assert!(
         tool_outputs(&h.events()).is_empty(),
         "nothing ran before the answer"
@@ -3041,4 +3043,31 @@ async fn the_undo_limit_from_settings_refuses_a_change_it_could_not_take_back() 
     let out = tool_outputs(&h.events());
     assert!(out[0].starts_with("Changed"), "{out:?}");
     assert!(out[1].contains("cannot keep another copy"), "{out:?}");
+}
+
+#[tokio::test]
+async fn a_small_context_window_shrinks_what_one_tool_call_may_return() {
+    // The test model gets an 8192-token window, so one result may carry
+    // about 4 KB even though the setting allows 24 KB.
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls(
+                "read_file",
+                serde_json::json!({"path": "log.txt", "limit": 1000}),
+            )),
+            chat_route(reply("Read.")),
+        ],
+        Default::default(),
+    )
+    .await;
+    let lines: String = (1..=400).map(|i| format!("line number {i}\n")).collect();
+    std::fs::write(ws.path().join("log.txt"), lines).unwrap();
+    h.send(id, "read the log").await;
+    h.wait_run_ended(1).await;
+    let out = tool_outputs(&h.events()).join("\n");
+    assert!(out.len() < 4_400, "{} bytes", out.len());
+    assert!(
+        out.contains("[truncated; call read_file again with offset="),
+        "{out}"
+    );
 }

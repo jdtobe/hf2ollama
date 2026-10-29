@@ -439,6 +439,7 @@ impl Manager {
         let mut pending = None;
         let mut snapshot = None;
         let mut waiting = None;
+        let lim = self.limits_for(id);
         if let Some(l) = self.sessions.get_mut(&id) {
             l.close_when_idle = false;
             // Text still waiting to be batched is already in the snapshot, so
@@ -461,11 +462,11 @@ impl Manager {
                     let preview = l
                         .agent
                         .as_ref()
-                        .and_then(|a| a.preview(&name, &arguments, &self.limits));
+                        .and_then(|a| a.preview(&name, &arguments, &lim));
                     let run = l
                         .agent
                         .as_ref()
-                        .and_then(|a| a.run_preview(&name, &arguments, &self.limits));
+                        .and_then(|a| a.run_preview(&name, &arguments, &lim));
                     (call_id, name, arguments, preview, run)
                 });
             }

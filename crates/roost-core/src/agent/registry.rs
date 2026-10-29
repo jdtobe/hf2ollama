@@ -134,12 +134,15 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         read(
             "list_dir",
-            "List the entries of a directory in the workspace, sorted by name. Directories end with /. A long listing is cut, and the result says which offset to use to see the rest.",
+            "List the entries of a directory in the workspace, by name or sorted by size or time. Directories end with /. A long listing is cut, and the result says which offset to use to see the rest.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Directory relative to the workspace root. Defaults to the root."},
-                    "offset": {"type": "integer", "description": "Entries to skip, to continue a cut listing. Defaults to 0."}
+                    "offset": {"type": "integer", "description": "Entries to skip, to continue a cut listing. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
+                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
+                    "reverse": {"type": "boolean", "description": "Flip the order."}
                 }
             }),
         ),
@@ -171,13 +174,16 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         read(
             "find_files",
-            "Find files and directories whose path matches a glob such as *.rs or src/*.toml. A pattern without a slash matches at any depth. Many results are cut, and the result says which offset to use to see the next ones.",
+            "Find files and directories whose path matches a glob such as *.rs or src/*.toml. A pattern without a slash matches at any depth. Results can be sorted by size or time (to find the largest or newest files). Many results are cut, and the result says which offset to use to see the next ones.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Glob pattern."},
                     "path": {"type": "string", "description": "Directory to search in. Defaults to the workspace root."},
-                    "offset": {"type": "integer", "description": "Results to skip, to continue a cut list. Defaults to 0."}
+                    "offset": {"type": "integer", "description": "Results to skip, to continue a cut list. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
+                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
+                    "reverse": {"type": "boolean", "description": "Flip the order."}
                 },
                 "required": ["pattern"]
             }),
@@ -191,7 +197,8 @@ pub fn specs() -> Vec<ToolSpec> {
                     "pattern": {"type": "string", "description": "Regular expression."},
                     "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
                     "case_insensitive": {"type": "boolean", "description": "Ignore letter case."},
-                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."}
+                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
                 },
                 "required": ["pattern"]
             }),
@@ -205,7 +212,8 @@ pub fn specs() -> Vec<ToolSpec> {
                     "pattern": {"type": "string", "description": "Hex byte pairs, ?? for any byte. Up to 64 bytes."},
                     "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
                     "glob": {"type": "string", "description": "Only search files whose name matches, such as *.nes."},
-                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."}
+                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
                 },
                 "required": ["pattern"]
             }),

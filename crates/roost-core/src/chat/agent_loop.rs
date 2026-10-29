@@ -460,7 +460,7 @@ impl Manager {
     /// Starts the next queued tool call, or moves on when none are left.
     async fn run_next_tool(&mut self, id: SessionId) {
         let (writes, runs) = (self.writes_allowed, self.commands_allowed);
-        let lim = self.limits.clone();
+        let lim = self.limits_for(id);
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -521,11 +521,24 @@ impl Manager {
         self.start_tool_call(id, call, approved);
     }
 
+    /// The tool limits for this chat's model: the Settings ceilings, with the
+    /// size of one result cut to fit the model's context window.
+    pub(super) fn limits_for(&self, id: SessionId) -> crate::agent::tools::Limits {
+        let window = self.sessions.get(&id).map(|live| {
+            let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
+            window(live.s.model_options.num_ctx, context)
+        });
+        match window {
+            Some(w) => self.limits.for_window(w),
+            None => self.limits.clone(),
+        }
+    }
+
     /// Runs a tool call on the blocking pool. `approved` lets a tool set to
     /// Ask through.
     fn start_tool_call(&mut self, id: SessionId, call: PendingCall, approved: bool) {
         let (writes, runs) = (self.writes_allowed, self.commands_allowed);
-        let lim = self.limits.clone();
+        let lim = self.limits_for(id);
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -621,7 +634,7 @@ impl Manager {
                 if registry::capability_of(&call.name).as_deref() == Some("files.write") =>
             {
                 // Writing never becomes automatic: only this file is allowed.
-                let lim = self.limits.clone();
+                let lim = self.limits_for(id);
                 if let Some(live) = self.sessions.get_mut(&id) {
                     let path = live
                         .agent

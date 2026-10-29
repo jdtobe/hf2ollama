@@ -2,7 +2,7 @@
 //! `search_text`. Every result has deterministic limits and says so when it
 //! was cut. Nothing here panics on odd input; failures are `ToolError`s.
 
-use super::workspace::{is_sensitive, EntryKind, ToolError, Workspace};
+use super::workspace::{is_sensitive, EntryKind, Stat, ToolError, Workspace};
 use globset::GlobBuilder;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
@@ -125,6 +125,21 @@ impl Limits {
     }
 }
 
+impl Limits {
+    /// These limits for a model with a context window of `tokens`. One tool
+    /// result may take at most about a sixth of the window (a token is about
+    /// three bytes of text), so a small window gets smaller results and a run
+    /// does not fail for lack of room. The setting stays the ceiling.
+    pub fn for_window(&self, tokens: u32) -> Limits {
+        let share = (tokens as usize / 2).max(1024);
+        Limits {
+            output_bytes: self.output_bytes.min(share),
+            run_output_bytes: self.run_output_bytes.min(share),
+            ..self.clone()
+        }
+    }
+}
+
 const BINARY_SNIFF: usize = 8 * 1024;
 /// A single line is never read past this, so one huge line cannot use memory.
 const LINE_READ_MAX: usize = 16 * 1024;
@@ -202,6 +217,127 @@ fn bool_arg(args: &Value, name: &str) -> Result<bool, ToolError> {
     }
 }
 
+/// Where in a long result to start and how much to return.
+struct Page {
+    offset: usize,
+    limit: usize,
+    /// Said when the asked-for `limit` was more than the setting allows.
+    note: Option<String>,
+}
+
+/// The `offset` and `limit` arguments; `cap` is the setting that `limit` may
+/// not pass.
+fn page_args(args: &Value, cap: usize) -> Result<Page, ToolError> {
+    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
+    let asked = uint_arg(args, "limit")?;
+    if asked == Some(0) {
+        return Err(ToolError::InvalidArguments(
+            "limit must be at least 1".into(),
+        ));
+    }
+    let asked = asked.map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+    let limit = asked.map_or(cap, |n| n.min(cap));
+    let note = asked
+        .filter(|n| *n > cap)
+        .map(|n| format!("[limit {n} reduced to {cap}, the most one call returns]"));
+    Ok(Page {
+        offset,
+        limit,
+        note,
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    Name,
+    Size,
+    Modified,
+}
+
+/// The `sort` (name, size or modified) and `reverse` arguments. Size and
+/// modified start with the largest and the newest.
+fn sort_args(args: &Value) -> Result<(SortKey, bool), ToolError> {
+    let key = match str_arg(args, "sort")?.as_deref() {
+        None | Some("name") => SortKey::Name,
+        Some("size") => SortKey::Size,
+        Some("modified") => SortKey::Modified,
+        Some(other) => {
+            return Err(ToolError::InvalidArguments(format!(
+                "sort must be name, size or modified, not {other:?}"
+            )))
+        }
+    };
+    Ok((key, bool_arg(args, "reverse")?))
+}
+
+/// Orders `items` by `key` (largest or newest first, names breaking ties),
+/// or by name; `reverse` flips the result.
+fn order_by<T>(items: &mut [(T, String, Stat)], key: SortKey, reverse: bool) {
+    items.sort_by(|a, b| {
+        let by = match key {
+            SortKey::Name => a.1.cmp(&b.1),
+            SortKey::Size => b.2.size.cmp(&a.2.size).then_with(|| a.1.cmp(&b.1)),
+            SortKey::Modified => b.2.modified.cmp(&a.2.modified).then_with(|| a.1.cmp(&b.1)),
+        };
+        if reverse {
+            by.reverse()
+        } else {
+            by
+        }
+    });
+}
+
+/// `3.4 KB`, `1.5 MB`: a size for a person, one decimal above a kilobyte.
+fn size_label(n: u64) -> String {
+    const KB: f64 = 1024.0;
+    let f = n as f64;
+    if f >= KB * KB * KB {
+        format!("{:.1} GB", f / (KB * KB * KB))
+    } else if f >= KB * KB {
+        format!("{:.1} MB", f / (KB * KB))
+    } else if f >= KB {
+        format!("{:.1} KB", f / KB)
+    } else {
+        format!("{n} bytes")
+    }
+}
+
+/// A time as `1971-01-01 00:00 UTC`.
+fn utc_stamp(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs()) as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days since 1970-01-01 to a calendar date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        rem / 3600,
+        rem % 3600 / 60
+    )
+}
+
+/// What to print after a name when results are ordered by size or time.
+fn sort_detail(key: SortKey, kind: EntryKind, st: &Stat) -> String {
+    match key {
+        SortKey::Name => String::new(),
+        SortKey::Size if kind == EntryKind::Dir => String::new(),
+        SortKey::Size => format!("  ({})", size_label(st.size)),
+        SortKey::Modified => st
+            .modified
+            .map_or_else(String::new, |t| format!("  ({})", utc_stamp(t))),
+    }
+}
+
 pub(crate) fn show(rel: &Path) -> String {
     let s = rel.to_string_lossy().replace('\\', "/");
     if s.is_empty() {
@@ -215,20 +351,38 @@ pub(crate) fn show(rel: &Path) -> String {
 
 pub fn list_dir(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
     let rel = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
-    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
+    let page = page_args(args, lim.list_entries)?;
+    let (key, reverse) = sort_args(args)?;
     let entries = ws.list(&rel)?;
     if entries.is_empty() {
         return Ok("(empty directory)".into());
     }
-    if offset >= entries.len() {
+    if page.offset >= entries.len() {
         return Ok(format!(
-            "(offset {offset} is past the end; the folder has {} entries)",
+            "(offset {} is past the end; the folder has {} entries)",
+            page.offset,
             entries.len()
         ));
     }
+    let total = entries.len();
+    let mut items: Vec<_> = entries
+        .into_iter()
+        .map(|e| {
+            let st = if key == SortKey::Name {
+                Stat::default()
+            } else {
+                ws.stat(&rel.join(&e.name))
+            };
+            let name = e.name.clone();
+            (e, name, st)
+        })
+        .collect();
+    if key != SortKey::Name || reverse {
+        order_by(&mut items, key, reverse);
+    }
     let mut out = Out::new(lim.output_bytes);
     let mut shown = 0;
-    for e in entries.iter().skip(offset).take(lim.list_entries) {
+    for (e, _, st) in items.iter().skip(page.offset).take(page.limit) {
         let mark = match e.kind {
             EntryKind::Dir => "/",
             EntryKind::Symlink => "@",
@@ -239,18 +393,18 @@ pub fn list_dir(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, To
         } else {
             ""
         };
-        if !out.line(&format!("{}{mark}{protected}", e.name)) {
+        let detail = sort_detail(key, e.kind, st);
+        if !out.line(&format!("{}{mark}{protected}{detail}", e.name)) {
             break;
         }
         shown += 1;
     }
-    let end = offset + shown;
-    let mut notes = Vec::new();
-    if end < entries.len() {
+    let end = page.offset + shown;
+    let mut notes: Vec<String> = page.note.into_iter().collect();
+    if end < total {
         notes.push(format!(
-            "[showing entries {}-{end} of {}; call list_dir again with offset={end} to see the rest]",
-            offset + 1,
-            entries.len()
+            "[showing entries {}-{end} of {total}; call list_dir again with offset={end} to see the rest]",
+            page.offset + 1
         ));
     }
     Ok(out.finish(&notes))
@@ -540,7 +694,8 @@ fn walk_notes(w: &Walk, lim: &Limits) -> Vec<String> {
 pub fn find_files(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
     let pattern = required_str(args, "pattern")?;
     let start = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
-    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
+    let page = page_args(args, lim.find_results)?;
+    let (key, reverse) = sort_args(args)?;
     // A pattern without a slash matches names at any depth, like `*.rs`.
     let effective = if pattern.contains('/') {
         pattern.clone()
@@ -552,52 +707,86 @@ pub fn find_files(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, 
         .build()
         .map_err(|e| ToolError::InvalidArguments(format!("invalid glob: {e}")))?
         .compile_matcher();
+    let label = |path: &Path, kind: EntryKind| {
+        format!(
+            "{}{}",
+            show(path),
+            if kind == EntryKind::Dir { "/" } else { "" }
+        )
+    };
     let mut out = Out::new(lim.output_bytes);
     let mut seen = 0usize;
     let mut found = 0usize;
     let mut capped = false;
-    let w = walk(ws, &start, lim, &mut |path, kind| {
-        let rel_to_start = path.strip_prefix(&start).unwrap_or(path);
-        if !glob.is_match(rel_to_start) {
-            return true;
+    let w = if key == SortKey::Name && !reverse {
+        walk(ws, &start, lim, &mut |path, kind| {
+            let rel_to_start = path.strip_prefix(&start).unwrap_or(path);
+            if !glob.is_match(rel_to_start) {
+                return true;
+            }
+            // Results before the offset were shown by an earlier call.
+            if seen < page.offset {
+                seen += 1;
+                return true;
+            }
+            if found >= page.limit {
+                capped = true;
+                return false;
+            }
+            if !out.line(&label(path, kind)) {
+                capped = true;
+                return false;
+            }
+            found += 1;
+            true
+        })?
+    } else {
+        // Sorting needs every match first (bounded by the entries examined).
+        let mut all: Vec<(EntryKind, String, Stat)> = Vec::new();
+        let w = walk(ws, &start, lim, &mut |path, kind| {
+            let rel_to_start = path.strip_prefix(&start).unwrap_or(path);
+            if glob.is_match(rel_to_start) {
+                let st = if key == SortKey::Name {
+                    Stat::default()
+                } else {
+                    ws.stat(path)
+                };
+                all.push((kind, label(path, kind), st));
+            }
+            true
+        })?;
+        order_by(&mut all, key, reverse);
+        let total = all.len();
+        for (kind, name, st) in all.iter().skip(page.offset) {
+            if found >= page.limit {
+                capped = true;
+                break;
+            }
+            if !out.line(&format!("{name}{}", sort_detail(key, *kind, st))) {
+                capped = true;
+                break;
+            }
+            found += 1;
         }
-        // Results before the offset were shown by an earlier call.
-        if seen < offset {
-            seen += 1;
-            return true;
-        }
-        if found >= lim.find_results {
-            capped = true;
-            return false;
-        }
-        let name = format!(
-            "{}{}",
-            show(path),
-            if kind == EntryKind::Dir { "/" } else { "" }
-        );
-        if !out.line(&name) {
-            capped = true;
-            return false;
-        }
-        found += 1;
-        true
-    })?;
+        let _ = total;
+        w
+    };
+    let mut notes: Vec<String> = page.note.clone().into_iter().collect();
     if found == 0 && !capped {
-        let mut notes = walk_notes(&w, lim);
-        let none = if offset > 0 {
-            format!("(no more results after offset {offset})")
+        let none = if page.offset > 0 {
+            format!("(no more results after offset {})", page.offset)
         } else {
             "(no matches)".to_string()
         };
         notes.insert(0, none);
+        notes.extend(walk_notes(&w, lim));
         return Ok(out.finish(&notes));
     }
-    let mut notes = Vec::new();
     if capped {
-        let end = offset + found;
+        let end = page.offset + found;
         notes.push(format!(
             "[showing results {}-{end}; there are more. Call find_files again with offset={end} for the next]",
-            offset + 1
+            page.offset + 1
         ));
     }
     notes.extend(walk_notes(&w, lim));
@@ -739,7 +928,8 @@ impl Skipped {
 pub fn search_text(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
     let pattern = required_str(args, "pattern")?;
     let start = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
-    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
+    let page = page_args(args, lim.search_matches)?;
+    let offset = page.offset;
     let re = RegexBuilder::new(&pattern)
         .case_insensitive(bool_arg(args, "case_insensitive")?)
         .size_limit(1 << 20)
@@ -775,7 +965,7 @@ pub fn search_text(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String,
                 passed += 1;
                 continue;
             }
-            if *total >= lim.search_matches {
+            if *total >= page.limit {
                 *capped = true;
                 return false;
             }
@@ -801,7 +991,7 @@ pub fn search_text(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String,
             hit_depth: false,
         }
     };
-    let mut notes = Vec::new();
+    let mut notes: Vec<String> = page.note.clone().into_iter().collect();
     if total == 0 && !capped {
         notes.push(if offset > 0 {
             format!("(no more matches after offset {offset})")
@@ -921,7 +1111,8 @@ fn find_bytes(
 pub fn search_bytes(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
     let pat = byte_pattern(&required_str(args, "pattern")?)?;
     let start = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
-    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
+    let page = page_args(args, lim.search_matches)?;
+    let offset = page.offset;
     let name_glob = match str_arg(args, "glob")? {
         Some(g) if !g.is_empty() => Some(
             GlobBuilder::new(&g)
@@ -980,7 +1171,7 @@ pub fn search_bytes(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String
                 passed += 1;
                 continue;
             }
-            if *total >= lim.search_matches {
+            if *total >= page.limit {
                 *capped = true;
                 return false;
             }
@@ -1006,7 +1197,7 @@ pub fn search_bytes(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String
             hit_depth: false,
         }
     };
-    let mut notes = Vec::new();
+    let mut notes: Vec<String> = page.note.clone().into_iter().collect();
     if total == 0 && !capped {
         notes.push(if offset > 0 {
             format!("(no more matches after offset {offset})")
@@ -1908,5 +2099,161 @@ mod tests {
             out.contains("[skipped 1 file: 1 larger than 1 KB; for example large.bin]"),
             "{out}"
         );
+    }
+
+    // ------------------------------------------------------- limit and sort
+
+    fn sized(r: &TempDir, rel: &str, bytes: usize) {
+        write(r, rel, &"x".repeat(bytes));
+    }
+
+    #[test]
+    fn a_limit_argument_asks_for_fewer_and_cannot_pass_the_setting() {
+        let (r, w) = ws();
+        for i in 0..250 {
+            write(&r, &format!("f{i:03}.txt"), "");
+        }
+        let few = list_dir(&w, &json!({"limit": 5}), &lim()).unwrap();
+        assert_eq!(
+            few.lines().filter(|l| l.ends_with(".txt")).count(),
+            5,
+            "{few}"
+        );
+        assert!(
+            few.contains("[showing entries 1-5 of 250; call list_dir again with offset=5"),
+            "{few}"
+        );
+        // Asking for more than the setting allows gives the setting, and says so.
+        let many = list_dir(&w, &json!({"limit": 10_000}), &lim()).unwrap();
+        assert_eq!(many.lines().filter(|l| l.ends_with(".txt")).count(), 200);
+        assert!(
+            many.contains("[limit 10000 reduced to 200, the most one call returns]"),
+            "{many}"
+        );
+        for bad in [json!({"limit": 0}), json!({"limit": "ten"})] {
+            assert!(matches!(
+                list_dir(&w, &bad, &lim()),
+                Err(ToolError::InvalidArguments(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn limit_applies_to_find_files_search_text_and_search_bytes() {
+        let (r, w) = ws();
+        for i in 0..20 {
+            write(&r, &format!("d/f{i:02}.txt"), "needle\n");
+        }
+        let f = find_files(&w, &json!({"pattern": "*.txt", "limit": 3}), &lim()).unwrap();
+        assert_eq!(f.lines().filter(|l| l.ends_with(".txt")).count(), 3, "{f}");
+        assert!(f.contains("offset=3"), "{f}");
+        let t = search_text(&w, &json!({"pattern": "needle", "limit": 4}), &lim()).unwrap();
+        assert_eq!(t.lines().filter(|l| l.contains("needle")).count(), 4, "{t}");
+        assert!(t.contains("offset=4"), "{t}");
+        let b = search_bytes(&w, &json!({"pattern": "6e 65 65", "limit": 2}), &lim()).unwrap();
+        assert_eq!(b.lines().filter(|l| l.contains(":0x")).count(), 2, "{b}");
+        assert!(b.contains("offset=2"), "{b}");
+    }
+
+    #[test]
+    fn list_dir_sorts_by_size_or_time_and_can_reverse() {
+        let (r, w) = ws();
+        sized(&r, "small.bin", 10);
+        sized(&r, "big.bin", 5000);
+        sized(&r, "mid.bin", 700);
+        fs::create_dir(r.path().join("adir")).unwrap();
+        let by_size = list_dir(&w, &json!({"sort": "size"}), &lim()).unwrap();
+        let names: Vec<_> = by_size
+            .lines()
+            .map(|l| l.split_whitespace().next().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["big.bin", "mid.bin", "small.bin", "adir/"],
+            "{by_size}"
+        );
+        assert!(by_size.contains("big.bin  (4.9 KB)"), "{by_size}");
+        let smallest = list_dir(&w, &json!({"sort": "size", "reverse": true}), &lim()).unwrap();
+        assert_eq!(
+            smallest.lines().next().unwrap().split_whitespace().next(),
+            Some("adir/")
+        );
+        // Newest first by modification time.
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400 * 365);
+        fs::File::options()
+            .write(true)
+            .open(r.path().join("big.bin"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let by_time = list_dir(&w, &json!({"sort": "modified"}), &lim()).unwrap();
+        assert_eq!(
+            by_time.lines().last().unwrap().split_whitespace().next(),
+            Some("big.bin"),
+            "{by_time}"
+        );
+        assert!(by_time.contains("big.bin  (1971-01-01"), "{by_time}");
+        // Paging follows the chosen order.
+        let second = list_dir(
+            &w,
+            &json!({"sort": "size", "limit": 1, "offset": 1}),
+            &lim(),
+        )
+        .unwrap();
+        assert!(second.starts_with("mid.bin"), "{second}");
+        assert!(matches!(
+            list_dir(&w, &json!({"sort": "colour"}), &lim()),
+            Err(ToolError::InvalidArguments(_))
+        ));
+    }
+
+    #[test]
+    fn find_files_can_return_the_largest_first_and_page_through_that_order() {
+        let (r, w) = ws();
+        sized(&r, "a/one.nes", 100);
+        sized(&r, "b/two.nes", 900);
+        sized(&r, "c/three.nes", 400);
+        sized(&r, "c/skip.txt", 5000);
+        let top = find_files(
+            &w,
+            &json!({"pattern": "*.nes", "sort": "size", "limit": 2}),
+            &lim(),
+        )
+        .unwrap();
+        let names: Vec<_> = top
+            .lines()
+            .filter(|l| l.contains(".nes"))
+            .map(|l| l.split_whitespace().next().unwrap())
+            .collect();
+        assert_eq!(names, ["b/two.nes", "c/three.nes"], "{top}");
+        assert!(top.contains("b/two.nes  (900 bytes)"), "{top}");
+        assert!(top.contains("offset=2"), "{top}");
+        let rest = find_files(
+            &w,
+            &json!({"pattern": "*.nes", "sort": "size", "limit": 2, "offset": 2}),
+            &lim(),
+        )
+        .unwrap();
+        assert!(rest.starts_with("a/one.nes"), "{rest}");
+        assert!(!rest.contains("showing results"), "{rest}");
+    }
+
+    #[test]
+    fn the_output_limit_follows_the_models_context_window() {
+        let base = Limits::default();
+        // A small window shrinks what one call may return; a big one keeps the setting.
+        assert_eq!(base.for_window(4_096).output_bytes, 2_048);
+        assert_eq!(base.for_window(8_192).output_bytes, 4_096);
+        assert_eq!(base.for_window(131_072).output_bytes, base.output_bytes);
+        assert_eq!(base.for_window(4_096).run_output_bytes, 2_048);
+        // Never below 1 KB, and the other limits are not touched.
+        assert_eq!(base.for_window(100).output_bytes, 1_024);
+        assert_eq!(base.for_window(4_096).search_matches, base.search_matches);
+        // A setting already lower than the share stays.
+        let low = Limits {
+            output_bytes: 1_500,
+            ..base
+        };
+        assert_eq!(low.for_window(131_072).output_bytes, 1_500);
     }
 }

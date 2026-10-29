@@ -1068,7 +1068,7 @@ fn tools_card(
         ),
         (
             "Output per tool call",
-            "The most text any one read, list or search sends back to the model.",
+            "The most text any one read, list or search sends back to the model. A model with a small context window gets less than this.",
             "select-tools-output",
             t.output_bytes as u64,
             &[8 * KB, 16 * KB, 24 * KB, 48 * KB, 96 * KB, 192 * KB],
