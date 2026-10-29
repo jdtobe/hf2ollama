@@ -13,35 +13,32 @@ const ROW_H: f32 = 82.0;
 
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
-    let panel = egui::Panel::left("models_list")
-        .default_size(340.0)
-        .size_range(300.0..=360.0)
-        .resizable(false)
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface)
-                .stroke(Stroke::new(1.0, t.line)),
-        )
-        .show(ui, |ui| {
-            egui::Frame::new()
-                .inner_margin(Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    crate::browse::filters::filter_bar(ui, app);
-                });
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    installed_section(ui, app, &t, out);
-                    section(ui, app, out);
-                });
-        });
+    let frame = egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, t.line));
+    let wanted = app.settings.sidebar_width;
+    let (rect, width) = crate::sidebar::show(ui, wanted, frame, |ui| {
+        egui::Frame::new()
+            .inner_margin(Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                crate::browse::filters::filter_bar(ui, app);
+            });
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                installed_section(ui, app, &t, out);
+                section(ui, app, out);
+            });
+        ui.min_rect()
+    });
+    crate::sidebar::finish(ui, app, width);
     #[cfg(test)]
     {
-        app.browse.probe.list = Some(panel.response.rect);
+        app.browse.probe.list = Some(rect);
     }
-    let _ = panel;
+    let _ = rect;
 }
 
 fn installed_section(

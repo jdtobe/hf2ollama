@@ -13,6 +13,7 @@ mod quit;
 mod quit_tests;
 mod runtime;
 mod settings;
+mod sidebar;
 mod speech;
 mod startup;
 mod theme;

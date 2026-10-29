@@ -92,7 +92,12 @@ pub struct Settings {
     pub theme_mode: ThemeMode,
     pub theme_family: ThemeFamily,
     pub keep_alive: KeepAlive,
+    /// Width in points of the sidebar shared by the Chat, Work and Models tabs.
+    pub sidebar_width: f32,
 }
+
+/// The sidebar's width until the user drags it.
+pub const DEFAULT_SIDEBAR_WIDTH: f32 = 340.0;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -108,6 +113,7 @@ impl Default for Settings {
             theme_mode: ThemeMode::System,
             theme_family: ThemeFamily::Meadow,
             keep_alive: KeepAlive::OllamaDefault,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
         }
     }
 }
@@ -159,6 +165,21 @@ mod tests {
         assert_eq!(s.theme_mode, ThemeMode::System);
         assert_eq!(s.theme_family, ThemeFamily::Meadow);
         assert_eq!(s.keep_alive, KeepAlive::OllamaDefault);
+        assert_eq!(s.sidebar_width, 340.0);
+    }
+
+    #[test]
+    fn the_sidebar_width_is_saved_and_older_files_get_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roost.toml");
+        let s = Settings {
+            sidebar_width: 412.0,
+            ..Settings::default()
+        };
+        s.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().sidebar_width, 412.0);
+        std::fs::write(&path, "max_parallel = 3\n").unwrap();
+        assert_eq!(Settings::load(&path).unwrap().sidebar_width, 340.0);
     }
 
     #[test]
@@ -211,6 +232,7 @@ mod tests {
             theme_mode: ThemeMode::Dark,
             theme_family: ThemeFamily::Tide,
             keep_alive: KeepAlive::FifteenMinutes,
+            sidebar_width: 377.0,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

@@ -21,7 +21,6 @@ use roost_core::store::RowStatus;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const RAIL_W: f32 = 264.0;
 /// Margins of the conversation pane (a header band reaches over them).
 pub(super) const PANE_MARGIN_X: f32 = 20.0;
 pub(super) const PANE_MARGIN_Y: f32 = 16.0;
@@ -221,22 +220,19 @@ fn show_mode(
         .map(|r| r.name().to_string())
         .collect();
 
-    egui::Panel::left("chat_rail")
-        .resizable(false)
-        .exact_size(RAIL_W)
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface)
-                .stroke(Stroke::new(1.0, t.line))
-                .inner_margin(Margin::same(12)),
-        )
-        .show(ui, |ui| {
-            #[cfg(test)]
-            {
-                app.chat_ui.probe.rail = Some(ui.max_rect());
-            }
-            rail(ui, app, out, &t, &installed, mode);
-        });
+    let frame = egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, t.line))
+        .inner_margin(Margin::same(12));
+    let wanted = app.settings.sidebar_width;
+    let ((), width) = crate::sidebar::show(ui, wanted, frame, |ui| {
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.rail = Some(ui.max_rect());
+        }
+        rail(ui, app, out, &t, &installed, mode);
+    });
+    crate::sidebar::finish(ui, app, width);
 
     // The open session is taken out for the frame so the composer can edit
     // the draft while the transcript borrows the session.
