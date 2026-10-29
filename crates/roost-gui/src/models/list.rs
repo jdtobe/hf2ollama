@@ -19,9 +19,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     let wanted = app.settings.sidebar_width;
     let (rect, width) = crate::sidebar::show(ui, wanted, frame, |ui| {
         egui::Frame::new()
-            .inner_margin(Margin::symmetric(12, 8))
+            .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                let search = crate::widgets::search_field(
+                    ui,
+                    &mut app.query,
+                    "Search installed models and Hugging Face",
+                );
+                app.search_rect = Some(search.response.rect);
+                app.search_clear_rect = search.clear;
+                ui.add_space(8.0);
                 crate::browse::filters::filter_bar(ui, app);
             });
         egui::ScrollArea::vertical()

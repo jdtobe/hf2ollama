@@ -6,6 +6,66 @@ use eframe::egui::{
 };
 use roost_core::fit::Fit;
 
+/// Side of the clear (✕) button inside a search field.
+const CLEAR_SIZE: f32 = 18.0;
+
+/// What `search_field` painted, for tests and callers that need to focus it.
+pub struct SearchField {
+    pub response: egui::Response,
+    /// Where the clear (✕) button sits; `None` while the field is empty.
+    pub clear: Option<egui::Rect>,
+}
+
+/// A one-line search box as wide as the space left, with a clear (✕) button
+/// that appears once there is text. Every search box in the app is this one.
+pub fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str) -> SearchField {
+    let t = tokens(ui);
+    let has_text = !text.is_empty();
+    let response = ui.add_sized(
+        vec2(ui.available_width(), 32.0),
+        egui::TextEdit::singleline(text)
+            .hint_text(hint)
+            .margin(Margin {
+                left: 10,
+                right: if has_text { 10 + CLEAR_SIZE as i8 } else { 10 },
+                top: 7,
+                bottom: 7,
+            }),
+    );
+    let mut clear = None;
+    if has_text {
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(
+                response.rect.right() - 6.0 - CLEAR_SIZE / 2.0,
+                response.rect.center().y,
+            ),
+            vec2(CLEAR_SIZE, CLEAR_SIZE),
+        );
+        clear = Some(rect);
+        let hit = ui
+            .interact(rect, response.id.with("clear"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Clear search");
+        let fg = if hit.hovered() { t.fg } else { t.fg3 };
+        if hit.hovered() {
+            ui.painter()
+                .circle_filled(rect.center(), CLEAR_SIZE / 2.0, t.surface2);
+        }
+        let c = rect.center();
+        let arm = 3.5;
+        let stroke = Stroke::new(1.5, fg);
+        ui.painter()
+            .line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
+        ui.painter()
+            .line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
+        if hit.clicked() {
+            text.clear();
+            response.request_focus();
+        }
+    }
+    SearchField { response, clear }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PillKind {
     Ok,
