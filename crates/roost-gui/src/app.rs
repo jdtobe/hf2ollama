@@ -76,9 +76,9 @@ pub struct AppState {
     pub auto_dismiss: AutoDismiss,
     /// Where the status pill was last painted (for layout tests).
     pub pill_rect: Option<egui::Rect>,
-    /// Where the search field was last painted; `None` when hidden for lack of room.
+    /// Where the Models search field was last painted; `None` when not showing.
     pub search_rect: Option<egui::Rect>,
-    /// Where the clear (✕) button of the search field was last painted; `None` when the field is empty.
+    /// Where its clear (✕) button was last painted; `None` when the field is empty.
     pub search_clear_rect: Option<egui::Rect>,
     /// Extent of the status bar contents as last painted (for layout tests).
     pub status_rect: Option<egui::Rect>,
@@ -343,12 +343,6 @@ const NAV_H: f32 = 34.0;
 
 /// Below this window width the status pill shows only the Ollama version.
 const PILL_FULL_MIN_WINDOW: f32 = 1100.0;
-/// Space kept between the search field and the status pill.
-const SEARCH_PILL_GAP: f32 = 16.0;
-/// Narrowest useful search field; below this the field is hidden.
-const SEARCH_MIN_W: f32 = 120.0;
-/// Side of the clear (✕) button inside the search field.
-const CLEAR_SIZE: f32 = 18.0;
 const PILL_PAD_X: f32 = 10.0;
 const PILL_DOT: f32 = 8.0;
 const PILL_GAP: f32 = 6.0;
@@ -780,7 +774,6 @@ impl App {
         let galley = ui
             .painter()
             .layout_no_wrap(label, egui::FontId::proportional(12.0), t.fg2);
-        let pill_w = pill_size(galley.size().x).x;
 
         let platform = self.state.platform;
         if crate::menu::bar::uses_window_bar(platform) {
@@ -849,73 +842,6 @@ impl App {
                         let view = [View::Chat, View::Work, View::Models][i];
                         self.state.select(view);
                     }
-                    if self.state.view == View::Models {
-                        ui.add_space(8.0);
-                        // Whatever is left after the pill and a gap; hidden
-                        // rather than overlapping when there is no room.
-                        let room = ui.available_width() - pill_w - GEAR_W - SEARCH_PILL_GAP - 16.0;
-                        let field_w = room.min(360.0);
-                        if field_w >= SEARCH_MIN_W {
-                            let has_text = !self.state.query.is_empty();
-                            let r = ui.add_sized(
-                                vec2(field_w, 32.0),
-                                egui::TextEdit::singleline(&mut self.state.query)
-                                    .hint_text("Search installed models and Hugging Face")
-                                    .margin(Margin {
-                                        left: 10,
-                                        right: if has_text { 10 + CLEAR_SIZE as i8 } else { 10 },
-                                        top: 7,
-                                        bottom: 7,
-                                    }),
-                            );
-                            self.state.search_rect = Some(r.rect);
-                            self.state.search_clear_rect = None;
-                            if has_text {
-                                let rect = egui::Rect::from_center_size(
-                                    egui::pos2(
-                                        r.rect.right() - 6.0 - CLEAR_SIZE / 2.0,
-                                        r.rect.center().y,
-                                    ),
-                                    vec2(CLEAR_SIZE, CLEAR_SIZE),
-                                );
-                                self.state.search_clear_rect = Some(rect);
-                                let hit = ui
-                                    .interact(rect, r.id.with("clear"), Sense::click())
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text("Clear search");
-                                let fg = if hit.hovered() { t.fg } else { t.fg3 };
-                                if hit.hovered() {
-                                    ui.painter().circle_filled(
-                                        rect.center(),
-                                        CLEAR_SIZE / 2.0,
-                                        t.surface2,
-                                    );
-                                }
-                                let c = rect.center();
-                                let arm = 3.5;
-                                let stroke = Stroke::new(1.5, fg);
-                                ui.painter().line_segment(
-                                    [c + vec2(-arm, -arm), c + vec2(arm, arm)],
-                                    stroke,
-                                );
-                                ui.painter().line_segment(
-                                    [c + vec2(-arm, arm), c + vec2(arm, -arm)],
-                                    stroke,
-                                );
-                                if hit.clicked() {
-                                    self.state.query.clear();
-                                    r.request_focus();
-                                }
-                            }
-                        } else {
-                            self.state.search_rect = None;
-                            self.state.search_clear_rect = None;
-                        }
-                    } else {
-                        self.state.search_rect = None;
-                        self.state.search_clear_rect = None;
-                    }
-
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let on = self.state.view == View::Settings;
                         let (gear, _gear_rect) = settings_gear(ui, on);
@@ -1152,7 +1078,11 @@ mod tests {
         }
     }
 
-    fn run_app(dark: bool, width: f32) -> (Option<egui::Rect>, egui::Rect) {
+    #[allow(clippy::type_complexity)]
+    fn run_app(
+        dark: bool,
+        width: f32,
+    ) -> (Option<egui::Rect>, Option<egui::Rect>, Option<egui::Rect>) {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx);
         ctx.set_theme(if dark {
@@ -1187,29 +1117,61 @@ mod tests {
         }
         (
             app.state.search_rect,
-            app.state.pill_rect.expect("pill painted"),
+            app.state.browse.probe.list,
+            app.state.browse.probe.filters_chip,
         )
     }
 
     #[test]
-    fn search_field_never_overlaps_the_status_pill() {
+    fn the_models_search_is_the_first_thing_in_the_sidebar_above_the_filters() {
         for dark in [false, true] {
             for width in [700.0, 900.0, 1180.0] {
-                let (search, pill) = run_app(dark, width);
-                if width >= 900.0 {
-                    assert!(search.is_some(), "dark={dark} width={width}: field hidden");
-                }
-                if let Some(s) = search {
-                    assert!(
-                        s.right() + 8.0 <= pill.left(),
-                        "dark={dark} width={width}: search ends {} pill starts {}",
-                        s.right(),
-                        pill.left()
-                    );
-                    assert!(s.width() >= 120.0, "dark={dark} width={width}");
+                let (search, list, filters) = run_app(dark, width);
+                let (search, list) = (search.expect("search"), list.expect("sidebar"));
+                let tag = format!("dark={dark} width={width}: {search:?} in {list:?}");
+                assert!(list.contains_rect(search), "{tag}");
+                assert!(search.top() - list.top() < 20.0, "not at the top: {tag}");
+                if let Some(chip) = filters {
+                    assert!(search.bottom() <= chip.top(), "below the filters: {tag}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_header_has_no_search_field() {
+        let mut app = {
+            let (tx, _) = std::sync::mpsc::channel();
+            let (_, rx) = std::sync::mpsc::channel();
+            App::new(
+                &Settings::default(),
+                PathBuf::from("/tmp/staging"),
+                Machine {
+                    ram_gb: 16.0,
+                    vram_gb: None,
+                },
+                tx,
+                rx,
+            )
+        };
+        app.state.select(View::Models);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1180.0, 820.0));
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        }
+        let header_bottom = app.state.pill_rect.expect("pill").bottom();
+        let search = app.state.search_rect.expect("search");
+        assert!(
+            search.top() > header_bottom,
+            "{search:?} vs header {header_bottom}"
+        );
     }
 
     #[test]
@@ -1229,6 +1191,7 @@ mod tests {
             rx,
         );
         app.state.ollama = Some(None);
+        app.state.select(View::Models);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1180.0, 820.0));
         let frame = |app: &mut App, events: Vec<egui::Event>| {
             let input = egui::RawInput {
@@ -1995,7 +1958,6 @@ mod tests {
                     h.frame(vec2(900.0, 640.0), vec![], |ui| app.show(ui));
                 }
                 let mut items = app.state.top_bar.clone();
-                items.push(("search", app.state.search_rect.expect("search shown")));
                 items.push(("pill", app.state.pill_rect.expect("pill shown")));
                 let centers: Vec<(&str, f32)> =
                     items.iter().map(|(n, r)| (*n, r.center().y)).collect();

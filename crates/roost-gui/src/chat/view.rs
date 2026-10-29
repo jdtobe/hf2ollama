@@ -309,21 +309,15 @@ fn rail(
     mode: SessionMode,
 ) {
     let model = app.chat.default_model(installed);
+    let field = crate::widgets::search_field(ui, &mut app.chat_ui.rail_query, "Search");
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.rail_search = Some(field.response.rect);
+    }
+    let _ = field;
+    ui.add_space(8.0);
     rail_new_menu(ui, app, out, t, &model, mode);
     ui.add_space(8.0);
-    if app.chat.rows().iter().any(|r| r.mode == mode) {
-        let field = ui.add(
-            egui::TextEdit::singleline(&mut app.chat_ui.rail_query)
-                .hint_text("Search")
-                .desired_width(ui.available_width()),
-        );
-        #[cfg(test)]
-        {
-            app.chat_ui.probe.rail_search = Some(field.rect);
-        }
-        let _ = field;
-        ui.add_space(6.0);
-    }
     rail_list(ui, app, out, t, mode);
 }
 
