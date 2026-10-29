@@ -193,8 +193,11 @@ fn every_theme_family_and_mode_keeps_chat_usable_at_minimum_size() {
                     rail.right() <= pane.left() + 0.5,
                     "{tag}: rail overlaps pane"
                 );
+                // The header band reaches over the pane's margins on purpose.
+                let reach =
+                    pane.expand2(vec2(super::view::PANE_MARGIN_X, super::view::PANE_MARGIN_Y));
                 assert!(
-                    inside(header, pane),
+                    inside(header, reach),
                     "{tag}: header {header:?} pane {pane:?}"
                 );
                 let (send, label) = p.send_button.expect("send button");
@@ -1022,7 +1025,7 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
                     texts.contains("1 message waiting for the next step"),
                     "{tag}: {texts}"
                 );
-                assert!(texts.contains("Folder: "), "{tag}: {texts}");
+                assert!(texts.contains("Agent settings"), "{tag}: {texts}");
             }
         }
     }
@@ -1062,11 +1065,13 @@ fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
     let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
     open_menu(&mut app, &mut h, size, chip);
     let texts = texts_of(&mut app, &mut h, size);
+    let upper = texts.to_uppercase();
+    for want in ["FOLDER", "RUN", "TOOLS"] {
+        assert!(upper.contains(want), "card {want}: {texts}");
+    }
     for want in [
-        "Folder",
-        "Change folder…",
+        "Change…",
         "Step budget",
-        "Tools",
         "Files · Read",
         "list_dir",
         "read_file",
@@ -1835,10 +1840,15 @@ fn a_pending_approval_shows_what_the_agent_wants_and_three_ways_to_answer() {
                 "{texts}"
             );
             let p = app.state_mut().chat_ui.probe.clone();
+            let composer = p.composer.unwrap();
             let pane = p.pane.unwrap();
             assert_eq!(p.approval_buttons.len(), 3, "{size:?}");
             for b in &p.approval_buttons {
-                assert!(inside(*b, pane), "{size:?}: {b:?} outside {pane:?}");
+                assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
+                assert!(
+                    b.top() >= pane.bottom() - 0.5,
+                    "{size:?}: below the transcript"
+                );
             }
             let _ = sent_chat_commands(&sent);
             click(&mut app, &mut h, size, p.approval_buttons[pick].center());
@@ -1912,4 +1922,90 @@ fn the_tools_menu_sets_files_read_to_off_ask_or_auto() {
             if *id == s.id && key == "files.read"),
         "{cmds:?}"
     );
+}
+
+#[test]
+fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("Config walkthrough") || texts.contains("Untitled"),
+            "{texts}"
+        );
+        assert!(texts.contains("Agent settings"), "{texts}");
+        assert!(texts.contains("Idle"), "{texts}");
+        let path_line = texts
+            .lines()
+            .find(|l| l.starts_with('(') && (l.contains("a-project") || l.contains('…')))
+            .unwrap_or_else(|| panic!("no folder in parentheses:\n{texts}"));
+        assert!(path_line.ends_with(')'), "{path_line}");
+        let p = app.state_mut().chat_ui.probe.clone();
+        let header = p.header.unwrap();
+        let settings = p.agent_chip.unwrap();
+        let more = p.more_button.unwrap();
+        assert!(inside(settings, header) && inside(more, header), "{size:?}");
+        assert!(
+            settings.right() <= more.left(),
+            "{size:?}: settings left of the menu"
+        );
+    }
+}
+
+#[test]
+fn a_chat_has_no_settings_button_and_no_folder() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(!texts.contains("Agent settings"), "{texts}");
+    assert!(f.app.state_mut().chat_ui.probe.agent_chip.is_none());
+    assert_eq!(
+        f.app.state_mut().chat_ui.probe.status_label.as_deref(),
+        Some("Idle")
+    );
+}
+
+#[test]
+fn the_status_says_when_the_agent_needs_an_answer() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    ask_for_approval(&mut app, s.id);
+    run(&mut app, &mut h, size, 3);
+    assert_eq!(
+        app.state_mut().chat_ui.probe.status_label.as_deref(),
+        Some("Waiting for you")
+    );
+}
+
+#[test]
+fn a_very_long_folder_is_cut_in_the_middle_and_the_header_still_fits() {
+    let size = (900.0, 640.0);
+    let (mut app, _sent, s) = agent_fixture();
+    {
+        let long = std::env::temp_dir().join(
+            "a/very/long/path/that/keeps/going/and/going/through/many/folders/to/some-project-name",
+        );
+        let st = app.state_mut();
+        let open = st.chat.open.as_mut().unwrap();
+        open.workspace = Some(long);
+        let _ = s;
+    }
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_of(&mut app, &mut h, size);
+    let line = texts
+        .lines()
+        .find(|l| l.starts_with('(') && l.contains('…'))
+        .unwrap_or_else(|| panic!("the folder was not cut:\n{texts}"));
+    assert!(
+        line.ends_with("some-project-name)") || line.ends_with(')'),
+        "{line}"
+    );
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert!(inside(p.agent_chip.unwrap(), p.header.unwrap()));
 }

@@ -22,6 +22,9 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const RAIL_W: f32 = 264.0;
+/// Margins of the conversation pane (a header band reaches over them).
+pub(super) const PANE_MARGIN_X: f32 = 20.0;
+pub(super) const PANE_MARGIN_Y: f32 = 16.0;
 const ROW_H: f32 = 46.0;
 const COMPOSER_ROWS: usize = 3;
 
@@ -112,6 +115,8 @@ pub struct ChatProbe {
     pub pane: Option<egui::Rect>,
     pub composer: Option<egui::Rect>,
     pub header: Option<egui::Rect>,
+    /// The status text in the header ("Idle", "Waiting for you"…).
+    pub status_label: Option<String>,
     pub rows: Vec<(SessionId, egui::Rect)>,
     pub send_button: Option<(egui::Rect, &'static str)>,
     /// The delete control of each rail row that shows one, and whether it is armed.
@@ -260,7 +265,7 @@ fn show_mode(
         .frame(
             egui::Frame::new()
                 .fill(t.bg)
-                .inner_margin(Margin::symmetric(20, 16)),
+                .inner_margin(Margin::symmetric(PANE_MARGIN_X as i8, PANE_MARGIN_Y as i8)),
         )
         .show(ui, |ui| {
             #[cfg(test)]
@@ -816,9 +821,6 @@ fn pane(
                     retry_row(ui, app, out, s, m);
                 }
                 i += 1;
-            }
-            if let Some(ask) = app.chat.approval(s.id).cloned() {
-                approval_card(ui, t, app, out, s, &ask);
             }
         });
 }
@@ -2069,6 +2071,11 @@ fn composer(
 ) {
     let id = s.id;
     let running = app.chat.is_running(id);
+    // The question sits right above the input, where it cannot scroll away.
+    if let Some(ask) = app.chat.approval(id).cloned() {
+        approval_card(ui, t, app, out, s, &ask);
+        ui.add_space(8.0);
+    }
     super::chrome::status_line(ui, app, t, s);
     let eid = composer_id(id);
     if std::mem::take(&mut app.chat_ui.focus_composer) {

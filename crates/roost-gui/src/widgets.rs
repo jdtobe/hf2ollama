@@ -275,6 +275,64 @@ pub fn band<R>(
     (out.inner, rect)
 }
 
+/// A row of choices where the chosen one is filled with the accent.
+/// Returns the index clicked, if any, and records each segment's rectangle.
+pub fn segmented(
+    ui: &mut egui::Ui,
+    t: &crate::theme_tokens::Tokens,
+    labels: &[(&str, &str)],
+    chosen: usize,
+    rects: &mut Vec<egui::Rect>,
+) -> Option<usize> {
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (i, (label, tip)) in labels.iter().enumerate() {
+            let on = i == chosen;
+            let galley = ui.painter().layout_no_wrap(
+                (*label).to_string(),
+                egui::FontId::proportional(12.5),
+                if on { t.accent_fg } else { t.fg2 },
+            );
+            let size = egui::vec2(galley.size().x + 24.0, 26.0);
+            let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+            let resp = resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(*tip);
+            let radius = egui::CornerRadius {
+                nw: if i == 0 { 7 } else { 0 },
+                sw: if i == 0 { 7 } else { 0 },
+                ne: if i + 1 == labels.len() { 7 } else { 0 },
+                se: if i + 1 == labels.len() { 7 } else { 0 },
+            };
+            let fill = if on {
+                t.accent
+            } else if resp.hovered() {
+                t.line
+            } else {
+                t.surface
+            };
+            ui.painter().rect(
+                rect,
+                radius,
+                fill,
+                egui::Stroke::new(1.0, if on { t.accent } else { t.line }),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().galley(
+                rect.center() - galley.size() / 2.0,
+                galley,
+                if on { t.accent_fg } else { t.fg2 },
+            );
+            rects.push(rect);
+            if resp.clicked() && !on {
+                clicked = Some(i);
+            }
+        }
+    });
+    clicked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
