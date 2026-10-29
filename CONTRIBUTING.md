@@ -16,7 +16,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-CI runs the same commands on macOS, Windows and Linux. Tests must not need a network; use the mock HTTP servers and the recorded fixtures in `crates/roost-core/tests/fixtures/`.
+CI runs the same commands on macOS, Windows and Linux, but only when something the build depends on changes: the Rust sources and assets under `crates/`, the manifests and lock file, the formatter settings, or `ci.yml` itself. A change to docs, scripts or packaging does not start it. Two cheap checks cover everything else: `identity.yml` (the product-name scan and the icon source; every change) and `deny.yml` (dependencies; when manifests or `deny.toml` change, and weekly for new advisories). Pushes to a branch with an open pull request run once, not twice, and a new push replaces the run still going. A release runs all of it. Tests must not need a network; use the mock HTTP servers and the recorded fixtures in `crates/roost-core/tests/fixtures/`.
 
 ## Test-driven development
 

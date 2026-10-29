@@ -1,0 +1,25 @@
+name: Repository checks
+
+# Cheap checks that look at every tracked file, docs included: the product
+# identity scan (names, no stray addresses) and the macOS icon source. They
+# run on every change. The build and tests (ci.yml) only run when code
+# changes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: repo-checks-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 packaging/macos/make_icon.py --check
+      - run: python3 -B scripts/test_check_roost_identity.py
+      - run: python3 scripts/check_roost_identity.py

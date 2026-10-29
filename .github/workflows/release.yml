@@ -33,8 +33,11 @@ jobs:
   test:
     uses: ./.github/workflows/ci.yml
 
+  repo-checks:
+    uses: ./.github/workflows/identity.yml
+
   version:
-    needs: test
+    needs: [test, repo-checks]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.next.outputs.version }}

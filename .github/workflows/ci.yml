@@ -1,11 +1,47 @@
 name: CI
 
+# Builds and tests the code, so only changes the build depends on start it:
+# the Rust sources and assets, the manifests and lock file, the formatter
+# settings and this file. Docs, packaging scripts and the like do not.
+# `identity.yml` (repository checks, cheap) runs on every change, and
+# `deny.yml` on dependency changes. A release calls this workflow and always
+# runs all of it.
 on:
-  # Every tracked change, including docs, runs the identity scan.
   push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - ".rustfmt.toml"
+      - "clippy.toml"
+      - ".clippy.toml"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - ".rustfmt.toml"
+      - "clippy.toml"
+      - ".clippy.toml"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".github/workflows/ci.yml"
   workflow_call:
   workflow_dispatch:
+
+# A new push to a pull request replaces the run still going for it. Other
+# runs (main, a release's call) get a group of their own and are never cut.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,9 +68,6 @@ jobs:
         # (rfd with xdg-portal) talks D-Bus in pure Rust and needs no GTK.
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev
       - run: cargo fmt --check
-      - run: python3 packaging/macos/make_icon.py --check
-      - run: python3 -B scripts/test_check_roost_identity.py
-      - run: python3 scripts/check_roost_identity.py
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
