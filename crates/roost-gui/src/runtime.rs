@@ -2249,13 +2249,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn limits_in_the_settings_the_app_starts_with_apply_to_agents() {
         let out = a_listing_under_limits(true).await;
-        assert!(out.contains("[truncated: showing 1 of 2"), "{out}");
+        assert!(out.contains("[showing entries 1-1 of 2"), "{out}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn limits_applied_later_in_settings_apply_to_agents() {
         let out = a_listing_under_limits(false).await;
-        assert!(out.contains("[truncated: showing 1 of 2"), "{out}");
+        assert!(out.contains("[showing entries 1-1 of 2"), "{out}");
     }
 
     #[test]

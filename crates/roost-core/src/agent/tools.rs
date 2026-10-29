@@ -40,6 +40,8 @@ pub struct Limits {
     pub read_file_bytes: u64,
     /// Largest file `search_text` looks inside.
     pub search_file_bytes: u64,
+    /// Largest file `search_bytes` looks inside.
+    pub bytes_file_bytes: u64,
     /// Most bytes `write_file` writes in one call.
     pub write_bytes: usize,
     /// Largest existing file `edit_file` and `write_file` may change.
@@ -81,6 +83,7 @@ impl Default for Limits {
             line_chars: 300,
             read_file_bytes: 16 * 1024 * 1024,
             search_file_bytes: 2 * 1024 * 1024,
+            bytes_file_bytes: 64 * 1024 * 1024,
             write_bytes: 256 * 1024,
             edit_file_bytes: 1024 * 1024,
             undo_bytes: 8 * 1024 * 1024,
@@ -109,6 +112,7 @@ impl Limits {
         self.line_chars = self.line_chars.clamp(40, 5_000);
         self.read_file_bytes = self.read_file_bytes.clamp(KB as u64, 256 * MB as u64);
         self.search_file_bytes = self.search_file_bytes.clamp(KB as u64, 256 * MB as u64);
+        self.bytes_file_bytes = self.bytes_file_bytes.clamp(KB as u64, 1024 * MB as u64);
         self.write_bytes = self.write_bytes.clamp(KB, 4 * MB);
         self.edit_file_bytes = self.edit_file_bytes.clamp(KB, 8 * MB);
         self.undo_bytes = self.undo_bytes.clamp(MB, 256 * MB);
@@ -211,13 +215,20 @@ pub(crate) fn show(rel: &Path) -> String {
 
 pub fn list_dir(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
     let rel = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
+    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
     let entries = ws.list(&rel)?;
     if entries.is_empty() {
         return Ok("(empty directory)".into());
     }
+    if offset >= entries.len() {
+        return Ok(format!(
+            "(offset {offset} is past the end; the folder has {} entries)",
+            entries.len()
+        ));
+    }
     let mut out = Out::new(lim.output_bytes);
     let mut shown = 0;
-    for e in entries.iter().take(lim.list_entries) {
+    for e in entries.iter().skip(offset).take(lim.list_entries) {
         let mark = match e.kind {
             EntryKind::Dir => "/",
             EntryKind::Symlink => "@",
@@ -233,10 +244,12 @@ pub fn list_dir(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, To
         }
         shown += 1;
     }
+    let end = offset + shown;
     let mut notes = Vec::new();
-    if shown < entries.len() {
+    if end < entries.len() {
         notes.push(format!(
-            "[truncated: showing {shown} of {} entries]",
+            "[showing entries {}-{end} of {}; call list_dir again with offset={end} to see the rest]",
+            offset + 1,
             entries.len()
         ));
     }
@@ -527,6 +540,7 @@ fn walk_notes(w: &Walk, lim: &Limits) -> Vec<String> {
 pub fn find_files(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
     let pattern = required_str(args, "pattern")?;
     let start = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
+    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
     // A pattern without a slash matches names at any depth, like `*.rs`.
     let effective = if pattern.contains('/') {
         pattern.clone()
@@ -539,11 +553,17 @@ pub fn find_files(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, 
         .map_err(|e| ToolError::InvalidArguments(format!("invalid glob: {e}")))?
         .compile_matcher();
     let mut out = Out::new(lim.output_bytes);
+    let mut seen = 0usize;
     let mut found = 0usize;
     let mut capped = false;
     let w = walk(ws, &start, lim, &mut |path, kind| {
         let rel_to_start = path.strip_prefix(&start).unwrap_or(path);
         if !glob.is_match(rel_to_start) {
+            return true;
+        }
+        // Results before the offset were shown by an earlier call.
+        if seen < offset {
+            seen += 1;
             return true;
         }
         if found >= lim.find_results {
@@ -564,13 +584,20 @@ pub fn find_files(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, 
     })?;
     if found == 0 && !capped {
         let mut notes = walk_notes(&w, lim);
-        notes.insert(0, "(no matches)".into());
+        let none = if offset > 0 {
+            format!("(no more results after offset {offset})")
+        } else {
+            "(no matches)".to_string()
+        };
+        notes.insert(0, none);
         return Ok(out.finish(&notes));
     }
     let mut notes = Vec::new();
     if capped {
+        let end = offset + found;
         notes.push(format!(
-            "[truncated at {found} results; narrow the pattern or the path]"
+            "[showing results {}-{end}; there are more. Call find_files again with offset={end} for the next]",
+            offset + 1
         ));
     }
     notes.extend(walk_notes(&w, lim));
@@ -587,82 +614,180 @@ fn cut_line(text: &str, chars: usize) -> String {
     format!("{head}…")
 }
 
-/// Matches in one file, or `None` when the file is skipped (binary, large,
-/// unreadable or not UTF-8).
+/// Why a file was not searched.
+enum Skip {
+    TooBig,
+    Binary,
+    NotText,
+    Unreadable,
+}
+
+/// The matches in one file, at most `cap` of them, and whether the file had
+/// more than that; or why the file was skipped.
+#[allow(clippy::type_complexity)]
 fn search_one(
     ws: &Workspace,
     rel: &Path,
     re: &regex::Regex,
     lim: &Limits,
-    room: usize,
-) -> Option<Vec<(usize, String)>> {
-    let (file, size) = ws.open_file(rel).ok()?;
+    cap: usize,
+) -> Result<(Vec<(usize, String)>, bool), Skip> {
+    let (file, size) = ws.open_file(rel).map_err(|_| Skip::Unreadable)?;
     if size > lim.search_file_bytes {
-        return None;
+        return Err(Skip::TooBig);
     }
     let mut reader = BufReader::new(file);
-    let head = reader.fill_buf().ok()?;
+    let head = reader.fill_buf().map_err(|_| Skip::Unreadable)?;
     if head.iter().take(BINARY_SNIFF).any(|b| *b == 0) {
-        return None;
+        return Err(Skip::Binary);
     }
     let mut found = Vec::new();
+    let mut more = false;
     let mut buf = Vec::new();
     let mut n = 0usize;
-    let cap = lim.per_file_matches.min(room);
     loop {
-        let (read, _) = read_line(&mut reader, &mut buf).ok()?;
+        let (read, _) = read_line(&mut reader, &mut buf).map_err(|_| Skip::Unreadable)?;
         if read == 0 {
             break;
         }
         n += 1;
         let Ok(text) = std::str::from_utf8(&buf) else {
-            return None;
+            return Err(Skip::NotText);
         };
         let text = text.trim_end_matches(['\n', '\r']);
         if re.is_match(text) {
-            found.push((n, cut_line(text, lim.line_chars)));
             if found.len() >= cap {
+                more = true;
                 break;
             }
+            found.push((n, cut_line(text, lim.line_chars)));
         }
     }
-    Some(found)
+    Ok((found, more))
+}
+
+/// A size as a person would say it: `2 MB`, `100 KB`, `100 bytes`.
+fn human_bytes(n: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if n >= MB && n.is_multiple_of(MB) {
+        format!("{} MB", n / MB)
+    } else if n >= 1024 && n.is_multiple_of(1024) {
+        format!("{} KB", n / 1024)
+    } else {
+        format!("{n} bytes")
+    }
+}
+
+/// Files `search_text` could not look inside, by reason, with a few names.
+#[derive(Default)]
+struct Skipped {
+    too_big: usize,
+    binary: usize,
+    not_text: usize,
+    unreadable: usize,
+    examples: Vec<String>,
+}
+
+impl Skipped {
+    fn add(&mut self, why: Skip, rel: &Path) {
+        match why {
+            Skip::TooBig => self.too_big += 1,
+            Skip::Binary => self.binary += 1,
+            Skip::NotText => self.not_text += 1,
+            Skip::Unreadable => self.unreadable += 1,
+        }
+        if self.examples.len() < 3 {
+            self.examples.push(show(rel));
+        }
+    }
+
+    fn notes(&self, lim: &Limits) -> Vec<String> {
+        let total = self.too_big + self.binary + self.not_text + self.unreadable;
+        if total == 0 {
+            return Vec::new();
+        }
+        let mut reasons = Vec::new();
+        if self.too_big > 0 {
+            reasons.push(format!(
+                "{} larger than {}",
+                self.too_big,
+                human_bytes(lim.search_file_bytes)
+            ));
+        }
+        if self.binary > 0 {
+            reasons.push(format!("{} binary", self.binary));
+        }
+        if self.not_text > 0 {
+            reasons.push(format!("{} not UTF-8 text", self.not_text));
+        }
+        if self.unreadable > 0 {
+            reasons.push(format!("{} unreadable", self.unreadable));
+        }
+        let mut notes = vec![format!(
+            "[skipped {total} file{}: {}; for example {}]",
+            if total == 1 { "" } else { "s" },
+            reasons.join(", "),
+            self.examples.join(", ")
+        )];
+        if self.binary > 0 {
+            notes.push("(read_binary can look inside binary files)".to_string());
+        }
+        notes
+    }
 }
 
 pub fn search_text(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
     let pattern = required_str(args, "pattern")?;
     let start = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
+    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
     let re = RegexBuilder::new(&pattern)
         .case_insensitive(bool_arg(args, "case_insensitive")?)
         .size_limit(1 << 20)
         .build()
         .map_err(|e| ToolError::InvalidArguments(format!("invalid regular expression: {e}")))?;
+    let single = ws.list(&start).is_err();
+    // Searching one named file is not held to the per-file limit.
+    let per_file = if single {
+        lim.search_matches
+    } else {
+        lim.per_file_matches
+    };
     let mut out = Out::new(lim.output_bytes);
     let mut total = 0usize;
+    let mut passed = 0usize;
     let mut capped = false;
-    let mut files_with_matches = 0usize;
+    let mut skipped = Skipped::default();
+    let mut cut_files: Vec<String> = Vec::new();
     let mut scan = |rel: &Path, out: &mut Out, total: &mut usize, capped: &mut bool| -> bool {
-        let room = lim.search_matches - *total;
-        let Some(found) = search_one(ws, rel, &re, lim, room) else {
-            return true;
+        let (found, more) = match search_one(ws, rel, &re, lim, per_file) {
+            Ok(r) => r,
+            Err(why) => {
+                skipped.add(why, rel);
+                return true;
+            }
         };
-        if !found.is_empty() {
-            files_with_matches += 1;
+        if more {
+            cut_files.push(show(rel));
         }
         for (line, text) in found {
+            // Matches before the offset were shown by an earlier call.
+            if passed < offset {
+                passed += 1;
+                continue;
+            }
+            if *total >= lim.search_matches {
+                *capped = true;
+                return false;
+            }
             if !out.line(&format!("{}:{line}: {text}", show(rel))) {
                 *capped = true;
                 return false;
             }
             *total += 1;
-            if *total >= lim.search_matches {
-                *capped = true;
-                return false;
-            }
         }
         true
     };
-    let walked = if ws.list(&start).is_ok() {
+    let walked = if !single {
         walk(ws, &start, lim, &mut |path, kind| {
             kind != EntryKind::File || scan(path, &mut out, &mut total, &mut capped)
         })?
@@ -676,14 +801,254 @@ pub fn search_text(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String,
             hit_depth: false,
         }
     };
-    let _ = files_with_matches;
     let mut notes = Vec::new();
     if total == 0 && !capped {
-        notes.push("(no matches)".to_string());
+        notes.push(if offset > 0 {
+            format!("(no more matches after offset {offset})")
+        } else {
+            "(no matches)".to_string()
+        });
     }
     if capped {
+        let end = offset + total;
         notes.push(format!(
-            "[truncated at {total} matches; narrow the pattern or the path]"
+            "[showing matches {}-{end}; there are more. Call search_text again with offset={end} for the next]",
+            offset + 1
+        ));
+    }
+    match cut_files.as_slice() {
+        [] => {}
+        [one] => notes.push(format!(
+            "[{one} had more matching lines than the {per_file} shown; search that file on its own to see all of them]"
+        )),
+        many => notes.push(format!(
+            "[{} files had more matching lines than the {per_file} shown (for example {}); search a file on its own to see all of its matches]",
+            many.len(),
+            many.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+        )),
+    }
+    notes.extend(skipped.notes(lim));
+    notes.extend(walk_notes(&walked, lim));
+    Ok(out.finish(&notes))
+}
+
+// -------------------------------------------------------------- search_bytes
+
+/// Longest byte pattern `search_bytes` accepts.
+const PATTERN_MAX: usize = 64;
+/// How much of a file is read at a time.
+const BYTES_CHUNK: usize = 64 * 1024;
+
+/// Hex digits with optional spaces, and `??` for any byte: `4E 45 ?? 1A`.
+fn byte_pattern(text: &str) -> Result<Vec<Option<u8>>, ToolError> {
+    let bad = |why: &str| {
+        ToolError::InvalidArguments(format!(
+            "pattern {why}; write bytes as hex pairs such as \"4E 45 53 1A\", with ?? for any byte"
+        ))
+    };
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.is_empty() {
+        return Err(bad("is empty"));
+    }
+    if !compact.is_ascii() || !compact.len().is_multiple_of(2) {
+        return Err(bad("is not whole hex pairs"));
+    }
+    let mut out = Vec::new();
+    for pair in compact.as_bytes().chunks(2) {
+        let pair = std::str::from_utf8(pair).unwrap_or("");
+        if pair == "??" {
+            out.push(None);
+        } else {
+            out.push(Some(
+                u8::from_str_radix(pair, 16).map_err(|_| bad("has something that is not hex"))?,
+            ));
+        }
+    }
+    if out.len() > PATTERN_MAX {
+        return Err(bad(&format!("is longer than {PATTERN_MAX} bytes")));
+    }
+    if out.iter().all(Option::is_none) {
+        return Err(bad("matches every position"));
+    }
+    Ok(out)
+}
+
+/// A byte pattern found at an offset, with the bytes that matched.
+type ByteHit = (u64, Vec<u8>);
+
+/// Every match of `pat` in `file` as its offset and the bytes found, at most
+/// `cap` of them, and whether there were more. Reads in chunks, so a file is never held whole.
+fn find_bytes(
+    mut file: impl Read,
+    pat: &[Option<u8>],
+    cap: usize,
+) -> std::io::Result<(Vec<ByteHit>, bool)> {
+    let mut hits = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    // File offset of buf[0].
+    let mut base = 0u64;
+    let mut chunk = vec![0u8; BYTES_CHUNK];
+    loop {
+        let n = file.read(&mut chunk)?;
+        if n == 0 {
+            return Ok((hits, false));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        // Positions whose whole pattern is inside the buffer.
+        let last_start = buf.len().saturating_sub(pat.len());
+        if buf.len() >= pat.len() {
+            for i in 0..=last_start {
+                if pat
+                    .iter()
+                    .zip(&buf[i..])
+                    .all(|(p, b)| p.is_none_or(|p| p == *b))
+                {
+                    if hits.len() >= cap {
+                        return Ok((hits, true));
+                    }
+                    hits.push((base + i as u64, buf[i..i + pat.len()].to_vec()));
+                }
+            }
+        }
+        // Keep the tail that could start a match in the next chunk.
+        let keep = (pat.len() - 1).min(buf.len());
+        let drop = buf.len() - keep;
+        base += drop as u64;
+        buf.drain(..drop);
+    }
+}
+
+pub fn search_bytes(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
+    let pat = byte_pattern(&required_str(args, "pattern")?)?;
+    let start = ws.resolve(&str_arg(args, "path")?.unwrap_or_default())?;
+    let offset = usize::try_from(uint_arg(args, "offset")?.unwrap_or(0)).unwrap_or(usize::MAX);
+    let name_glob = match str_arg(args, "glob")? {
+        Some(g) if !g.is_empty() => Some(
+            GlobBuilder::new(&g)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| ToolError::InvalidArguments(format!("invalid glob: {e}")))?
+                .compile_matcher(),
+        ),
+        _ => None,
+    };
+    let single = ws.list(&start).is_err();
+    let per_file = if single {
+        lim.search_matches
+    } else {
+        lim.per_file_matches
+    };
+    let mut out = Out::new(lim.output_bytes);
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut capped = false;
+    let mut too_big = 0usize;
+    let mut unreadable = 0usize;
+    let mut examples: Vec<String> = Vec::new();
+    let mut cut_files: Vec<String> = Vec::new();
+    let mut scan = |rel: &Path, out: &mut Out, total: &mut usize, capped: &mut bool| -> bool {
+        if let Some(g) = &name_glob {
+            // A pattern without a slash matches the file name at any depth.
+            let name = rel.file_name().map(Path::new).unwrap_or(rel);
+            if !g.is_match(rel) && !g.is_match(name) {
+                return true;
+            }
+        }
+        let skip = |kind: &mut usize, examples: &mut Vec<String>| {
+            *kind += 1;
+            if examples.len() < 3 {
+                examples.push(show(rel));
+            }
+        };
+        let Ok((file, size)) = ws.open_file(rel) else {
+            skip(&mut unreadable, &mut examples);
+            return true;
+        };
+        if size > lim.bytes_file_bytes {
+            skip(&mut too_big, &mut examples);
+            return true;
+        }
+        let Ok((hits, more)) = find_bytes(file, &pat, per_file) else {
+            skip(&mut unreadable, &mut examples);
+            return true;
+        };
+        if more {
+            cut_files.push(show(rel));
+        }
+        for (at, bytes) in hits {
+            if passed < offset {
+                passed += 1;
+                continue;
+            }
+            if *total >= lim.search_matches {
+                *capped = true;
+                return false;
+            }
+            let shown: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            if !out.line(&format!("{}:0x{at:08x}: {}", show(rel), shown.join(" "))) {
+                *capped = true;
+                return false;
+            }
+            *total += 1;
+        }
+        true
+    };
+    let walked = if !single {
+        walk(ws, &start, lim, &mut |path, kind| {
+            kind != EntryKind::File || scan(path, &mut out, &mut total, &mut capped)
+        })?
+    } else {
+        ws.open_file(&start)?;
+        scan(&start, &mut out, &mut total, &mut capped);
+        Walk {
+            examined: 1,
+            hit_examined: false,
+            hit_depth: false,
+        }
+    };
+    let mut notes = Vec::new();
+    if total == 0 && !capped {
+        notes.push(if offset > 0 {
+            format!("(no more matches after offset {offset})")
+        } else {
+            "(no matches)".to_string()
+        });
+    }
+    if capped {
+        let end = offset + total;
+        notes.push(format!(
+            "[showing matches {}-{end}; there are more. Call search_bytes again with offset={end} for the next]",
+            offset + 1
+        ));
+    }
+    match cut_files.as_slice() {
+        [] => {}
+        [one] => notes.push(format!(
+            "[{one} had more matches than the {per_file} shown; search that file on its own to see all of them]"
+        )),
+        many => notes.push(format!(
+            "[{} files had more matches than the {per_file} shown (for example {}); search a file on its own to see all of its matches]",
+            many.len(),
+            many.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+        )),
+    }
+    let skipped = too_big + unreadable;
+    if skipped > 0 {
+        let mut reasons = Vec::new();
+        if too_big > 0 {
+            reasons.push(format!(
+                "{too_big} larger than {}",
+                human_bytes(lim.bytes_file_bytes)
+            ));
+        }
+        if unreadable > 0 {
+            reasons.push(format!("{unreadable} unreadable"));
+        }
+        notes.push(format!(
+            "[skipped {skipped} file{}: {}; for example {}]",
+            if skipped == 1 { "" } else { "s" },
+            reasons.join(", "),
+            examples.join(", ")
         ));
     }
     notes.extend(walk_notes(&walked, lim));
@@ -734,6 +1099,7 @@ mod tests {
             line_chars: 0,
             read_file_bytes: 0,
             search_file_bytes: u64::MAX,
+            bytes_file_bytes: 0,
             write_bytes: 0,
             edit_file_bytes: usize::MAX,
             undo_bytes: 0,
@@ -781,7 +1147,9 @@ mod tests {
         fs::create_dir(r.path().join("empty")).unwrap();
         let out = list_dir(&w, &json!({}), &lim()).unwrap();
         assert!(
-            out.ends_with("[truncated: showing 200 of 251 entries]"),
+            out.ends_with(
+                "[showing entries 1-200 of 251; call list_dir again with offset=200 to see the rest]"
+            ),
             "{}",
             out.lines().last().unwrap()
         );
@@ -789,6 +1157,109 @@ mod tests {
         assert_eq!(
             list_dir(&w, &json!({"path": "empty"}), &lim()).unwrap(),
             "(empty directory)"
+        );
+    }
+
+    #[test]
+    fn list_dir_pages_with_offset_until_the_end() {
+        let (r, w) = ws();
+        for i in 0..250 {
+            write(&r, &format!("f{i:03}.txt"), "");
+        }
+        let second = list_dir(&w, &json!({"offset": 200}), &lim()).unwrap();
+        assert_eq!(second.lines().next(), Some("f200.txt"));
+        assert_eq!(second.lines().count(), 50, "no marker at the end: {second}");
+        assert!(!second.contains("showing"), "{second}");
+        let past = list_dir(&w, &json!({"offset": 900}), &lim()).unwrap();
+        assert!(
+            past.contains("past the end") && past.contains("250"),
+            "{past}"
+        );
+    }
+
+    #[test]
+    fn find_files_pages_with_offset_and_the_pages_add_up() {
+        let (r, w) = ws();
+        for i in 0..250 {
+            write(&r, &format!("d/f{i:03}.txt"), "");
+        }
+        let first = find_files(&w, &json!({"pattern": "*.txt"}), &lim()).unwrap();
+        assert!(
+            first.ends_with(
+                "[showing results 1-200; there are more. Call find_files again with offset=200 for the next]"
+            ),
+            "{}",
+            first.lines().last().unwrap()
+        );
+        let second = find_files(&w, &json!({"pattern": "*.txt", "offset": 200}), &lim()).unwrap();
+        assert_eq!(second.lines().next(), Some("d/f200.txt"));
+        assert_eq!(second.lines().count(), 50, "{second}");
+        assert!(!second.contains("showing results"), "{second}");
+    }
+
+    #[test]
+    fn search_text_pages_with_offset_and_says_when_a_file_had_more_than_shown() {
+        let (r, w) = ws();
+        for i in 0..30 {
+            write(&r, &format!("f{i:02}.txt"), "needle\nneedle\n");
+        }
+        let small = Limits {
+            search_matches: 25,
+            ..lim()
+        };
+        let first = search_text(&w, &json!({"pattern": "needle"}), &small).unwrap();
+        assert!(
+            first.contains(
+                "[showing matches 1-25; there are more. Call search_text again with offset=25 for the next]"
+            ),
+            "{first}"
+        );
+        let second = search_text(&w, &json!({"pattern": "needle", "offset": 25}), &lim()).unwrap();
+        assert_eq!(second.lines().filter(|l| l.contains("needle")).count(), 35);
+        // A file with more matching lines than the per-file limit says so.
+        write(&r, "many.txt", &"needle\n".repeat(15));
+        let per = search_text(
+            &w,
+            &json!({"pattern": "needle", "path": "many.txt"}),
+            &lim(),
+        )
+        .unwrap();
+        assert_eq!(
+            per.lines().filter(|l| l.contains("needle")).count(),
+            15,
+            "a single file is not held to the per-file limit"
+        );
+        let all = search_text(
+            &w,
+            &json!({"pattern": "needle"}),
+            &Limits {
+                search_matches: 500,
+                ..lim()
+            },
+        )
+        .unwrap();
+        assert!(
+            all.contains("many.txt had more matching lines than the 10 shown"),
+            "{all}"
+        );
+    }
+
+    #[test]
+    fn search_text_says_which_files_it_could_not_search_and_why() {
+        let (r, w) = ws();
+        write(&r, "a.txt", "needle");
+        fs::write(r.path().join("rom.nes"), [0u8, 1, 2, 3, b'n', b'e']).unwrap();
+        write(&r, "huge.txt", &"needle ".repeat(100));
+        let tiny = Limits {
+            search_file_bytes: 100,
+            ..lim()
+        };
+        let out = search_text(&w, &json!({"pattern": "needle"}), &tiny).unwrap();
+        assert!(out.contains("a.txt:1: needle"), "{out}");
+        assert!(
+            out.contains("[skipped 2 files: 1 binary, 1 larger than 100 bytes; for example rom.nes, huge.txt]")
+                || out.contains("[skipped 2 files: 1 larger than 100 bytes, 1 binary; for example huge.txt, rom.nes]"),
+            "{out}"
         );
     }
 
@@ -1123,7 +1594,9 @@ mod tests {
         }
         let out = find_files(&w, &json!({"pattern": "*.log"}), &lim()).unwrap();
         assert_eq!(out.lines().count(), 201);
-        assert!(out.ends_with("[truncated at 200 results; narrow the pattern or the path]"));
+        assert!(out.ends_with(
+            "[showing results 1-200; there are more. Call find_files again with offset=200 for the next]"
+        ));
     }
 
     #[test]
@@ -1225,13 +1698,26 @@ mod tests {
         let (r, w) = ws();
         write(&r, "many.txt", &"hit\n".repeat(50));
         let per_file = search_text(&w, &json!({"pattern": "hit"}), &lim()).unwrap();
-        assert_eq!(per_file.lines().count(), 10);
+        assert_eq!(
+            per_file
+                .lines()
+                .filter(|l| l.contains(":hit") || l.contains(": hit"))
+                .count(),
+            10
+        );
+        assert!(
+            per_file.contains("many.txt had more matching lines than the 10 shown"),
+            "{per_file}"
+        );
         for i in 0..40 {
             write(&r, &format!("f{i:02}.txt"), &"hit\n".repeat(10));
         }
         let total = search_text(&w, &json!({"pattern": "hit"}), &lim()).unwrap();
-        assert_eq!(total.lines().count(), 201);
-        assert!(total.ends_with("[truncated at 200 matches; narrow the pattern or the path]"));
+        assert_eq!(total.lines().filter(|l| l.contains(": hit")).count(), 200);
+        assert!(
+            total.contains("[showing matches 1-200; there are more. Call search_text again with offset=200 for the next]"),
+            "{total}"
+        );
     }
 
     #[test]
@@ -1245,7 +1731,18 @@ mod tests {
         fs::write(r.path().join("latin1.txt"), [b'n', b'e', 0xe9, b'\n']).unwrap();
         write(&r, "ok.txt", "a needle here\n");
         let out = search_text(&w, &json!({"pattern": "needle"}), &lim()).unwrap();
-        assert_eq!(out, "ok.txt:1: a needle here");
+        // Only the readable file matched; the two it could not read are named.
+        assert_eq!(out.lines().next(), Some("ok.txt:1: a needle here"));
+        assert!(
+            !out.contains(".git") && !out.contains(".env") && !out.contains("a.pem"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "[skipped 2 files: 1 binary, 1 not UTF-8 text; for example bin.dat, latin1.txt]"
+            ),
+            "{out}"
+        );
         let cut = search_text(&w, &json!({"pattern": "w+"}), &lim()).unwrap();
         let line = cut.lines().next().unwrap();
         assert!(line.ends_with('…'));
@@ -1298,6 +1795,118 @@ mod tests {
         }
         let out = search_text(&w, &json!({"pattern": "needle"}), &lim()).unwrap();
         assert!(out.len() <= 24 * 1024 + 200, "{}", out.len());
-        assert!(out.contains("[truncated at "));
+        assert!(out.contains("[showing matches 1-"), "{out}");
+    }
+
+    // ------------------------------------------------------------ search_bytes
+
+    fn nes(extra: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x4e, 0x45, 0x53, 0x1a, 0x02, 0x01];
+        v.extend_from_slice(extra);
+        v
+    }
+
+    #[test]
+    fn search_bytes_finds_a_pattern_across_files_with_offsets() {
+        let (r, w) = ws();
+        fs::create_dir_all(r.path().join("roms")).unwrap();
+        fs::write(r.path().join("roms/a.nes"), nes(&[0; 8])).unwrap();
+        fs::write(r.path().join("roms/b.nes"), nes(&[1; 8])).unwrap();
+        fs::write(r.path().join("roms/c.bin"), [9u8; 32]).unwrap();
+        let out = search_bytes(&w, &json!({"pattern": "4E 45 53 1A"}), &lim()).unwrap();
+        assert_eq!(
+            out,
+            "roms/a.nes:0x00000000: 4e 45 53 1a\nroms/b.nes:0x00000000: 4e 45 53 1a"
+        );
+        let only =
+            search_bytes(&w, &json!({"pattern": "4e45531a", "glob": "c.*"}), &lim()).unwrap();
+        assert_eq!(only, "(no matches)");
+    }
+
+    #[test]
+    fn search_bytes_wildcards_and_chunk_boundaries() {
+        let (r, w) = ws();
+        let mut data = vec![0u8; 70_000];
+        // A pattern that straddles the 64 KiB read boundary.
+        data[65_534..65_538].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        data[100..104].copy_from_slice(&[0xde, 0x00, 0xbe, 0xef]);
+        fs::write(r.path().join("big.bin"), &data).unwrap();
+        let out = search_bytes(
+            &w,
+            &json!({"pattern": "de ?? be ef", "path": "big.bin"}),
+            &lim(),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "big.bin:0x00000064: de 00 be ef\nbig.bin:0x0000fffe: de ad be ef"
+        );
+    }
+
+    #[test]
+    fn search_bytes_rejects_patterns_that_are_not_bytes() {
+        let (_r, w) = ws();
+        for bad in ["", "4", "4e 4", "zz", "4e-45", &"00 ".repeat(65)] {
+            let e = search_bytes(&w, &json!({"pattern": bad}), &lim()).unwrap_err();
+            assert!(
+                matches!(e, ToolError::InvalidArguments(_)),
+                "{bad:?}: {e:?}"
+            );
+        }
+        assert!(
+            search_bytes(&w, &json!({"pattern": "?? ??"}), &lim()).is_err(),
+            "all wildcards matches everything"
+        );
+    }
+
+    #[test]
+    fn search_bytes_pages_and_notes_files_with_more_than_shown() {
+        let (r, w) = ws();
+        fs::write(r.path().join("a.bin"), vec![0xaa; 30]).unwrap();
+        fs::write(r.path().join("b.bin"), vec![0xaa; 4]).unwrap();
+        let small = Limits {
+            search_matches: 12,
+            ..lim()
+        };
+        let first = search_bytes(&w, &json!({"pattern": "aa"}), &small).unwrap();
+        assert!(
+            first.contains("a.bin had more matches than the 10 shown"),
+            "{first}"
+        );
+        // a.bin shows 10, b.bin 2 of its 4 before the cap of 12 is reached.
+        assert_eq!(
+            first.lines().filter(|l| l.contains(": aa")).count(),
+            12,
+            "{first}"
+        );
+        assert!(first.contains("[showing matches 1-12; there are more. Call search_bytes again with offset=12 for the next]"), "{first}");
+        let second = search_bytes(&w, &json!({"pattern": "aa", "offset": 12}), &lim()).unwrap();
+        assert_eq!(
+            second.lines().filter(|l| l.contains(": aa")).count(),
+            2,
+            "{second}"
+        );
+        // One named file is not held to the per-file limit.
+        let single = search_bytes(&w, &json!({"pattern": "aa", "path": "a.bin"}), &lim()).unwrap();
+        assert_eq!(single.lines().count(), 30);
+    }
+
+    #[test]
+    fn search_bytes_says_which_files_were_too_large_or_protected_stays_unread() {
+        let (r, w) = ws();
+        fs::write(r.path().join("small.bin"), [1u8, 2, 3]).unwrap();
+        fs::write(r.path().join("large.bin"), vec![1u8; 2000]).unwrap();
+        fs::write(r.path().join(".env"), [1u8, 2, 3]).unwrap();
+        let tiny = Limits {
+            bytes_file_bytes: 1024,
+            ..lim()
+        };
+        let out = search_bytes(&w, &json!({"pattern": "01 02 03"}), &tiny).unwrap();
+        assert!(out.contains("small.bin:0x00000000: 01 02 03"), "{out}");
+        assert!(!out.contains(".env"), "{out}");
+        assert!(
+            out.contains("[skipped 1 file: 1 larger than 1 KB; for example large.bin]"),
+            "{out}"
+        );
     }
 }
