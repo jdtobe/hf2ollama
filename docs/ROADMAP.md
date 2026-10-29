@@ -47,6 +47,8 @@ Known limitations to address after the first release candidate:
 
 ## Later
 
+- **Chat and Work redesign**, carrying over what the Models tab settled on: the theme's own colours in stacked bands, icon buttons instead of text buttons, pills for facts, and a more modern conversation layout.
+- **Agent sessions without a folder.** The folder becomes optional and can be attached later; without one the file tools are simply not offered. Needs a decision on what a folder-less agent can do (for example answer with other tools once write, shell or network tools exist) and how the New agent form changes.
 - A less mechanical voice for Read aloud (the system tools use the default synthetic voices).
 - VRAM detection beyond NVIDIA and Apple Silicon (for example AMD and Intel), subject to reliable detection.
 - Accessibility improvements; egui has weaker accessibility than native toolkits.
