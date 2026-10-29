@@ -69,6 +69,9 @@ pub(super) enum StatusKind {
     Waiting,
 }
 
+/// Side of the rename pencil beside the title.
+const PENCIL_W: f32 = 24.0;
+
 /// Height of the square icon buttons in the header.
 const HEADER_BTN: f32 = 32.0;
 
@@ -130,6 +133,10 @@ pub(super) fn header(
                 StatusKind::Waiting => (t.warn, true),
             };
             let label = ui.label(RichText::new(&status).size(12.5).color(t.fg2));
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.status_rect = Some(label.rect);
+            }
             let dot = egui::Rect::from_center_size(
                 egui::pos2(label.rect.left() - 10.0, label.rect.center().y),
                 egui::vec2(9.0, 9.0),
@@ -226,12 +233,13 @@ fn title_block(
         .as_ref()
         .filter(|_| agent)
         .map(|p| (home_relative(p), p.display().to_string()));
-    let room = ui.available_width();
+    // What is left of the row, less the pencil that follows the title.
+    let room = (ui.available_width() - PENCIL_W - 8.0).max(40.0);
     // The title keeps what it needs; the folder gets what is left.
     let title_w = if path.is_some() {
         natural.min(room * 0.62)
     } else {
-        room
+        room.min(natural)
     };
     let mut rename = false;
     ui.scope(|ui| {
@@ -248,10 +256,15 @@ fn title_block(
                 .truncate()
                 .sense(egui::Sense::click()),
         );
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.title_rect = Some(label.rect);
+        }
         rename |= label.double_clicked();
     });
     // A small pencil beside the title, quiet until pointed at.
-    let (pencil, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    let (pencil, resp) =
+        ui.allocate_exact_size(egui::vec2(PENCIL_W, PENCIL_W), egui::Sense::click());
     let resp = resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text("Rename");
@@ -274,11 +287,19 @@ fn title_block(
     }
     if let Some((short, full)) = path {
         ui.add_space(8.0);
-        let room = ui.available_width().max(40.0);
+        let room = ui.available_width().max(0.0);
+        if room < 24.0 {
+            // Not even "(…)" fits: the title matters more.
+            return;
+        }
         let label = format!("({short})");
         let shown = crate::widgets::ellipsize_middle(ui, &label, mono(12.5), room);
         let cut = shown != label;
         let r = ui.label(RichText::new(shown).font(mono(12.5)).color(t.fg2));
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.path_rect = Some(r.rect);
+        }
         // Always say where it is on hover; the full path is the point when
         // it was cut.
         r.on_hover_text(if cut {

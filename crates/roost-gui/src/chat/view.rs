@@ -116,6 +116,10 @@ pub struct ChatProbe {
     pub header: Option<egui::Rect>,
     /// The status text in the header ("Idle", "Waiting for you"…).
     pub status_label: Option<String>,
+    /// Where the status text and the title were painted in the header.
+    pub status_rect: Option<egui::Rect>,
+    pub title_rect: Option<egui::Rect>,
+    pub path_rect: Option<egui::Rect>,
     pub rows: Vec<(SessionId, egui::Rect)>,
     pub send_button: Option<(egui::Rect, &'static str)>,
     /// The delete control of each rail row that shows one, and whether it is armed.
