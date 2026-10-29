@@ -97,6 +97,7 @@ impl ChatManager {
             ctx_cache: HashMap::new(),
             run_tx,
             next_token: 0,
+            writes_allowed: true,
         };
         rt.spawn(manager.run(rx, run_rx));
         ChatHandle { tx }
@@ -178,6 +179,8 @@ pub(super) struct Manager {
     pub(super) ctx_cache: HashMap<String, ModelInfo>,
     pub(super) run_tx: mpsc::UnboundedSender<RunMsg>,
     pub(super) next_token: u64,
+    /// Settings: may agents write files at all.
+    pub(super) writes_allowed: bool,
 }
 
 pub(super) fn now_ms() -> u64 {
@@ -362,6 +365,7 @@ impl Manager {
             } => self.create_agent(lifetime, &model, workspace).await,
             ChatCommand::CheckModel(model) => self.check_model(model),
             ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
+            ChatCommand::SetWritesAllowed(on) => self.writes_allowed = on,
             ChatCommand::SetStepBudget(id, steps) => {
                 self.edit_idle(id, move |s| {
                     s.step_budget = steps.clamp(1, 100);

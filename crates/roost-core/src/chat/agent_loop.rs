@@ -15,8 +15,8 @@ use crate::agent::tools::Limits;
 use crate::agent::{ToolError, Workspace};
 use crate::ollama::ChatRequestBody;
 use crate::session::{
-    MessageId, Permission, RunId, Session, SessionId, SessionLifetime, SessionMode, ToolStatus,
-    TurnId,
+    EffectiveToolConfig, MessageId, Permission, RunId, Session, SessionId, SessionLifetime,
+    SessionMode, ToolStatus, TurnId,
 };
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -82,13 +82,22 @@ impl ToolRun {
     }
 }
 
+/// A session's tool configuration with the app-wide switch applied: with
+/// writing off in Settings, the write capability is off whatever the session
+/// says.
+fn gated(config: &EffectiveToolConfig, writes_allowed: bool) -> EffectiveToolConfig {
+    let mut c = config.clone();
+    if !writes_allowed {
+        c.capabilities
+            .insert("files.write".to_string(), Permission::Off);
+    }
+    c
+}
+
 /// The system prompt for one agent step, with the workspace, the tools that
 /// are on and the steps left appended as structured context.
-fn system_prompt(s: &Session, steps_left: u32) -> String {
-    let tools: Vec<&str> = registry::offered(&s.effective_tools)
-        .iter()
-        .map(|t| t.name)
-        .collect();
+fn system_prompt(s: &Session, tools: &EffectiveToolConfig, steps_left: u32) -> String {
+    let tools: Vec<&str> = registry::offered(tools).iter().map(|t| t.name).collect();
     let workspace = s
         .workspace
         .as_ref()
@@ -259,6 +268,7 @@ impl Manager {
 
     /// Streams one model reply for the run.
     async fn agent_step(&mut self, id: SessionId) {
+        let writes = self.writes_allowed;
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -268,7 +278,8 @@ impl Manager {
         agent.steps += 1;
         let (run_id, steps_before) = (agent.run, agent.steps - 1);
         let left = live.s.step_budget.saturating_sub(steps_before);
-        let system = system_prompt(&live.s, left);
+        let config = gated(&live.s.effective_tools, writes);
+        let system = system_prompt(&live.s, &config, left);
         let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
         let win = window(live.s.model_options.num_ctx, context);
         let trimmed = match build_agent_request(&system, &live.s.messages, win) {
@@ -281,7 +292,7 @@ impl Manager {
         };
         let turn = TurnId::new();
         let assistant = live.s.begin_assistant(run_id, turn, now_ms());
-        let tools = registry::ollama_definitions(&live.s.effective_tools);
+        let tools = registry::ollama_definitions(&config);
         let body = ChatRequestBody {
             model: live.s.model.clone(),
             messages: trimmed.messages,
@@ -411,6 +422,7 @@ impl Manager {
 
     /// Starts the next queued tool call, or moves on when none are left.
     async fn run_next_tool(&mut self, id: SessionId) {
+        let writes = self.writes_allowed;
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -421,7 +433,8 @@ impl Manager {
             self.agent_next(id).await;
             return;
         };
-        let mut ask = registry::needs_approval(&live.s.effective_tools, &call.name);
+        let config = gated(&live.s.effective_tools, writes);
+        let mut ask = registry::needs_approval(&config, &call.name);
         let preview = agent.preview(&call.name, &call.arguments);
         if ask && registry::capability_of(&call.name).as_deref() == Some("files.write") {
             match &preview {
@@ -450,13 +463,14 @@ impl Manager {
             });
             return;
         }
-        let approved = registry::needs_approval(&live.s.effective_tools, &call.name);
+        let approved = registry::needs_approval(&config, &call.name);
         self.start_tool_call(id, call, approved);
     }
 
     /// Runs a tool call on the blocking pool. `approved` lets a tool set to
     /// Ask through.
     fn start_tool_call(&mut self, id: SessionId, call: PendingCall, approved: bool) {
+        let writes = self.writes_allowed;
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -466,7 +480,7 @@ impl Manager {
         live.s.start_tool(call.msg);
         let (workspace, config, run) = (
             Arc::clone(&agent.workspace),
-            live.s.effective_tools.clone(),
+            gated(&live.s.effective_tools, writes),
             agent.run,
         );
         let (tx, name, args, call_id) = (

@@ -31,6 +31,9 @@ pub enum ChatCommand {
     /// How many model steps an agent run may use (1 to 100).
     SetStepBudget(SessionId, u32),
     SetToolEnabled(SessionId, String, bool),
+    /// The app-wide switch for agents writing files (Settings). Off makes
+    /// every agent read-only, whatever its own configuration says.
+    SetWritesAllowed(bool),
     SetCapability(SessionId, String, Permission),
     Rename(SessionId, String),
     SetPinned(SessionId, bool),

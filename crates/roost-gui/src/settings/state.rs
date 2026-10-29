@@ -35,6 +35,7 @@ pub struct SettingsChange {
     pub hardware: bool,
     pub theme: bool,
     pub keep_alive: bool,
+    pub agents_can_write: bool,
 }
 
 impl SettingsChange {
@@ -53,6 +54,7 @@ impl SettingsChange {
         self.hardware |= other.hardware;
         self.theme |= other.theme;
         self.keep_alive |= other.keep_alive;
+        self.agents_can_write |= other.agents_can_write;
     }
 }
 
@@ -402,6 +404,13 @@ impl SettingsState {
         }
     }
 
+    pub fn set_agents_can_write(&mut self, s: &mut Settings, on: bool) -> SettingsChange {
+        SettingsChange {
+            agents_can_write: Self::flag(&mut s.agents_can_write, on),
+            ..Default::default()
+        }
+    }
+
     pub fn set_keep_alive(&mut self, s: &mut Settings, v: KeepAlive) -> SettingsChange {
         SettingsChange {
             keep_alive: Self::flag(&mut s.keep_alive, v),
@@ -697,6 +706,7 @@ mod tests {
             (c.hardware, "hardware"),
             (c.theme, "theme"),
             (c.keep_alive, "keep_alive"),
+            (c.agents_can_write, "agents_can_write"),
         ] {
             if on {
                 v.push(name);
@@ -748,6 +758,13 @@ mod tests {
     fn toggling_delete_after_import_reports_change() {
         let (mut s, mut st) = fresh();
         assert!(s.delete_after_import);
+        let c = st.set_agents_can_write(&mut s, false);
+        assert_eq!(flags(c), ["agents_can_write"]);
+        assert!(!s.agents_can_write);
+        assert!(
+            !st.set_agents_can_write(&mut s, false).any(),
+            "no change, no flag"
+        );
         let c = st.set_delete_after_import(&mut s, false);
         assert!(c.delete_after_import);
         assert!(!s.delete_after_import);

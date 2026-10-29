@@ -15,14 +15,15 @@ use std::time::{Duration, Instant};
 
 const SIZES: [(f32, f32); 2] = [(1180.0, 820.0), (900.0, 640.0)];
 const PAST_DELAY: Duration = Duration::from_millis(700);
-const CARD_NAMES: [&str; 5] = [
+const CARD_NAMES: [&str; 6] = [
     "Ollama",
     "Downloads",
     "Cached files",
     "Hugging Face",
+    "Agents",
     "Hardware and appearance",
 ];
-const CONTROLS: [&str; 17] = [
+const CONTROLS: [&str; 18] = [
     "ollama-url",
     "ollama-test",
     "select-keepalive",
@@ -37,6 +38,7 @@ const CONTROLS: [&str; 17] = [
     "token-save",
     "token-clear",
     "hf-endpoint",
+    "toggle-agent-write",
     "toggle-override",
     "select-family",
     "select-theme",
@@ -214,7 +216,7 @@ fn settings_cards_are_inside_the_window_and_do_not_overlap() {
                 );
             }
             let first = p.cards[0].1;
-            let last = p.cards[4].1;
+            let last = p.cards[CARD_NAMES.len() - 1].1;
             assert!(
                 last.bottom() - first.top() <= p.content_height + 1.0,
                 "{tag}: cards taller than the content"
@@ -224,7 +226,7 @@ fn settings_cards_are_inside_the_window_and_do_not_overlap() {
             run(&mut app, &mut h, size, 4);
             let p = probe(&mut app);
             let view = p.viewport.expect("viewport");
-            let last = p.cards[4].1;
+            let last = p.cards[CARD_NAMES.len() - 1].1;
             assert!(
                 last.bottom() <= view.bottom() + 0.5 && last.top() >= view.top() - 0.5,
                 "{tag}: last card {last:?} not reachable in {view:?} (max offset {})",
@@ -752,5 +754,23 @@ fn every_theme_family_and_mode_keeps_settings_usable_at_minimum_size() {
                 assert!(inside(r, view), "{tag}: {name} {r:?} leaves {view:?}");
             }
         }
+    }
+}
+
+#[test]
+fn the_write_switch_turns_agent_writing_off_and_tells_the_chat_core() {
+    for size in SIZES {
+        let (mut app, sent) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let r = reveal(&mut app, &mut h, size, "toggle-agent-write");
+        click(&mut app, &mut h, size, r.center());
+        assert!(!app.state_mut().settings.agents_can_write);
+        let reqs: Vec<_> = sent.try_iter().collect();
+        assert!(
+            reqs.iter()
+                .any(|r| matches!(r, BackendRequest::ApplySettings(s) if !s.agents_can_write)),
+            "{reqs:?}"
+        );
     }
 }

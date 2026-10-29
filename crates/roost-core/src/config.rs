@@ -94,6 +94,8 @@ pub struct Settings {
     pub keep_alive: KeepAlive,
     /// Width in points of the sidebar shared by the Chat, Work and Models tabs.
     pub sidebar_width: f32,
+    /// May agents write files at all. Off makes every agent read-only.
+    pub agents_can_write: bool,
 }
 
 /// The sidebar's width until the user drags it.
@@ -114,6 +116,7 @@ impl Default for Settings {
             theme_family: ThemeFamily::Meadow,
             keep_alive: KeepAlive::OllamaDefault,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            agents_can_write: true,
         }
     }
 }
@@ -166,6 +169,21 @@ mod tests {
         assert_eq!(s.theme_family, ThemeFamily::Meadow);
         assert_eq!(s.keep_alive, KeepAlive::OllamaDefault);
         assert_eq!(s.sidebar_width, 340.0);
+        assert!(s.agents_can_write);
+    }
+
+    #[test]
+    fn the_write_switch_is_saved_and_older_files_allow_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roost.toml");
+        let s = Settings {
+            agents_can_write: false,
+            ..Settings::default()
+        };
+        s.save(&path).unwrap();
+        assert!(!Settings::load(&path).unwrap().agents_can_write);
+        std::fs::write(&path, "max_parallel = 2\n").unwrap();
+        assert!(Settings::load(&path).unwrap().agents_can_write);
     }
 
     #[test]
@@ -233,6 +251,7 @@ mod tests {
             theme_family: ThemeFamily::Tide,
             keep_alive: KeepAlive::FifteenMinutes,
             sidebar_width: 377.0,
+            agents_can_write: false,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

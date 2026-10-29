@@ -2274,6 +2274,33 @@ async fn a_write_waits_with_a_diff_and_happens_only_once_allowed() {
 }
 
 #[tokio::test]
+async fn with_writing_switched_off_in_settings_no_agent_is_offered_or_can_use_a_write() {
+    let (srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "sneaky.txt", "content": "x\n"}),
+        )),
+        chat_route(reply("Could not.")),
+    ])
+    .await;
+    h.cmd(ChatCommand::SetWritesAllowed(false));
+    h.send(id, "write something").await;
+    h.wait_run_ended(1).await;
+    assert!(!ws.path().join("sneaky.txt").exists());
+    assert_eq!(count_approvals(&h.events()), 0, "refused, not even asked");
+    let names: Vec<_> = chat_bodies(&srv)[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        ["list_dir", "read_file", "find_files", "search_text"]
+    );
+}
+
+#[tokio::test]
 async fn a_denied_write_changes_nothing() {
     let (_srv, h, id, ws) = asking_agent(vec![
         chat_route(calls(

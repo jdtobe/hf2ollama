@@ -552,7 +552,9 @@ fn start_chat(
             let cfg = ChatConfig::new(
                 OllamaClient::new(&settings.ollama_url).with_keep_alive(settings.keep_alive),
             );
-            Some(ChatManager::spawn(runtime.handle(), writer, cfg, sink))
+            let chat = ChatManager::spawn(runtime.handle(), writer, cfg, sink);
+            chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
+            Some(chat)
         }
         Err(StoreError::Locked) => {
             out.emit(UiEvent::ChatUnavailable(
@@ -605,6 +607,9 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
             }
         }
         BackendRequest::ApplySettings(settings) => {
+            if let Some(chat) = &shared.chat {
+                chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
+            }
             let rebuild = needs_rebuild(&shared.clients().settings, &settings);
             if rebuild {
                 shared.install_settings(&settings);
