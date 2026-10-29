@@ -1,5 +1,7 @@
 # Handoff: where the work stands and how to pick it up
 
+> **Newer: start with `handoff-2026-10-29.md`** (current status, next steps, working notes). This file keeps the longer history.
+
 Written 2026-10-22, refreshed 2026-10-23 after PRs #1-#4 were merged, so a new session (or a person) can continue without the earlier conversation. Read this first, then `follow-ups.md` and `acceptance.md` in this folder.
 
 ## Update 2026-10-27, later: stage 2 (chat) is built (read this first)

@@ -67,3 +67,7 @@ that says what a command can do (it runs with the user's own rights and is not
 limited to the agent's folder). Until then the X chip and the shell tools are
 hidden everywhere. Once enabled, X is still Off per session by default, asks
 first, and shows the exact command on the approval card.
+
+## Timestamps (2026-10-29)
+
+- Messages should show when they were sent, quietly: on hover (the icon row under a bubble, and a tooltip with the full date and time). `Message.created_at_ms` already holds it. Details and where to put it are in `handoff-2026-10-29.md`, next step 3.
