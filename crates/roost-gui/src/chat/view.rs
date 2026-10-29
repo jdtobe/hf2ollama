@@ -1070,8 +1070,9 @@ fn message_card(
     cx: &mut ChatUi,
 ) -> egui::Rect {
     let is_assistant = matches!(m.content, MessageContent::Assistant { .. });
+    let is_you = matches!(m.content, MessageContent::User { .. });
     let (who, fill, body, status, error, thinking) = match &m.content {
-        MessageContent::User { text, .. } => ("You", t.accent_soft, text.clone(), None, None, None),
+        MessageContent::User { text, .. } => ("You", t.surface2, text.clone(), None, None, None),
         MessageContent::Assistant {
             text,
             status,
@@ -1151,6 +1152,18 @@ fn message_card(
                 ui.add(egui::Label::new(RichText::new(e).size(12.5).color(t.bad)).wrap());
             }
         });
+    if is_you {
+        // Your messages are marked by an accent edge, not filled with it.
+        let r = card.response.rect;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                r.min + vec2(0.0, 6.0),
+                vec2(3.0, (r.height() - 12.0).max(0.0)),
+            ),
+            1.5,
+            t.accent,
+        );
+    }
     card.response.rect
 }
 
