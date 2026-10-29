@@ -15,15 +15,16 @@ use std::time::{Duration, Instant};
 
 const SIZES: [(f32, f32); 2] = [(1180.0, 820.0), (900.0, 640.0)];
 const PAST_DELAY: Duration = Duration::from_millis(700);
-const CARD_NAMES: [&str; 6] = [
+const CARD_NAMES: [&str; 7] = [
     "Ollama",
     "Downloads",
     "Cached files",
     "Hugging Face",
     "Agents",
+    "Tools",
     "Hardware and appearance",
 ];
-const CONTROLS: [&str; 19] = [
+const CONTROLS: [&str; 29] = [
     "ollama-url",
     "ollama-test",
     "select-keepalive",
@@ -40,6 +41,16 @@ const CONTROLS: [&str; 19] = [
     "hf-endpoint",
     "toggle-agent-write",
     "toggle-agent-run",
+    "select-tools-list",
+    "select-tools-find",
+    "select-tools-search",
+    "select-tools-lines",
+    "select-tools-output",
+    "select-tools-write",
+    "select-tools-undo",
+    "select-tools-time",
+    "select-tools-run-output",
+    "tools-reset",
     "toggle-override",
     "select-family",
     "select-theme",
@@ -866,4 +877,65 @@ fn accepting_the_warning_turns_commands_on_and_sends_the_settings() {
             "{size:?}"
         );
     }
+}
+
+/// Opens a tool-limit select and picks one of its values.
+fn pick_limit(app: &mut App, h: &mut Harness, size: (f32, f32), id: &str, value: u64) {
+    let r = reveal(app, h, size, id);
+    click(app, h, size, r.center());
+    let item = control(&probe(app), &format!("{id}={value}"))
+        .unwrap_or_else(|| panic!("{id} offers {value}"));
+    click(app, h, size, item.center());
+}
+
+#[test]
+fn picking_a_tool_limit_changes_it_and_sends_the_settings_once() {
+    for size in SIZES {
+        let (mut app, sent) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        pick_limit(&mut app, &mut h, size, "select-tools-list", 50);
+        assert_eq!(app.state_mut().settings.tools.list_entries, 50, "{size:?}");
+        let applied: Vec<_> = sent
+            .try_iter()
+            .filter_map(|r| match r {
+                BackendRequest::ApplySettings(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(applied.len(), 1, "{size:?}");
+        assert_eq!(applied[0].tools.list_entries, 50);
+        // Another limit is untouched.
+        assert_eq!(
+            applied[0].tools.search_matches,
+            roost_core::agent::tools::Limits::default().search_matches
+        );
+        pick_limit(&mut app, &mut h, size, "select-tools-time", 600);
+        assert_eq!(
+            app.state_mut().settings.tools.run_timeout,
+            std::time::Duration::from_secs(600)
+        );
+    }
+}
+
+#[test]
+fn a_limit_set_by_hand_is_shown_and_reset_goes_back_to_the_built_in_ones() {
+    let size = SIZES[0];
+    let (mut app, sent) = settings_app();
+    app.state_mut().settings.tools.search_matches = 123;
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    // The odd value is offered (and chosen) so the page never lies about it.
+    let r = reveal(&mut app, &mut h, size, "select-tools-search");
+    click(&mut app, &mut h, size, r.center());
+    assert!(control(&probe(&mut app), "select-tools-search=123").is_some());
+    // Close the list, then reset.
+    click(&mut app, &mut h, size, Pos2::new(5.0, 5.0));
+    let _ = sent.try_iter().count();
+    let reset = reveal(&mut app, &mut h, size, "tools-reset");
+    click(&mut app, &mut h, size, reset.center());
+    assert_eq!(app.state_mut().settings.tools, Default::default());
+    assert!(sent
+        .try_iter()
+        .any(|r| matches!(r, BackendRequest::ApplySettings(s) if s.tools == Default::default())));
 }

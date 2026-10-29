@@ -164,6 +164,7 @@ impl SettingsView {
             cached_card(ui, &mut cx, state, width);
             hugging_face_card(ui, &mut cx, state, settings, width, &mut change);
             agents_card(ui, &mut cx, state, settings, width, &mut change);
+            tools_card(ui, &mut cx, state, settings, width, &mut change);
             hardware_card(ui, &mut cx, state, settings, width, &mut change);
         });
         run_warning(ui, &mut cx, state, settings, &mut change);
@@ -948,6 +949,195 @@ fn run_warning(
     } else if keep_off || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         state.decline_run();
     }
+}
+
+/// A pick from a few round values, plus the current one when it is none of
+/// them (set by hand in `roost.toml`). Returns the new value when it changed.
+fn limit_select(
+    ui: &mut egui::Ui,
+    cx: &mut Cx,
+    id: &str,
+    current: u64,
+    presets: &[u64],
+    fmt: fn(u64) -> String,
+) -> Option<u64> {
+    let mut options = presets.to_vec();
+    if !options.contains(&current) {
+        options.push(current);
+        options.sort_unstable();
+    }
+    let mut picked = None;
+    let r = egui::ComboBox::from_id_salt(id)
+        .selected_text(fmt(current))
+        .width(SELECT_W)
+        .show_ui(ui, |ui| {
+            for v in &options {
+                let item = ui.selectable_label(*v == current, fmt(*v));
+                cx.rec(&format!("{id}={v}"), item.rect);
+                if item.clicked() {
+                    picked = Some(*v);
+                }
+            }
+        });
+    cx.rec(id, r.response.rect);
+    picked.filter(|v| *v != current)
+}
+
+fn count_text(n: u64) -> String {
+    n.to_string()
+}
+
+fn size_text(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if bytes >= MB && bytes.is_multiple_of(MB) {
+        format!("{} MB", bytes / MB)
+    } else if bytes.is_multiple_of(1024) {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+fn time_text(secs: u64) -> String {
+    if secs >= 60 && secs.is_multiple_of(60) {
+        let m = secs / 60;
+        format!("{m} minute{}", if m == 1 { "" } else { "s" })
+    } else {
+        format!("{secs} seconds")
+    }
+}
+
+fn tools_card(
+    ui: &mut egui::Ui,
+    cx: &mut Cx,
+    state: &mut SettingsState,
+    settings: &mut Settings,
+    width: f32,
+    change: &mut SettingsChange,
+) {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+    // (label, help, control id, current, presets, how to show a value, how to store it)
+    type Store = fn(&mut roost_core::agent::tools::Limits, u64);
+    type Rows<'a> = [(
+        &'a str,
+        &'a str,
+        &'a str,
+        u64,
+        &'a [u64],
+        fn(u64) -> String,
+        Store,
+    ); 9];
+    let t = &settings.tools;
+    let rows: Rows = [
+        (
+            "Entries per folder listing",
+            "How many entries an agent sees from one listing before it is told where to continue.",
+            "select-tools-list",
+            t.list_entries as u64,
+            &[50, 100, 200, 500, 1_000, 2_000],
+            count_text,
+            |l, v| l.list_entries = v as usize,
+        ),
+        (
+            "Results per file search",
+            "How many paths one search for file names returns.",
+            "select-tools-find",
+            t.find_results as u64,
+            &[50, 100, 200, 500, 1_000, 2_000],
+            count_text,
+            |l, v| l.find_results = v as usize,
+        ),
+        (
+            "Matches per text search",
+            "How many matching lines one search inside files returns.",
+            "select-tools-search",
+            t.search_matches as u64,
+            &[50, 100, 200, 500, 1_000, 2_000],
+            count_text,
+            |l, v| l.search_matches = v as usize,
+        ),
+        (
+            "Lines per file read",
+            "How many lines a read shows unless the agent asks for more.",
+            "select-tools-lines",
+            t.read_default_lines as u64,
+            &[50, 100, 200, 500, 1_000],
+            count_text,
+            |l, v| l.read_default_lines = v as usize,
+        ),
+        (
+            "Output per tool call",
+            "The most text any one read, list or search sends back to the model.",
+            "select-tools-output",
+            t.output_bytes as u64,
+            &[8 * KB, 16 * KB, 24 * KB, 48 * KB, 96 * KB, 192 * KB],
+            size_text,
+            |l, v| l.output_bytes = v as usize,
+        ),
+        (
+            "Size of one file write",
+            "The most text an agent may write to a file in one call.",
+            "select-tools-write",
+            t.write_bytes as u64,
+            &[64 * KB, 128 * KB, 256 * KB, 512 * KB, MB, 2 * MB],
+            size_text,
+            |l, v| l.write_bytes = v as usize,
+        ),
+        (
+            "Undo copies per chat",
+            "How much of the files an agent changed is kept so you can undo it. A change that would not fit is refused.",
+            "select-tools-undo",
+            t.undo_bytes as u64,
+            &[4 * MB, 8 * MB, 16 * MB, 32 * MB, 64 * MB, 128 * MB],
+            size_text,
+            |l, v| l.undo_bytes = v as usize,
+        ),
+        (
+            "Time a command may run",
+            "A command still running after this long is stopped.",
+            "select-tools-time",
+            t.run_timeout.as_secs(),
+            &[30, 60, 120, 300, 600, 1_800],
+            time_text,
+            |l, v| l.run_timeout = std::time::Duration::from_secs(v),
+        ),
+        (
+            "Output kept from a command",
+            "The rest of a command's output is cut.",
+            "select-tools-run-output",
+            t.run_output_bytes as u64,
+            &[10 * KB, 20 * KB, 50 * KB, 100 * KB, 200 * KB, 500 * KB],
+            size_text,
+            |l, v| l.run_output_bytes = v as usize,
+        ),
+    ];
+    card(ui, cx, "Tools", width, |ui, cx| {
+        for (label, help, id, current, presets, fmt, store) in rows {
+            row(ui, cx, label, help, FIELD_H, false, |ui, cx, _| {
+                if let Some(v) = limit_select(ui, cx, id, current, presets, fmt) {
+                    let mut limits = settings.tools.clone();
+                    store(&mut limits, v);
+                    change.merge(state.set_tools(settings, limits));
+                }
+            });
+        }
+        row(
+            ui,
+            cx,
+            "Built-in limits",
+            "More limits, such as search depth and file sizes, are set in roost.toml under [tools].",
+            FIELD_H,
+            true,
+            |ui, cx, _| {
+                let r = crate::widgets::small_button_response(ui, "Reset tool limits");
+                cx.rec("tools-reset", r.rect);
+                if r.clicked() {
+                    change.merge(state.set_tools(settings, Default::default()));
+                }
+            },
+        );
+    });
 }
 
 fn hardware_card(

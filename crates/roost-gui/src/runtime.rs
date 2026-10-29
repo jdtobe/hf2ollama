@@ -833,6 +833,18 @@ mod tests {
                 auto_dismiss: AutoDismiss::OneHour,
                 ..base.clone()
             },
+            // Tool limits and the agent switches go to the chat core only.
+            Settings {
+                tools: roost_core::agent::tools::Limits {
+                    list_entries: 50,
+                    ..Default::default()
+                },
+                ..base.clone()
+            },
+            Settings {
+                agents_can_run: true,
+                ..base.clone()
+            },
         ] {
             assert!(!needs_rebuild(&base, &changed), "{changed:?}");
         }
