@@ -1246,7 +1246,7 @@ async fn an_agent_reads_a_file_and_answers() {
     // What the model saw.
     let bodies = chat_bodies(&srv);
     assert_eq!(bodies.len(), 2);
-    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 7);
     let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
     assert!(
         system.contains("an agent inside the attached workspace"),
@@ -1535,6 +1535,7 @@ async fn switched_off_tools_are_not_offered_to_the_model() {
         [
             "list_dir",
             "read_file",
+            "read_binary",
             "find_files",
             "write_file",
             "edit_file"
@@ -2150,7 +2151,7 @@ async fn a_tool_set_to_ask_waits_for_the_user_and_runs_once_allowed() {
     h.send(id, "what is in a.txt?").await;
     h.wait("asked", |e| approval_for(e).is_some()).await;
     // The model was offered the tools even though they need approval.
-    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 7);
     let (call_id, name) = approval_for(&h.events()).unwrap();
     assert_eq!(name, "read_file");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2296,7 +2297,13 @@ async fn with_writing_switched_off_in_settings_no_agent_is_offered_or_can_use_a_
         .collect();
     assert_eq!(
         names,
-        ["list_dir", "read_file", "find_files", "search_text"]
+        [
+            "list_dir",
+            "read_file",
+            "read_binary",
+            "find_files",
+            "search_text"
+        ]
     );
 }
 

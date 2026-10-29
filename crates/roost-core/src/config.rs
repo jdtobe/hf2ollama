@@ -96,6 +96,9 @@ pub struct Settings {
     pub sidebar_width: f32,
     /// May agents write files at all. Off makes every agent read-only.
     pub agents_can_write: bool,
+    /// May agents run shell commands at all. Off until the user turns it on
+    /// (after a warning); an agent still has to be set to Ask or Allow.
+    pub agents_can_run: bool,
 }
 
 /// The sidebar's width until the user drags it.
@@ -117,6 +120,7 @@ impl Default for Settings {
             keep_alive: KeepAlive::OllamaDefault,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             agents_can_write: true,
+            agents_can_run: false,
         }
     }
 }
@@ -170,6 +174,7 @@ mod tests {
         assert_eq!(s.keep_alive, KeepAlive::OllamaDefault);
         assert_eq!(s.sidebar_width, 340.0);
         assert!(s.agents_can_write);
+        assert!(!s.agents_can_run, "running commands is opt-in");
     }
 
     #[test]
@@ -184,6 +189,20 @@ mod tests {
         assert!(!Settings::load(&path).unwrap().agents_can_write);
         std::fs::write(&path, "max_parallel = 2\n").unwrap();
         assert!(Settings::load(&path).unwrap().agents_can_write);
+    }
+
+    #[test]
+    fn the_command_switch_is_saved_and_older_files_keep_commands_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roost.toml");
+        let s = Settings {
+            agents_can_run: true,
+            ..Settings::default()
+        };
+        s.save(&path).unwrap();
+        assert!(Settings::load(&path).unwrap().agents_can_run);
+        std::fs::write(&path, "max_parallel = 2\n").unwrap();
+        assert!(!Settings::load(&path).unwrap().agents_can_run);
     }
 
     #[test]
@@ -252,6 +271,7 @@ mod tests {
             keep_alive: KeepAlive::FifteenMinutes,
             sidebar_width: 377.0,
             agents_can_write: false,
+            agents_can_run: true,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
