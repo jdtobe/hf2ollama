@@ -24,6 +24,10 @@ pub struct Limits {
     pub line_chars: usize,
     pub read_file_bytes: u64,
     pub search_file_bytes: u64,
+    /// A command is stopped after this long.
+    pub run_timeout: std::time::Duration,
+    /// A command's output is cut here.
+    pub run_output_bytes: usize,
 }
 
 impl Default for Limits {
@@ -41,6 +45,8 @@ impl Default for Limits {
             line_chars: 300,
             read_file_bytes: 16 * 1024 * 1024,
             search_file_bytes: 2 * 1024 * 1024,
+            run_timeout: std::time::Duration::from_secs(120),
+            run_output_bytes: 20 * 1024,
         }
     }
 }
@@ -215,7 +221,7 @@ pub fn read_file(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, T
             .map_err(|e| ToolError::Unreadable(format!("could not read {}: {e}", show(&rel))))?;
         if head.iter().take(BINARY_SNIFF).any(|b| *b == 0) {
             return Err(ToolError::Unreadable(format!(
-                "{} is a binary file",
+                "{} is a binary file; use read_binary to see its bytes",
                 show(&rel)
             )));
         }
@@ -257,6 +263,105 @@ pub fn read_file(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, T
         return Ok(format!(
             "(no lines at offset {offset}; the file has {line_no} line{})",
             if line_no == 1 { "" } else { "s" }
+        ));
+    }
+    Ok(out.finish(&notes))
+}
+
+/// A whole number given as a JSON number or as text, decimal or `0x` hex
+/// (models often write offsets the way a hex editor shows them).
+fn byte_arg(args: &Value, name: &str) -> Result<Option<u64>, ToolError> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n.as_u64().map(Some).ok_or_else(|| {
+            ToolError::InvalidArguments(format!("{name} must be a whole number of bytes"))
+        }),
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            let parsed = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+                Some(hex) => u64::from_str_radix(hex, 16),
+                None => t.parse::<u64>(),
+            };
+            parsed.map(Some).map_err(|_| {
+                ToolError::InvalidArguments(format!(
+                    "{name} must be a whole number of bytes, like 4096 or 0x1000"
+                ))
+            })
+        }
+        Some(_) => Err(ToolError::InvalidArguments(format!(
+            "{name} must be a whole number of bytes"
+        ))),
+    }
+}
+
+/// Most bytes one `read_binary` call returns.
+const BINARY_MAX_BYTES: u64 = 4096;
+const BINARY_DEFAULT_BYTES: u64 = 256;
+
+/// Shows bytes of any file as a hex dump: offset, 16 bytes in hex, then the
+/// same bytes as text. Reads only the range asked for, so a file of any size
+/// is fine.
+pub fn read_binary(ws: &Workspace, args: &Value, lim: &Limits) -> Result<String, ToolError> {
+    use std::io::{Seek, SeekFrom};
+    let rel = ws.resolve(&required_str(args, "path")?)?;
+    let offset = byte_arg(args, "offset")?.unwrap_or(0);
+    let length = match byte_arg(args, "length")? {
+        None => BINARY_DEFAULT_BYTES,
+        Some(0) => {
+            return Err(ToolError::InvalidArguments(
+                "length must be at least 1".into(),
+            ))
+        }
+        Some(n) => n.min(BINARY_MAX_BYTES),
+    };
+    let (mut file, size) = ws.open_file(&rel)?;
+    let name = show(&rel);
+    if offset >= size {
+        return Ok(format!(
+            "{name}: {size} bytes. Offset {offset} is past the end of the file."
+        ));
+    }
+    let want = length.min(size - offset);
+    let mut bytes = vec![0u8; want as usize];
+    file.seek(SeekFrom::Start(offset))
+        .and_then(|_| file.read_exact(&mut bytes))
+        .map_err(|e| ToolError::Unreadable(format!("could not read {name}: {e}")))?;
+    let mut out = Out::new(lim.output_bytes);
+    out.line(&format!(
+        "{name}: {size} bytes; showing {offset} to {} (0x{:x} to 0x{:x})",
+        offset + want - 1,
+        offset,
+        offset + want - 1
+    ));
+    for (i, row) in bytes.chunks(16).enumerate() {
+        let at = offset + (i * 16) as u64;
+        let mut hex = String::new();
+        for (j, b) in row.iter().enumerate() {
+            if j == 8 {
+                hex.push(' ');
+            }
+            hex.push_str(&format!("{b:02x} "));
+        }
+        let text: String = row
+            .iter()
+            .map(|b| {
+                if (0x20..0x7f).contains(b) {
+                    *b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        // Padded to a full row so the text column lines up on a short last row.
+        if !out.line(&format!("{at:08x}  {:<49} |{text}|", hex.trim_end())) {
+            break;
+        }
+    }
+    let mut notes = Vec::new();
+    if offset + want < size {
+        notes.push(format!(
+            "[call read_binary again with offset={}]",
+            offset + want
         ));
     }
     Ok(out.finish(&notes))
@@ -690,6 +795,110 @@ mod tests {
         assert!(read_file(&w, &json!({"path": "empty.txt"}), &lim())
             .unwrap()
             .starts_with("(no lines at offset 1"));
+    }
+
+    // ---- read_binary
+
+    fn nes_header() -> Vec<u8> {
+        let mut b = vec![0x4e, 0x45, 0x53, 0x1a, 2, 1, 0x01, 0x00];
+        b.extend([0u8; 8]);
+        b.extend(b"PRG".iter());
+        b
+    }
+
+    #[test]
+    fn read_binary_shows_offsets_hex_and_text_like_a_hex_dump() {
+        let (r, w) = ws();
+        fs::write(r.path().join("game.nes"), nes_header()).unwrap();
+        let out = read_binary(&w, &json!({"path": "game.nes"}), &lim()).unwrap();
+        assert!(out.contains("game.nes"), "{out}");
+        assert!(out.contains("19 bytes"), "{out}");
+        assert!(
+            out.contains(
+                "00000000  4e 45 53 1a 02 01 01 00  00 00 00 00 00 00 00 00  |NES.............|"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("00000010  50 52 47"), "{out}");
+        assert!(out.contains("|PRG|"), "{out}");
+    }
+
+    #[test]
+    fn read_binary_pages_through_a_file_and_says_where_to_continue() {
+        let (r, w) = ws();
+        fs::write(r.path().join("b.bin"), (0..=255u8).collect::<Vec<_>>()).unwrap();
+        let out = read_binary(
+            &w,
+            &json!({"path": "b.bin", "offset": 16, "length": 32}),
+            &lim(),
+        )
+        .unwrap();
+        assert!(out.starts_with("b.bin"), "{out}");
+        assert!(out.contains("00000010  10 11 12"), "{out}");
+        assert!(out.contains("00000020  20 21"), "{out}");
+        assert!(!out.contains("00000030"), "{out}");
+        assert!(out.contains("read_binary again with offset=48"), "{out}");
+        // Hex offsets as text are accepted; a length past the cap is clamped.
+        let out = read_binary(
+            &w,
+            &json!({"path": "b.bin", "offset": "0xF0", "length": 999999}),
+            &lim(),
+        )
+        .unwrap();
+        assert!(out.contains("000000f0  f0 f1"), "{out}");
+        assert!(
+            !out.contains("read_binary again"),
+            "that was the end: {out}"
+        );
+        let past = read_binary(&w, &json!({"path": "b.bin", "offset": 300}), &lim()).unwrap();
+        assert!(
+            past.contains("256 bytes") && past.contains("past the end"),
+            "{past}"
+        );
+    }
+
+    #[test]
+    fn read_binary_reads_a_big_file_without_loading_it() {
+        let (r, w) = ws();
+        let f = fs::File::create(r.path().join("big.bin")).unwrap();
+        f.set_len(200 * 1024 * 1024).unwrap();
+        let out = read_binary(
+            &w,
+            &json!({"path": "big.bin", "offset": 200 * 1024 * 1024 - 16}),
+            &lim(),
+        )
+        .unwrap();
+        assert!(out.contains("209715200 bytes"), "{out}");
+        assert!(out.contains("0c7ffff0"), "{out}");
+    }
+
+    #[test]
+    fn read_binary_refuses_protected_missing_folders_and_bad_numbers() {
+        let (r, w) = ws();
+        write(&r, ".env", "KEY=1");
+        write(&r, "dir/x", "");
+        for (args, want) in [
+            (json!({"path": ".env"}), "protected"),
+            (json!({"path": "nope.bin"}), "nope.bin"),
+            (json!({"path": "dir"}), "dir"),
+            (json!({"path": "../x"}), "parent"),
+            (json!({"path": "dir/x", "offset": "soon"}), "offset"),
+            (json!({"path": "dir/x", "length": 0}), "length"),
+            (json!({}), "path"),
+        ] {
+            let e = read_binary(&w, &args, &lim()).unwrap_err().to_string();
+            assert!(e.contains(want), "{args}: {e}");
+        }
+    }
+
+    #[test]
+    fn read_file_points_to_read_binary_for_a_binary_file() {
+        let (r, w) = ws();
+        fs::write(r.path().join("bin.dat"), [1u8, 0, 2, 3]).unwrap();
+        let e = read_file(&w, &json!({"path": "bin.dat"}), &lim())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("read_binary"), "{e}");
     }
 
     #[test]

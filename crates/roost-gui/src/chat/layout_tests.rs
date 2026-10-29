@@ -1122,9 +1122,13 @@ fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
     run(&mut app, &mut h, size, 4);
     let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
     open_menu(&mut app, &mut h, size, chip);
+    // The tool lists start closed; the heading opens one.
+    let heads = app.state_mut().chat_ui.probe.tools_heads.clone();
+    assert_eq!(heads.len(), 1, "one family without commands");
+    click(&mut app, &mut h, size, heads[0].center());
     let texts = texts_of(&mut app, &mut h, size);
     let upper = texts.to_uppercase();
-    for want in ["FOLDER", "RUN", "TOOLS"] {
+    for want in ["FOLDER", "RUN", "FILES"] {
         assert!(upper.contains(want), "card {want}: {texts}");
     }
     for want in [
@@ -1879,6 +1883,7 @@ fn ask_for_approval(app: &mut App, session: roost_core::session::SessionId) {
         name: "read_file".into(),
         arguments: serde_json::json!({"path": "src/main.rs"}),
         preview: None,
+        run: None,
     });
 }
 
@@ -2226,6 +2231,7 @@ fn ask_to_write(app: &mut App, session: roost_core::session::SessionId) {
             ],
             more: 4,
         }),
+        run: None,
     });
 }
 
@@ -2444,4 +2450,249 @@ fn a_refused_undo_tells_the_user_why() {
     run(&mut app, &mut h, size, 4);
     let texts = texts_of(&mut app, &mut h, size);
     assert!(texts.contains("was left alone"), "{texts}");
+}
+
+fn open_agent_settings(app: &mut App, h: &mut Harness, size: (f32, f32)) {
+    run(app, h, size, 3);
+    let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+    click(app, h, size, chip.center());
+}
+
+#[test]
+fn commands_are_nowhere_in_the_chat_until_switched_on_in_settings() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    open_agent_settings(&mut app, &mut h, size);
+    let p = app.state_mut().chat_ui.probe.clone();
+    let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
+    assert_eq!(letters, ['R', 'W']);
+    assert!(p.run_buttons.is_empty(), "a Run row without the switch");
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(
+        !texts.contains("run_command") && !texts.to_uppercase().contains("SHELL"),
+        "{texts}"
+    );
+}
+
+#[test]
+fn with_commands_on_there_is_an_x_chip_and_a_run_row_that_starts_off() {
+    use roost_core::session::Permission;
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        app.state_mut().settings.agents_can_run = true;
+        let mut h = Harness::new(false);
+        open_agent_settings(&mut app, &mut h, size);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
+        assert_eq!(letters, ['R', 'W', 'X'], "{size:?}");
+        assert_eq!(
+            p.chips[2].2,
+            Permission::Off,
+            "{size:?}: new agents start with Run off"
+        );
+        assert!(inside(p.chips[2].1, p.header.unwrap()), "{size:?}");
+        assert_eq!(p.run_buttons.len(), 3, "{size:?}: Off, Ask, Allow");
+        if size.1 < 800.0 {
+            // In a short window the menu scrolls, so the row may be out of view.
+            continue;
+        }
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.run_buttons[1].center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, key, Permission::Ask)]
+                if *id == s.id && key == "shell.run"),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn allowing_commands_without_asking_needs_one_confirmation() {
+    use roost_core::session::Permission;
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    app.state_mut().settings.agents_can_run = true;
+    let mut h = Harness::new(false);
+    open_agent_settings(&mut app, &mut h, size);
+    let allow = app.state_mut().chat_ui.probe.run_buttons[2];
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, allow.center());
+    assert!(
+        sent_chat_commands(&sent).is_empty(),
+        "sent before it was confirmed"
+    );
+    let (confirm, cancel) = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .run_confirm
+        .expect("a confirmation");
+    // Cancelling sends nothing and puts the question away.
+    click(&mut app, &mut h, size, cancel.center());
+    assert!(sent_chat_commands(&sent).is_empty());
+    assert!(app.state_mut().chat_ui.probe.run_confirm.is_none());
+    // Asking again and confirming sets it.
+    let allow = app.state_mut().chat_ui.probe.run_buttons[2];
+    click(&mut app, &mut h, size, allow.center());
+    let (confirm2, _) = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .run_confirm
+        .expect("a confirmation");
+    let _ = confirm;
+    click(&mut app, &mut h, size, confirm2.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, key, Permission::Auto)]
+            if *id == s.id && key == "shell.run"),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn a_family_list_of_tools_opens_and_closes_from_its_heading() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    open_agent_settings(&mut app, &mut h, size);
+    assert!(!texts_of(&mut app, &mut h, size).contains("read_binary"));
+    let head = app.state_mut().chat_ui.probe.tools_heads[0];
+    click(&mut app, &mut h, size, head.center());
+    assert!(texts_of(&mut app, &mut h, size).contains("read_binary"));
+    let head = app.state_mut().chat_ui.probe.tools_heads[0];
+    click(&mut app, &mut h, size, head.center());
+    assert!(!texts_of(&mut app, &mut h, size).contains("read_binary"));
+}
+
+#[test]
+fn the_shell_family_lists_run_command_when_commands_are_on() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    app.state_mut().settings.agents_can_run = true;
+    let mut h = Harness::new(false);
+    open_agent_settings(&mut app, &mut h, size);
+    let heads = app.state_mut().chat_ui.probe.tools_heads.clone();
+    assert_eq!(heads.len(), 2, "Files and Shell");
+    click(&mut app, &mut h, size, heads[1].center());
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("X   run_command"), "{texts}");
+    assert!(texts.to_uppercase().contains("SHELL"), "{texts}");
+}
+
+fn ask_to_run(
+    app: &mut App,
+    session: roost_core::session::SessionId,
+    command: &str,
+    prefix: Option<&str>,
+) {
+    app.state_mut().chat.fold(ChatEvent::ApprovalRequested {
+        session,
+        call_id: "call_9".into(),
+        name: "run_command".into(),
+        arguments: serde_json::json!({"command": command}),
+        preview: None,
+        run: Some(roost_core::agent::command::RunPreview {
+            command: command.into(),
+            folder: std::path::PathBuf::from("/home/me/Code/roost"),
+            prefix: prefix.map(str::to_string),
+            timeout_secs: 120,
+            output_kb: 20,
+        }),
+    });
+}
+
+#[test]
+fn a_command_asks_with_exactly_what_will_run_where_and_its_limits() {
+    use roost_core::chat::ApprovalDecision;
+    for size in SIZES {
+        for (pick, want) in [
+            (0usize, ApprovalDecision::Allow),
+            (1, ApprovalDecision::AllowForSession),
+            (2, ApprovalDecision::Deny),
+        ] {
+            let (mut app, sent, s) = agent_fixture();
+            let mut h = Harness::new(false);
+            ask_to_run(
+                &mut app,
+                s.id,
+                "cargo test -p roost-core",
+                Some("cargo test"),
+            );
+            run(&mut app, &mut h, size, 4);
+            let texts = texts_of(&mut app, &mut h, size);
+            for want_text in [
+                "The agent wants to run a command",
+                "cargo test -p roost-core",
+                "/home/me/Code/roost",
+                "stops after 2 minutes",
+                "output kept to 20 KB",
+                "your tokens are not passed on",
+                "Run it",
+                "Allow cargo test this session",
+                "Deny",
+            ] {
+                assert!(texts.contains(want_text), "{size:?}: {want_text}\n{texts}");
+            }
+            let p = app.state_mut().chat_ui.probe.clone();
+            assert_eq!(p.approval_buttons.len(), 3, "{size:?}");
+            let composer = p.composer.unwrap();
+            for b in &p.approval_buttons {
+                assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
+            }
+            let _ = sent_chat_commands(&sent);
+            click(&mut app, &mut h, size, p.approval_buttons[pick].center());
+            let cmds = sent_chat_commands(&sent);
+            assert!(
+                matches!(cmds.as_slice(), [ChatCommand::ResolveApproval { session, call_id, decision }]
+                    if *session == s.id && call_id == "call_9" && *decision == want),
+                "{size:?} pick {pick}: {cmds:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_command_with_no_safe_prefix_offers_only_run_it_and_deny() {
+    use roost_core::chat::ApprovalDecision;
+    let size = SIZES[0];
+    let (mut app, sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    ask_to_run(&mut app, s.id, "make build && make install", None);
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(!texts.contains("this session"), "{texts}");
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert_eq!(p.approval_buttons.len(), 2);
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, p.approval_buttons[1].center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::ResolveApproval { decision, .. }]
+            if *decision == ApprovalDecision::Deny),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn a_very_long_command_scrolls_in_its_box_and_never_crowds_out_the_buttons() {
+    for size in SIZES {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        let long = format!("echo {}", "very-long-argument ".repeat(220));
+        ask_to_run(&mut app, s.id, &long, None);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let composer = p.composer.unwrap();
+        assert!(
+            composer.height() < size.1 * 0.6,
+            "{size:?}: the card is {} tall",
+            composer.height()
+        );
+        for b in &p.approval_buttons {
+            assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
+        }
+    }
 }

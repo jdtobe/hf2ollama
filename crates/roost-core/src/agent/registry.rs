@@ -6,16 +6,43 @@ use super::tools::{self, Limits};
 use super::workspace::{ToolError, Workspace};
 use crate::session::{EffectiveToolConfig, Permission};
 use serde_json::{json, Value};
+use std::sync::atomic::AtomicBool;
+
+/// For callers that cannot be cancelled.
+static NO_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// How one tool call is run, beyond what it is.
+pub struct Options<'a> {
+    /// The user said yes to a tool that asks.
+    pub approved: bool,
+    /// Bytes of originals that may still be kept for undo.
+    pub undo_room: usize,
+    /// Set to end a running command.
+    pub cancel: &'a AtomicBool,
+}
+
+impl Options<'static> {
+    /// No undo limit and no way to cancel.
+    pub fn once(approved: bool) -> Options<'static> {
+        Options {
+            approved,
+            undo_room: usize::MAX,
+            cancel: &NO_CANCEL,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     Files,
+    Shell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     Read,
     Write,
+    Run,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +59,7 @@ impl Family {
     pub fn label(self) -> &'static str {
         match self {
             Family::Files => "Files",
+            Family::Shell => "Shell",
         }
     }
 }
@@ -41,6 +69,7 @@ impl Capability {
         match self {
             Capability::Read => "Read",
             Capability::Write => "Write",
+            Capability::Run => "Run",
         }
     }
 }
@@ -49,10 +78,12 @@ impl Capability {
 pub fn capability_key(family: Family, capability: Capability) -> String {
     let f = match family {
         Family::Files => "files",
+        Family::Shell => "shell",
     };
     let c = match capability {
         Capability::Read => "read",
         Capability::Write => "write",
+        Capability::Run => "run",
     };
     format!("{f}.{c}")
 }
@@ -62,7 +93,7 @@ pub fn capability_key(family: Family, capability: Capability) -> String {
 /// Whatever a session's file says, `permission_of` never goes above this.
 pub fn max_permission(_family: Family, capability: Capability) -> Permission {
     match capability {
-        Capability::Read | Capability::Write => Permission::Auto,
+        Capability::Read | Capability::Write | Capability::Run => Permission::Auto,
     }
 }
 
@@ -72,6 +103,8 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
     match capability {
         Capability::Read => Permission::Auto,
         Capability::Write => Permission::Ask,
+        // Running commands is off until the user turns it on for an agent.
+        Capability::Run => Permission::Off,
     }
 }
 
@@ -88,6 +121,13 @@ pub fn specs() -> Vec<ToolSpec> {
         name,
         family: Family::Files,
         capability: Capability::Write,
+        description,
+        parameters,
+    };
+    let run = |name, description, parameters| ToolSpec {
+        name,
+        family: Family::Shell,
+        capability: Capability::Run,
         description,
         parameters,
     };
@@ -111,6 +151,19 @@ pub fn specs() -> Vec<ToolSpec> {
                     "path": {"type": "string", "description": "File relative to the workspace root."},
                     "offset": {"type": "integer", "description": "First line to return, starting at 1."},
                     "limit": {"type": "integer", "description": "Number of lines to return."}
+                },
+                "required": ["path"]
+            }),
+        ),
+        read(
+            "read_binary",
+            "Show the bytes of any file (a ROM, an image, an archive …) as a hex dump: offset, 16 bytes in hex, and the same bytes as text. Returns at most 4096 bytes per call and says which offset to use to continue. Offsets may be written as 4096 or 0x1000. Use this when read_file says a file is binary.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File relative to the workspace root."},
+                    "offset": {"type": "integer", "description": "First byte to show, counting from 0. Defaults to 0."},
+                    "length": {"type": "integer", "description": "How many bytes to show (default 256, at most 4096)."}
                 },
                 "required": ["path"]
             }),
@@ -163,6 +216,17 @@ pub fn specs() -> Vec<ToolSpec> {
                     "new_text": {"type": "string", "description": "What to put there instead (may be empty to delete)."}
                 },
                 "required": ["path", "old_text", "new_text"]
+            }),
+        ),
+        run(
+            "run_command",
+            "Run a shell command on the user's computer, starting in the workspace folder, and return its exit code and output. It runs as the user and is not limited to the workspace. It stops after 2 minutes and only the first 20 KB of output is kept. The user is asked before it runs. Prefer the file tools for reading and changing files.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command line, as typed in a terminal."}
+                },
+                "required": ["command"]
             }),
         ),
     ]
@@ -256,7 +320,7 @@ pub fn call(
     args: &Value,
     limits: &Limits,
 ) -> Result<String, ToolError> {
-    run(ws, config, name, args, limits, false, usize::MAX).0
+    run(ws, config, name, args, limits, &Options::once(false)).0
 }
 
 /// Like `call`, for a call the user approved: a tool set to Ask may run. A
@@ -268,7 +332,7 @@ pub fn call_approved(
     args: &Value,
     limits: &Limits,
 ) -> Result<String, ToolError> {
-    run(ws, config, name, args, limits, true, usize::MAX).0
+    run(ws, config, name, args, limits, &Options::once(true)).0
 }
 
 /// Like `call` or `call_approved`, for the chat core: also hands back the
@@ -281,10 +345,9 @@ pub fn call_tracked(
     name: &str,
     args: &Value,
     limits: &Limits,
-    approved: bool,
-    undo_room: usize,
+    opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
-    run(ws, config, name, args, limits, approved, undo_room)
+    run(ws, config, name, args, limits, opts)
 }
 
 fn run(
@@ -293,9 +356,9 @@ fn run(
     name: &str,
     args: &Value,
     limits: &Limits,
-    approved: bool,
-    undo_room: usize,
+    opts: &Options,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
+    let (approved, undo_room, cancel) = (opts.approved, opts.undo_room, opts.cancel);
     let spec = match specs().into_iter().find(|s| s.name == name) {
         Some(s) => s,
         None => return (Err(ToolError::UnknownTool(name.to_string())), None),
@@ -319,11 +382,28 @@ fn run(
     match name {
         "list_dir" => (tools::list_dir(ws, args, limits), None),
         "read_file" => (tools::read_file(ws, args, limits), None),
+        "read_binary" => (tools::read_binary(ws, args, limits), None),
         "find_files" => (tools::find_files(ws, args, limits), None),
         "search_text" => (tools::search_text(ws, args, limits), None),
         "write_file" | "edit_file" => write(ws, name, args, undo_room),
+        "run_command" => (run_command(ws, args, limits, cancel), None),
         other => (Err(ToolError::UnknownTool(other.to_string())), None),
     }
+}
+
+/// Runs `command` from the arguments in the workspace folder.
+fn run_command(
+    ws: &Workspace,
+    args: &Value,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<String, ToolError> {
+    let Some(Value::String(command)) = args.get("command") else {
+        return Err(ToolError::InvalidArguments(
+            "command is required and must be a string".into(),
+        ));
+    };
+    super::command::run(ws.root(), command, limits, cancel)
 }
 
 /// Plans a write, checks the original can be kept, then applies it.
@@ -370,20 +450,30 @@ mod tests {
     }
 
     #[test]
-    fn the_files_family_has_four_read_tools_and_two_write_tools() {
+    fn the_registry_has_five_read_tools_two_write_tools_and_one_command_tool() {
         let all = specs();
         assert_eq!(
             names(&all),
             [
                 "list_dir",
                 "read_file",
+                "read_binary",
                 "find_files",
                 "search_text",
                 "write_file",
-                "edit_file"
+                "edit_file",
+                "run_command"
             ]
         );
-        assert!(all.iter().all(|s| s.family == Family::Files));
+        assert!(all
+            .iter()
+            .filter(|s| s.name != "run_command")
+            .all(|s| s.family == Family::Files));
+        let run = all.iter().find(|s| s.name == "run_command").unwrap();
+        assert_eq!(
+            (run.family, run.capability),
+            (Family::Shell, Capability::Run)
+        );
         let writes: Vec<_> = all
             .iter()
             .filter(|s| s.capability == Capability::Write)
@@ -406,7 +496,7 @@ mod tests {
         assert!(!needs_approval(&c, "read_file"));
         assert_eq!(capability_of("edit_file").as_deref(), Some("files.write"));
         // Both are offered to the model; their calls wait for the user.
-        assert_eq!(offered(&c).len(), 6);
+        assert_eq!(offered(&c).len(), 7);
     }
 
     #[test]
@@ -418,14 +508,35 @@ mod tests {
         c.capabilities
             .insert("files.write".into(), Permission::Auto);
         let args = json!({"path": "big.txt", "content": "y"});
-        let (r, change) = call_tracked(&ws, &c, "write_file", &args, &Limits::default(), false, 50);
+        let (r, change) = call_tracked(
+            &ws,
+            &c,
+            "write_file",
+            &args,
+            &Limits::default(),
+            &Options {
+                approved: false,
+                undo_room: 50,
+                cancel: &AtomicBool::new(false),
+            },
+        );
         assert!(r.is_err() && change.is_none());
         assert_eq!(
             std::fs::read_to_string(dir.path().join("big.txt")).unwrap(),
             "x".repeat(100)
         );
-        let (r, change) =
-            call_tracked(&ws, &c, "write_file", &args, &Limits::default(), false, 100);
+        let (r, change) = call_tracked(
+            &ws,
+            &c,
+            "write_file",
+            &args,
+            &Limits::default(),
+            &Options {
+                approved: false,
+                undo_room: 100,
+                cancel: &AtomicBool::new(false),
+            },
+        );
         assert!(r.is_ok());
         assert_eq!(change.unwrap().before.unwrap().len(), 100);
     }
@@ -436,7 +547,7 @@ mod tests {
         c.capabilities.insert("files.write".into(), Permission::Off);
         assert_eq!(
             offered(&c).len(),
-            4,
+            5,
             "a read-only agent is not offered writes"
         );
         c.capabilities
@@ -473,7 +584,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_session_allows_read_tools_automatically() {
-        assert_eq!(offered(&cfg()).len(), 6);
+        assert_eq!(offered(&cfg()).len(), 7);
         assert_eq!(
             capability_key(Family::Files, Capability::Read),
             "files.read"
@@ -493,6 +604,7 @@ mod tests {
             [
                 "list_dir",
                 "read_file",
+                "read_binary",
                 "find_files",
                 "write_file",
                 "edit_file"
@@ -511,7 +623,7 @@ mod tests {
         c.capabilities.insert("files.read".into(), Permission::Off);
         assert_eq!(names(&offered(&c)), ["write_file", "edit_file"]);
         c.capabilities.insert("files.read".into(), Permission::Ask);
-        assert_eq!(offered(&c).len(), 6, "tools that ask are still offered");
+        assert_eq!(offered(&c).len(), 7, "tools that ask are still offered");
         assert!(needs_approval(&c, "read_file"));
         assert!(!needs_approval(&c, "no_such_tool"));
         let spec = &specs()[0];
@@ -521,7 +633,7 @@ mod tests {
         );
         assert_eq!(capability_of("read_file").as_deref(), Some("files.read"));
         c.capabilities.insert("files.read".into(), Permission::Auto);
-        assert_eq!(offered(&c).len(), 6);
+        assert_eq!(offered(&c).len(), 7);
     }
 
     #[test]
@@ -553,7 +665,7 @@ mod tests {
         c.tools.insert("find_files".into(), false);
         let defs = ollama_definitions(&c);
         let list = defs.as_array().unwrap();
-        assert_eq!(list.len(), 5);
+        assert_eq!(list.len(), 6);
         for d in list {
             assert_eq!(d["type"], "function");
             assert!(d["function"]["name"].is_string());

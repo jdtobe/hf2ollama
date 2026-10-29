@@ -47,6 +47,15 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Because the originals are kept in the chat file, deleting the chat deletes them. A branch starts with no changes of its own and cannot undo the original's.
 - Agent prompt no longer says "read-only".
 
+### Agents can run commands (opt-in)
+
+- **Off until you turn it on.** Settings → Agents has **Let agents run commands**, off by default. Turning it on shows a warning first (a command runs as you, is not limited to the agent's folder, can use the network, and a mistaken or manipulated model can do damage Roost cannot undo); **Keep it off** is the default button and Escape also declines. Until it is on there is no X chip, no Run row and no Shell card anywhere, and the chat core refuses commands even for an agent that was set to Allow.
+- **A `run_command` tool** (the Shell family) runs a command in the agent's folder: it stops after 2 minutes, keeps the first 20 KB of output, has no input, and does not pass on your environment's secrets (variables starting with `HF_`, `ROOST_`, `AWS_`, `GITHUB_`, `GH_`, `ANTHROPIC_`, `OPENAI_` or `SSH_`, or whose names contain TOKEN, SECRET, PASSWORD, CREDENTIAL, API_KEY or PRIVATE_KEY). Stop ends the command and everything it started.
+- **The approval card** shows the exact command, the folder, the time and output limits and that your tokens are not passed on. **Allow `cargo test` this session** covers that command and its plain subcommand only; it is left out for anything chained, a path, a shell or an interpreter, `rm`, `curl`, `ssh`, `sudo` and similar. A very long command scrolls in its box.
+- **An X chip** joins R and W in the header (red when allowed, amber when it asks, dim when off). **Run commands** is a row of Off / Ask / Allow in Agent settings; choosing Allow asks for one more confirmation.
+- **Tools by family.** Agent settings now has one card per family: **Files** (Read and Write rows) and **Shell** (Run row), each with its tools underneath, tagged R, W or X and switchable one by one. The lists start closed. The Agent settings menu scrolls when it is taller than the window.
+- **`read_binary`** reads any file as a hex dump (offset and length in decimal or `0x` hex, up to 4096 bytes a call, with the next offset to continue from), so an agent can look inside ROMs and other non-text files. `read_file` now points to it when it meets a binary file.
+
 ### One sidebar
 
 - Chat, Work and Models share one left column of the same width (340 by default, as wide as the Models list was). Drag its right edge to change it, between 280 and 520 points; a narrow window limits it so the page beside it keeps at least 540. The width you choose is remembered between runs and is the same on every tab. Saving it (and changing the theme or the auto-dismiss time) no longer restarts the download engine: only settings the engines use (the Ollama address, the staging folder, the delete/keep options, simultaneous downloads, the Hugging Face address and keep-alive) rebuild them. Before, any settings change did, which let a download started afterwards ignore the simultaneous-downloads limit.

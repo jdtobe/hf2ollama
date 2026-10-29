@@ -34,6 +34,9 @@ pub enum ChatCommand {
     /// The app-wide switch for agents writing files (Settings). Off makes
     /// every agent read-only, whatever its own configuration says.
     SetWritesAllowed(bool),
+    /// The app-wide switch for agents running commands (Settings, off by
+    /// default). Off hides the command tool from every agent.
+    SetRunAllowed(bool),
     /// Puts a file an agent changed back as it was. Refused if the file was
     /// edited since or a run is active.
     UndoChange {
@@ -231,6 +234,8 @@ pub enum ChatEvent {
         arguments: serde_json::Value,
         /// For a write, what it would change.
         preview: Option<crate::agent::change::ChangePreview>,
+        /// For a command, exactly what will run and where.
+        run: Option<crate::agent::command::RunPreview>,
     },
     /// The files an agent has changed in this chat, after any change.
     Changes {

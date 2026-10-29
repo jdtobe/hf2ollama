@@ -10,6 +10,7 @@ use super::manager::{now_ms, Intent, Manager, ModelInfo, Run, Slot, CHAT_SYSTEM_
 use super::run::{drive, RunMsg};
 use super::types::{ApprovalDecision, ChatEvent, RunOutcome, SendRejection, TurnOutcome};
 use crate::agent::change::{self, ChangePreview};
+use crate::agent::command::{self, RunPreview};
 use crate::agent::registry;
 use crate::agent::tools::Limits;
 use crate::agent::{ToolError, Workspace};
@@ -21,6 +22,7 @@ use crate::session::{
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -58,6 +60,22 @@ impl AgentRun {
             .map(|c| c.card())
     }
 
+    /// What a command call would run and where, if `name` is the command tool.
+    pub(super) fn run_preview(&self, name: &str, arguments: &Value) -> Option<RunPreview> {
+        if name != "run_command" {
+            return None;
+        }
+        let command = arguments.get("command")?.as_str()?.trim().to_string();
+        let lim = Limits::default();
+        Some(RunPreview {
+            prefix: command::allow_prefix(&command),
+            command,
+            folder: self.workspace.root().to_path_buf(),
+            timeout_secs: lim.run_timeout.as_secs(),
+            output_kb: lim.run_output_bytes / 1024,
+        })
+    }
+
     pub(super) fn collect(&mut self, name: String, arguments: Value) {
         self.collected.push((name, arguments));
     }
@@ -71,6 +89,8 @@ pub(super) struct ToolRun {
     msg: MessageId,
     /// The call, while it waits for approval.
     waiting: Option<PendingCall>,
+    /// Set to end a running command; a blocking task cannot be aborted.
+    pub(super) cancel: Arc<AtomicBool>,
 }
 
 impl ToolRun {
@@ -82,14 +102,22 @@ impl ToolRun {
     }
 }
 
-/// A session's tool configuration with the app-wide switch applied: with
-/// writing off in Settings, the write capability is off whatever the session
-/// says.
-fn gated(config: &EffectiveToolConfig, writes_allowed: bool) -> EffectiveToolConfig {
+/// A session's tool configuration with the app-wide switches applied: with
+/// writing or commands off in Settings, that capability is off whatever the
+/// session says.
+fn gated(
+    config: &EffectiveToolConfig,
+    writes_allowed: bool,
+    commands_allowed: bool,
+) -> EffectiveToolConfig {
     let mut c = config.clone();
     if !writes_allowed {
         c.capabilities
             .insert("files.write".to_string(), Permission::Off);
+    }
+    if !commands_allowed {
+        c.capabilities
+            .insert("shell.run".to_string(), Permission::Off);
     }
     c
 }
@@ -268,7 +296,7 @@ impl Manager {
 
     /// Streams one model reply for the run.
     async fn agent_step(&mut self, id: SessionId) {
-        let writes = self.writes_allowed;
+        let (writes, runs) = (self.writes_allowed, self.commands_allowed);
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -278,7 +306,7 @@ impl Manager {
         agent.steps += 1;
         let (run_id, steps_before) = (agent.run, agent.steps - 1);
         let left = live.s.step_budget.saturating_sub(steps_before);
-        let config = gated(&live.s.effective_tools, writes);
+        let config = gated(&live.s.effective_tools, writes, runs);
         let system = system_prompt(&live.s, &config, left);
         let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
         let win = window(live.s.model_options.num_ctx, context);
@@ -422,7 +450,7 @@ impl Manager {
 
     /// Starts the next queued tool call, or moves on when none are left.
     async fn run_next_tool(&mut self, id: SessionId) {
-        let writes = self.writes_allowed;
+        let (writes, runs) = (self.writes_allowed, self.commands_allowed);
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -433,7 +461,7 @@ impl Manager {
             self.agent_next(id).await;
             return;
         };
-        let config = gated(&live.s.effective_tools, writes);
+        let config = gated(&live.s.effective_tools, writes, runs);
         let mut ask = registry::needs_approval(&config, &call.name);
         let preview = agent.preview(&call.name, &call.arguments);
         if ask && registry::capability_of(&call.name).as_deref() == Some("files.write") {
@@ -446,6 +474,20 @@ impl Manager {
                 Some(_) => {}
             }
         }
+        let run = agent.run_preview(&call.name, &call.arguments);
+        if ask && call.name == "run_command" {
+            // An allowed prefix covers a plain command that starts with it and
+            // nothing chained to it; a call without a command runs to fail.
+            let covered = live.allowed_prefixes.iter().any(|p| {
+                call.arguments
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| command::covered_by(c, p))
+            });
+            if covered || run.is_none() {
+                ask = false;
+            }
+        }
         if ask {
             // Ask the user first; the run waits in this slot.
             live.slot = Slot::Tools(Box::new(ToolRun {
@@ -453,6 +495,7 @@ impl Manager {
                 call_id: call.call_id.clone(),
                 msg: call.msg,
                 waiting: Some(call.clone()),
+                cancel: Arc::new(AtomicBool::new(false)),
             }));
             self.emit(ChatEvent::ApprovalRequested {
                 session: id,
@@ -460,6 +503,7 @@ impl Manager {
                 name: call.name,
                 arguments: call.arguments,
                 preview,
+                run,
             });
             return;
         }
@@ -470,7 +514,7 @@ impl Manager {
     /// Runs a tool call on the blocking pool. `approved` lets a tool set to
     /// Ask through.
     fn start_tool_call(&mut self, id: SessionId, call: PendingCall, approved: bool) {
-        let writes = self.writes_allowed;
+        let (writes, runs) = (self.writes_allowed, self.commands_allowed);
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -480,7 +524,7 @@ impl Manager {
         live.s.start_tool(call.msg);
         let (workspace, config, run, room) = (
             Arc::clone(&agent.workspace),
-            gated(&live.s.effective_tools, writes),
+            gated(&live.s.effective_tools, writes, runs),
             agent.run,
             live.s.undo_room(),
         );
@@ -490,6 +534,8 @@ impl Manager {
             call.arguments.clone(),
             call.call_id.clone(),
         );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&cancel);
         let join = tokio::task::spawn_blocking(move || {
             let (result, change) = registry::call_tracked(
                 &workspace,
@@ -497,8 +543,11 @@ impl Manager {
                 &name,
                 &args,
                 &Limits::default(),
-                approved,
-                room,
+                &registry::Options {
+                    approved,
+                    undo_room: room,
+                    cancel: &stop,
+                },
             );
             let _ = tx.send(RunMsg::ToolDone {
                 session: id,
@@ -513,6 +562,7 @@ impl Manager {
             call_id: call.call_id.clone(),
             msg: call.msg,
             waiting: None,
+            cancel,
         }));
         self.emit(ChatEvent::ToolStarted {
             session: id,
@@ -541,6 +591,21 @@ impl Manager {
         };
         match decision {
             ApprovalDecision::Allow => self.start_tool_call(id, call, true),
+            ApprovalDecision::AllowForSession
+                if registry::capability_of(&call.name).as_deref() == Some("shell.run") =>
+            {
+                // Commands are never allowed wholesale: only a plain prefix
+                // such as `cargo test`, and not at all for risky programs.
+                if let Some(live) = self.sessions.get_mut(&id) {
+                    let prefix = call
+                        .arguments
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .and_then(command::allow_prefix);
+                    live.allowed_prefixes.extend(prefix);
+                }
+                self.start_tool_call(id, call, true);
+            }
             ApprovalDecision::AllowForSession
                 if registry::capability_of(&call.name).as_deref() == Some("files.write") =>
             {
@@ -867,6 +932,9 @@ impl Manager {
             }
             Slot::Tools(_) => {
                 if let Slot::Tools(t) = std::mem::replace(&mut live.slot, Slot::Idle) {
+                    // A running command is ended by its flag; aborting the
+                    // blocking task would leave it running.
+                    t.cancel.store(true, Ordering::SeqCst);
                     if let Some(join) = t.join {
                         join.abort();
                     }

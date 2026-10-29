@@ -98,6 +98,7 @@ impl ChatManager {
             run_tx,
             next_token: 0,
             writes_allowed: true,
+            commands_allowed: false,
         };
         rt.spawn(manager.run(rx, run_rx));
         ChatHandle { tx }
@@ -152,6 +153,8 @@ pub(super) struct Live {
     pub(super) agent: Option<AgentRun>,
     /// Files whose edits the user allowed for as long as this chat is open.
     pub(super) allowed_files: std::collections::HashSet<String>,
+    /// Command prefixes the user allowed for as long as this chat is open.
+    pub(super) allowed_prefixes: std::collections::HashSet<String>,
 }
 
 impl Live {
@@ -164,6 +167,7 @@ impl Live {
             dirty: false,
             agent: None,
             allowed_files: Default::default(),
+            allowed_prefixes: Default::default(),
         }
     }
 }
@@ -181,6 +185,8 @@ pub(super) struct Manager {
     pub(super) next_token: u64,
     /// Settings: may agents write files at all.
     pub(super) writes_allowed: bool,
+    /// Settings: may agents run commands at all (off until the user says).
+    pub(super) commands_allowed: bool,
 }
 
 pub(super) fn now_ms() -> u64 {
@@ -366,6 +372,7 @@ impl Manager {
             ChatCommand::CheckModel(model) => self.check_model(model),
             ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
             ChatCommand::SetWritesAllowed(on) => self.writes_allowed = on,
+            ChatCommand::SetRunAllowed(on) => self.commands_allowed = on,
             ChatCommand::UndoChange { session, change } => self.undo(session, Some(change)),
             ChatCommand::UndoAll(session) => self.undo(session, None),
             ChatCommand::SetStepBudget(id, steps) => {
@@ -448,7 +455,11 @@ impl Manager {
             if let Slot::Tools(t) = &l.slot {
                 waiting = t.waiting_call().map(|(call_id, name, arguments)| {
                     let preview = l.agent.as_ref().and_then(|a| a.preview(&name, &arguments));
-                    (call_id, name, arguments, preview)
+                    let run = l
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.run_preview(&name, &arguments));
+                    (call_id, name, arguments, preview, run)
                 });
             }
         }
@@ -470,13 +481,14 @@ impl Manager {
                 });
             }
         }
-        if let Some((call_id, name, arguments, preview)) = waiting {
+        if let Some((call_id, name, arguments, preview, run)) = waiting {
             self.emit(ChatEvent::ApprovalRequested {
                 session: id,
                 call_id,
                 name,
                 arguments,
                 preview,
+                run,
             });
         }
     }
@@ -758,6 +770,7 @@ impl Manager {
                 run.join.abort();
             }
             Slot::Tools(tool) => {
+                tool.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
                 if let Some(join) = tool.join {
                     join.abort();
                 }

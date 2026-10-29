@@ -32,6 +32,10 @@ const COMPOSER_ROWS: usize = 3;
 pub struct ChatUi {
     /// Changes whose diff is shown under their tool.
     pub diffs_open: std::collections::HashSet<(SessionId, u32)>,
+    /// Allow for Run was chosen for this session and awaits the confirmation.
+    pub run_allow_pending: Option<SessionId>,
+    /// Families whose list of individual tools is open, per session (0 Files, 1 Shell).
+    pub tools_open: std::collections::HashSet<(SessionId, u8)>,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -99,6 +103,12 @@ pub struct ChatProbe {
     pub permission_buttons: Vec<egui::Rect>,
     /// The Off / Ask buttons of the Write row in the tools menu.
     pub write_buttons: Vec<egui::Rect>,
+    /// The Off / Ask / Allow buttons of the Run row, when commands are switched on.
+    pub run_buttons: Vec<egui::Rect>,
+    /// The "Individual tools" heading of each family card.
+    pub tools_heads: Vec<egui::Rect>,
+    /// The Confirm and Cancel buttons shown after choosing Allow for Run.
+    pub run_confirm: Option<(egui::Rect, egui::Rect)>,
     /// Per change (by id): its row under the tool, its Undo and Show diff buttons.
     pub change_rows: Vec<(u32, egui::Rect)>,
     pub undo_buttons: Vec<(u32, egui::Rect)>,
@@ -919,6 +929,56 @@ pub(super) fn diff_box(
         });
 }
 
+/// What a command approval says: the command itself, where it runs and the
+/// limits it runs under.
+fn command_summary(ui: &mut egui::Ui, t: &Tokens, r: &roost_core::agent::command::RunPreview) {
+    ui.label(
+        RichText::new("The agent wants to run a command")
+            .font(semibold(13.0))
+            .color(t.fg),
+    );
+    egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(7.0)
+        .inner_margin(Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // The whole command stays reachable, but a long one scrolls
+            // instead of pushing the buttons off the screen.
+            egui::ScrollArea::vertical()
+                .max_height((ui.ctx().content_rect().height() * 0.13).clamp(60.0, 120.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&r.command).font(mono(12.5)).color(t.fg))
+                            .wrap(),
+                    );
+                });
+        });
+    let minutes = r.timeout_secs / 60;
+    let limit = if r.timeout_secs.is_multiple_of(60) && minutes > 0 {
+        format!(
+            "stops after {minutes} minute{}",
+            if minutes == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("stops after {} seconds", r.timeout_secs)
+    };
+    let facts = [
+        format!("in {}", r.folder.display()),
+        limit,
+        format!("output kept to {} KB", r.output_kb),
+        "your tokens are not passed on".to_string(),
+    ];
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        for fact in facts {
+            ui.label(RichText::new(fact).size(12.0).color(t.fg2));
+        }
+    });
+}
+
 /// What the agent wants to do and three ways to answer. The run waits.
 fn approval_card(
     ui: &mut egui::Ui,
@@ -930,20 +990,44 @@ fn approval_card(
 ) {
     use roost_core::chat::ApprovalDecision;
     let mut answer = None;
+    let dark = ui.visuals().dark_mode;
+    // A command is drawn in the warning red: it is the one ask that can
+    // change things outside the agent's folder.
+    let (fill, stroke) = if ask.run.is_some() {
+        let red = crate::app::bad(dark);
+        (
+            egui::Color32::from_rgba_unmultiplied(red.r(), red.g(), red.b(), 26),
+            red,
+        )
+    } else {
+        (t.warn_soft, t.warn)
+    };
     egui::Frame::new()
-        .fill(t.warn_soft)
-        .stroke(Stroke::new(1.0, t.warn))
+        .fill(fill)
+        .stroke(Stroke::new(1.0, stroke))
         .corner_radius(10.0)
         .inner_margin(Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 8.0;
-            let always_label = match &ask.preview {
-                Some(p) => {
-                    write_summary(ui, t, p);
-                    "Allow edits to this file this session"
+            // (first button, the session button when there is one)
+            let (allow_label, always_label): (&str, Option<String>) = match (&ask.run, &ask.preview)
+            {
+                (Some(r), _) => {
+                    command_summary(ui, t, r);
+                    (
+                        "Run it",
+                        r.prefix.as_ref().map(|p| format!("Allow {p} this session")),
+                    )
                 }
-                None => {
+                (None, Some(p)) => {
+                    write_summary(ui, t, p);
+                    (
+                        "Allow",
+                        Some("Allow edits to this file this session".to_string()),
+                    )
+                }
+                (None, None) => {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("The agent wants to run").color(t.fg2));
                         ui.label(RichText::new(&ask.name).font(mono(13.0)).color(t.fg));
@@ -957,21 +1041,26 @@ fn approval_card(
                         )
                         .wrap(),
                     );
-                    "Allow for this session"
+                    ("Allow", Some("Allow for this session".to_string()))
                 }
             };
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                let allow = primary_button(ui, "Allow", true);
-                let always = secondary(ui, always_label, true);
+                let allow = primary_button(ui, allow_label, true);
+                let always = always_label
+                    .as_deref()
+                    .map(|label| secondary(ui, label, true));
                 let deny = secondary(ui, "Deny", true);
                 #[cfg(test)]
                 {
-                    app.chat_ui.probe.approval_buttons = vec![allow.rect, always.rect, deny.rect];
+                    app.chat_ui.probe.approval_buttons = std::iter::once(allow.rect)
+                        .chain(always.as_ref().map(|r| r.rect))
+                        .chain(std::iter::once(deny.rect))
+                        .collect();
                 }
                 if allow.clicked() {
                     answer = Some(ApprovalDecision::Allow);
-                } else if always.clicked() {
+                } else if always.is_some_and(|r| r.clicked()) {
                     answer = Some(ApprovalDecision::AllowForSession);
                 } else if deny.clicked() {
                     answer = Some(ApprovalDecision::Deny);
