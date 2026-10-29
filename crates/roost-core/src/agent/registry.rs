@@ -385,7 +385,7 @@ fn run(
         "read_binary" => (tools::read_binary(ws, args, limits), None),
         "find_files" => (tools::find_files(ws, args, limits), None),
         "search_text" => (tools::search_text(ws, args, limits), None),
-        "write_file" | "edit_file" => write(ws, name, args, undo_room),
+        "write_file" | "edit_file" => write(ws, name, args, undo_room, limits),
         "run_command" => (run_command(ws, args, limits, cancel), None),
         other => (Err(ToolError::UnknownTool(other.to_string())), None),
     }
@@ -412,8 +412,9 @@ fn write(
     name: &str,
     args: &Value,
     undo_room: usize,
+    limits: &Limits,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
-    let change = match change::plan(ws, name, args) {
+    let change = match change::plan(ws, name, args, limits) {
         Ok(Some(c)) => c,
         Ok(None) => return (Err(ToolError::UnknownTool(name.to_string())), None),
         Err(e) => return (Err(e), None),

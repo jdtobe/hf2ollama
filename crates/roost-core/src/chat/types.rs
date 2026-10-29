@@ -34,6 +34,8 @@ pub enum ChatCommand {
     /// The app-wide switch for agents writing files (Settings). Off makes
     /// every agent read-only, whatever its own configuration says.
     SetWritesAllowed(bool),
+    /// Settings: how much the agent tools may read, search, write and run.
+    SetLimits(Box<crate::agent::tools::Limits>),
     /// The app-wide switch for agents running commands (Settings, off by
     /// default). Off hides the command tool from every agent.
     SetRunAllowed(bool),

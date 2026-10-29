@@ -5,29 +5,65 @@
 use super::workspace::{is_sensitive, EntryKind, ToolError, Workspace};
 use globset::GlobBuilder;
 use regex::RegexBuilder;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
-/// The limits from the design. Tests pass smaller ones for the big counts.
-#[derive(Debug, Clone)]
+/// How much the tools may read, list, search, write and run. Saved in
+/// `roost.toml` under `[tools]`; any key may be left out. Tests pass smaller
+/// ones for the big counts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Limits {
+    /// Entries `list_dir` shows in one call.
     pub list_entries: usize,
+    /// Lines `read_file` shows when no `limit` is given.
     pub read_default_lines: usize,
+    /// Most lines `read_file` shows in one call.
     pub read_max_lines: usize,
+    /// Bytes of output any one read, list or search returns.
     pub output_bytes: usize,
+    /// Paths `find_files` returns in one call.
     pub find_results: usize,
+    /// Folders deep `find_files` and `search_text` look.
     pub depth: usize,
+    /// Entries `find_files` and `search_text` look at before stopping.
     pub examined: usize,
+    /// Matches `search_text` returns in one call.
     pub search_matches: usize,
+    /// Matches `search_text` shows from any one file.
     pub per_file_matches: usize,
+    /// Characters of a line shown before it is cut.
     pub line_chars: usize,
+    /// Largest text file `read_file` opens.
     pub read_file_bytes: u64,
+    /// Largest file `search_text` looks inside.
     pub search_file_bytes: u64,
+    /// Most bytes `write_file` writes in one call.
+    pub write_bytes: usize,
+    /// Largest existing file `edit_file` and `write_file` may change.
+    pub edit_file_bytes: usize,
+    /// Bytes of undo copies kept for one chat.
+    pub undo_bytes: usize,
     /// A command is stopped after this long.
+    #[serde(rename = "run_timeout_secs", with = "secs")]
     pub run_timeout: std::time::Duration,
     /// A command's output is cut here.
     pub run_output_bytes: usize,
+}
+
+mod secs {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(d.as_secs())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        Ok(Duration::from_secs(u64::deserialize(d)?))
+    }
 }
 
 impl Default for Limits {
@@ -45,9 +81,43 @@ impl Default for Limits {
             line_chars: 300,
             read_file_bytes: 16 * 1024 * 1024,
             search_file_bytes: 2 * 1024 * 1024,
+            write_bytes: 256 * 1024,
+            edit_file_bytes: 1024 * 1024,
+            undo_bytes: 8 * 1024 * 1024,
             run_timeout: std::time::Duration::from_secs(120),
             run_output_bytes: 20 * 1024,
         }
+    }
+}
+
+impl Limits {
+    /// The limits kept inside a range that cannot break the tools or the
+    /// model's context: nothing zero, nothing absurdly large. A value out of
+    /// range is moved to the nearest end.
+    pub fn clamped(mut self) -> Limits {
+        const KB: usize = 1024;
+        const MB: usize = 1024 * 1024;
+        self.list_entries = self.list_entries.clamp(1, 5_000);
+        self.read_default_lines = self.read_default_lines.clamp(1, 5_000);
+        self.read_max_lines = self.read_max_lines.clamp(self.read_default_lines, 20_000);
+        self.output_bytes = self.output_bytes.clamp(KB, MB);
+        self.find_results = self.find_results.clamp(1, 5_000);
+        self.depth = self.depth.clamp(1, 256);
+        self.examined = self.examined.clamp(1_000, 5_000_000);
+        self.search_matches = self.search_matches.clamp(1, 5_000);
+        self.per_file_matches = self.per_file_matches.clamp(1, 1_000);
+        self.line_chars = self.line_chars.clamp(40, 5_000);
+        self.read_file_bytes = self.read_file_bytes.clamp(KB as u64, 256 * MB as u64);
+        self.search_file_bytes = self.search_file_bytes.clamp(KB as u64, 256 * MB as u64);
+        self.write_bytes = self.write_bytes.clamp(KB, 4 * MB);
+        self.edit_file_bytes = self.edit_file_bytes.clamp(KB, 8 * MB);
+        self.undo_bytes = self.undo_bytes.clamp(MB, 256 * MB);
+        self.run_timeout = self.run_timeout.clamp(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(3_600),
+        );
+        self.run_output_bytes = self.run_output_bytes.clamp(KB, MB);
+        self
     }
 }
 
@@ -637,6 +707,48 @@ mod tests {
         let p = root.path().join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, text).unwrap();
+    }
+
+    #[test]
+    fn limits_in_a_table_override_only_what_it_names() {
+        let l: Limits = toml::from_str("list_entries = 5\nrun_timeout_secs = 30\n").unwrap();
+        assert_eq!(l.list_entries, 5);
+        assert_eq!(l.run_timeout, std::time::Duration::from_secs(30));
+        assert_eq!(l.search_matches, Limits::default().search_matches);
+        let back: Limits = toml::from_str(&toml::to_string(&l).unwrap()).unwrap();
+        assert_eq!(back, l);
+    }
+
+    #[test]
+    fn absurd_limits_are_moved_into_a_range_the_tools_can_live_with() {
+        let wild = Limits {
+            list_entries: 0,
+            read_default_lines: 0,
+            read_max_lines: 0,
+            output_bytes: 0,
+            find_results: usize::MAX,
+            depth: 0,
+            examined: 0,
+            search_matches: 0,
+            per_file_matches: 0,
+            line_chars: 0,
+            read_file_bytes: 0,
+            search_file_bytes: u64::MAX,
+            write_bytes: 0,
+            edit_file_bytes: usize::MAX,
+            undo_bytes: 0,
+            run_timeout: std::time::Duration::ZERO,
+            run_output_bytes: usize::MAX,
+        }
+        .clamped();
+        assert!(wild.list_entries >= 1 && wild.depth >= 1 && wild.search_matches >= 1);
+        assert!(wild.read_max_lines >= wild.read_default_lines);
+        assert!(wild.output_bytes >= 1024 && wild.run_output_bytes <= 1024 * 1024);
+        assert!(wild.find_results <= 5_000 && wild.edit_file_bytes <= 8 * 1024 * 1024);
+        assert!(wild.search_file_bytes <= 256 * 1024 * 1024);
+        assert!(wild.run_timeout >= std::time::Duration::from_secs(1));
+        // Sensible values pass through untouched.
+        assert_eq!(Limits::default().clamped(), Limits::default());
     }
 
     fn lim() -> Limits {

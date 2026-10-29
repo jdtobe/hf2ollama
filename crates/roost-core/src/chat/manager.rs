@@ -98,6 +98,7 @@ impl ChatManager {
             run_tx,
             next_token: 0,
             writes_allowed: true,
+            limits: Default::default(),
             commands_allowed: false,
         };
         rt.spawn(manager.run(rx, run_rx));
@@ -187,6 +188,8 @@ pub(super) struct Manager {
     pub(super) writes_allowed: bool,
     /// Settings: may agents run commands at all (off until the user says).
     pub(super) commands_allowed: bool,
+    /// Settings: the limits the agent tools run under.
+    pub(super) limits: crate::agent::tools::Limits,
 }
 
 pub(super) fn now_ms() -> u64 {
@@ -373,6 +376,7 @@ impl Manager {
             ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
             ChatCommand::SetWritesAllowed(on) => self.writes_allowed = on,
             ChatCommand::SetRunAllowed(on) => self.commands_allowed = on,
+            ChatCommand::SetLimits(l) => self.limits = l.clamped(),
             ChatCommand::UndoChange { session, change } => self.undo(session, Some(change)),
             ChatCommand::UndoAll(session) => self.undo(session, None),
             ChatCommand::SetStepBudget(id, steps) => {
@@ -454,11 +458,14 @@ impl Manager {
             // the window forgot it when it left this chat.
             if let Slot::Tools(t) = &l.slot {
                 waiting = t.waiting_call().map(|(call_id, name, arguments)| {
-                    let preview = l.agent.as_ref().and_then(|a| a.preview(&name, &arguments));
+                    let preview = l
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.preview(&name, &arguments, &self.limits));
                     let run = l
                         .agent
                         .as_ref()
-                        .and_then(|a| a.run_preview(&name, &arguments));
+                        .and_then(|a| a.run_preview(&name, &arguments, &self.limits));
                     (call_id, name, arguments, preview, run)
                 });
             }

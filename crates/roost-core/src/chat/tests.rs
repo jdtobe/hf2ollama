@@ -2918,3 +2918,125 @@ async fn reopening_a_chat_that_is_waiting_asks_the_question_again() {
     });
     h.wait_run_ended(1).await;
 }
+
+/// An agent that may read and write without asking, with the given limits.
+async fn free_agent(
+    routes: Vec<Route>,
+    limits: crate::agent::tools::Limits,
+) -> (TcpScript, H, SessionId, TempDir) {
+    let ws = workspace();
+    let srv = fake_agent(routes).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.cmd(ChatCommand::SetLimits(Box::new(limits)));
+    for key in ["files.read", "files.write"] {
+        h.cmd(ChatCommand::SetCapability(
+            id,
+            key.into(),
+            crate::session::Permission::Auto,
+        ));
+    }
+    h.wait("capabilities set", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.capabilities.get("files.write")
+                == Some(&crate::session::Permission::Auto)
+        })
+    })
+    .await;
+    (srv, h, id, ws)
+}
+
+#[tokio::test]
+async fn a_smaller_write_limit_from_settings_refuses_a_bigger_write() {
+    let limits = crate::agent::tools::Limits {
+        write_bytes: 1024,
+        ..Default::default()
+    };
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls(
+                "write_file",
+                serde_json::json!({"path": "big.txt", "content": "x".repeat(2000)}),
+            )),
+            chat_route(reply("Too big.")),
+        ],
+        limits,
+    )
+    .await;
+    h.send(id, "write it").await;
+    h.wait_run_ended(1).await;
+    assert!(!ws.path().join("big.txt").exists());
+    let out = tool_outputs(&h.events()).join("\n");
+    assert!(out.contains("at most 1024"), "{out}");
+}
+
+#[tokio::test]
+async fn a_larger_write_limit_from_settings_allows_what_the_default_refuses() {
+    let limits = crate::agent::tools::Limits {
+        write_bytes: 400 * 1024,
+        ..Default::default()
+    };
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls(
+                "write_file",
+                serde_json::json!({"path": "big.txt", "content": "x".repeat(300 * 1024)}),
+            )),
+            chat_route(reply("Written.")),
+        ],
+        limits,
+    )
+    .await;
+    h.send(id, "write it").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        std::fs::metadata(ws.path().join("big.txt")).unwrap().len(),
+        300 * 1024
+    );
+}
+
+#[tokio::test]
+async fn the_list_limit_from_settings_cuts_a_listing_and_says_so() {
+    let limits = crate::agent::tools::Limits {
+        list_entries: 1,
+        ..Default::default()
+    };
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls("list_dir", serde_json::json!({"path": "."}))),
+            chat_route(reply("Listed.")),
+        ],
+        limits,
+    )
+    .await;
+    std::fs::write(ws.path().join("one.txt"), "1").unwrap();
+    std::fs::write(ws.path().join("two.txt"), "2").unwrap();
+    h.send(id, "list").await;
+    h.wait_run_ended(1).await;
+    let out = tool_outputs(&h.events()).join("\n");
+    assert!(out.contains("[truncated: showing 1 of "), "{out}");
+}
+
+#[tokio::test]
+async fn the_undo_limit_from_settings_refuses_a_change_it_could_not_take_back() {
+    let limits = crate::agent::tools::Limits {
+        undo_bytes: 1024 * 1024,
+        ..Default::default()
+    };
+    let edit = |n: u32| {
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "big.txt", "old_text": format!("marker{n}"), "new_text": format!("marker{}", n + 1)}),
+        ))
+    };
+    let (_srv, h, id, ws) =
+        free_agent(vec![edit(0), edit(1), chat_route(reply("Done."))], limits).await;
+    // Each edit keeps the 600 KB original, so the second would pass 1 MiB.
+    let body = format!("marker0 {}", "y".repeat(600_000));
+    std::fs::write(ws.path().join("big.txt"), body).unwrap();
+    h.send(id, "edit twice").await;
+    h.wait_run_ended(1).await;
+    let out = tool_outputs(&h.events());
+    assert!(out[0].starts_with("Changed"), "{out:?}");
+    assert!(out[1].contains("cannot keep another copy"), "{out:?}");
+}

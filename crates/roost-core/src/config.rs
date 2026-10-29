@@ -99,6 +99,8 @@ pub struct Settings {
     /// May agents run shell commands at all. Off until the user turns it on
     /// (after a warning); an agent still has to be set to Ask or Allow.
     pub agents_can_run: bool,
+    /// Limits for the agent tools, saved under `[tools]`.
+    pub tools: crate::agent::tools::Limits,
 }
 
 /// The sidebar's width until the user drags it.
@@ -121,6 +123,7 @@ impl Default for Settings {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             agents_can_write: true,
             agents_can_run: false,
+            tools: crate::agent::tools::Limits::default(),
         }
     }
 }
@@ -144,6 +147,7 @@ impl Settings {
             .try_into()
             .map_err(|e: toml::de::Error| Error::Parse(e.to_string()))?;
         settings.max_parallel = settings.max_parallel.clamp(1, 3);
+        settings.tools = settings.tools.clamped();
         Ok(settings)
     }
 
@@ -156,6 +160,42 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tool_limits_default_to_the_built_in_ones_and_load_from_a_tools_table() {
+        assert_eq!(Settings::default().tools, Default::default());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roost.toml");
+        std::fs::write(
+            &path,
+            "[tools]\nsearch_matches = 50\nrun_timeout_secs = 600\n",
+        )
+        .unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert_eq!(s.tools.search_matches, 50);
+        assert_eq!(s.tools.run_timeout, Duration::from_secs(600));
+        assert_eq!(
+            s.tools.list_entries, 200,
+            "unnamed limits keep their default"
+        );
+        // A file written before the table existed still loads.
+        std::fs::write(&path, "max_parallel = 2\n").unwrap();
+        assert_eq!(Settings::load(&path).unwrap().tools, Default::default());
+    }
+
+    #[test]
+    fn tool_limits_out_of_range_in_the_file_are_moved_into_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roost.toml");
+        std::fs::write(
+            &path,
+            "[tools]\nlist_entries = 0\nrun_timeout_secs = 99999999\n",
+        )
+        .unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert_eq!(s.tools.list_entries, 1);
+        assert_eq!(s.tools.run_timeout, Duration::from_secs(3600));
+    }
+
     use super::*;
 
     #[test]
@@ -272,6 +312,10 @@ mod tests {
             sidebar_width: 377.0,
             agents_can_write: false,
             agents_can_run: true,
+            tools: crate::agent::tools::Limits {
+                search_matches: 77,
+                ..Default::default()
+            },
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

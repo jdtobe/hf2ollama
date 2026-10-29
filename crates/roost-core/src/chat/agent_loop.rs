@@ -53,20 +53,29 @@ pub(super) struct AgentRun {
 impl AgentRun {
     /// What a write call would change, if `name` is a write tool and the call
     /// makes sense.
-    pub(super) fn preview(&self, name: &str, arguments: &Value) -> Option<ChangePreview> {
-        change::plan(&self.workspace, name, arguments)
+    pub(super) fn preview(
+        &self,
+        name: &str,
+        arguments: &Value,
+        lim: &Limits,
+    ) -> Option<ChangePreview> {
+        change::plan(&self.workspace, name, arguments, lim)
             .ok()
             .flatten()
             .map(|c| c.card())
     }
 
     /// What a command call would run and where, if `name` is the command tool.
-    pub(super) fn run_preview(&self, name: &str, arguments: &Value) -> Option<RunPreview> {
+    pub(super) fn run_preview(
+        &self,
+        name: &str,
+        arguments: &Value,
+        lim: &Limits,
+    ) -> Option<RunPreview> {
         if name != "run_command" {
             return None;
         }
         let command = arguments.get("command")?.as_str()?.trim().to_string();
-        let lim = Limits::default();
         Some(RunPreview {
             prefix: command::allow_prefix(&command),
             command,
@@ -451,6 +460,7 @@ impl Manager {
     /// Starts the next queued tool call, or moves on when none are left.
     async fn run_next_tool(&mut self, id: SessionId) {
         let (writes, runs) = (self.writes_allowed, self.commands_allowed);
+        let lim = self.limits.clone();
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -463,7 +473,7 @@ impl Manager {
         };
         let config = gated(&live.s.effective_tools, writes, runs);
         let mut ask = registry::needs_approval(&config, &call.name);
-        let preview = agent.preview(&call.name, &call.arguments);
+        let preview = agent.preview(&call.name, &call.arguments, &lim);
         if ask && registry::capability_of(&call.name).as_deref() == Some("files.write") {
             match &preview {
                 // The user allowed edits to this file for the session.
@@ -474,7 +484,7 @@ impl Manager {
                 Some(_) => {}
             }
         }
-        let run = agent.run_preview(&call.name, &call.arguments);
+        let run = agent.run_preview(&call.name, &call.arguments, &lim);
         if ask && call.name == "run_command" {
             // An allowed prefix covers a plain command that starts with it and
             // nothing chained to it; a call without a command runs to fail.
@@ -515,6 +525,7 @@ impl Manager {
     /// Ask through.
     fn start_tool_call(&mut self, id: SessionId, call: PendingCall, approved: bool) {
         let (writes, runs) = (self.writes_allowed, self.commands_allowed);
+        let lim = self.limits.clone();
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -526,7 +537,7 @@ impl Manager {
             Arc::clone(&agent.workspace),
             gated(&live.s.effective_tools, writes, runs),
             agent.run,
-            live.s.undo_room(),
+            live.s.undo_room(lim.undo_bytes),
         );
         let (tx, name, args, call_id) = (
             self.run_tx.clone(),
@@ -542,7 +553,7 @@ impl Manager {
                 &config,
                 &name,
                 &args,
-                &Limits::default(),
+                &lim,
                 &registry::Options {
                     approved,
                     undo_room: room,
@@ -610,11 +621,12 @@ impl Manager {
                 if registry::capability_of(&call.name).as_deref() == Some("files.write") =>
             {
                 // Writing never becomes automatic: only this file is allowed.
+                let lim = self.limits.clone();
                 if let Some(live) = self.sessions.get_mut(&id) {
                     let path = live
                         .agent
                         .as_ref()
-                        .and_then(|a| a.preview(&call.name, &call.arguments))
+                        .and_then(|a| a.preview(&call.name, &call.arguments, &lim))
                         .map(|p| p.path);
                     live.allowed_files.extend(path);
                 }
@@ -789,7 +801,7 @@ impl Manager {
                 break;
             }
             let rel = std::path::PathBuf::from(&rec.path);
-            let now = match ws.read_text_for_edit(&rel) {
+            let now = match ws.read_text_for_edit(&rel, self.limits.edit_file_bytes) {
                 Ok(Some(t)) => t,
                 Ok(None) => {
                     refuse(
