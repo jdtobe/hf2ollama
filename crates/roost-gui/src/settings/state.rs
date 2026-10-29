@@ -36,6 +36,7 @@ pub struct SettingsChange {
     pub theme: bool,
     pub keep_alive: bool,
     pub agents_can_write: bool,
+    pub agents_can_run: bool,
 }
 
 impl SettingsChange {
@@ -55,6 +56,7 @@ impl SettingsChange {
         self.theme |= other.theme;
         self.keep_alive |= other.keep_alive;
         self.agents_can_write |= other.agents_can_write;
+        self.agents_can_run |= other.agents_can_run;
     }
 }
 
@@ -204,6 +206,8 @@ pub struct SettingsState {
     pub connection: ConnectionState,
     pub cached: CachedStatus,
     pub clear: Confirm,
+    /// The warning before commands are switched on is showing.
+    pub confirm_run: bool,
     pub save: SaveIndicator,
     pub note: Option<(String, Instant)>,
     default_staging: PathBuf,
@@ -246,6 +250,7 @@ impl SettingsState {
             connection: ConnectionState::Idle,
             cached: CachedStatus::Loading,
             clear: Confirm::default(),
+            confirm_run: false,
             save: SaveIndicator::Idle,
             note: None,
             default_staging,
@@ -409,6 +414,34 @@ impl SettingsState {
             agents_can_write: Self::flag(&mut s.agents_can_write, on),
             ..Default::default()
         }
+    }
+
+    /// The run switch was flipped. Turning it off is immediate; turning it
+    /// on only raises the warning, and nothing changes until it is accepted.
+    pub fn set_agents_can_run(&mut self, s: &mut Settings, on: bool) -> SettingsChange {
+        if on && !s.agents_can_run {
+            self.confirm_run = true;
+            return SettingsChange::default();
+        }
+        self.confirm_run = false;
+        SettingsChange {
+            agents_can_run: Self::flag(&mut s.agents_can_run, on),
+            ..Default::default()
+        }
+    }
+
+    /// "Turn on" in the warning.
+    pub fn accept_run(&mut self, s: &mut Settings) -> SettingsChange {
+        self.confirm_run = false;
+        SettingsChange {
+            agents_can_run: Self::flag(&mut s.agents_can_run, true),
+            ..Default::default()
+        }
+    }
+
+    /// "Keep it off" in the warning.
+    pub fn decline_run(&mut self) {
+        self.confirm_run = false;
     }
 
     pub fn set_keep_alive(&mut self, s: &mut Settings, v: KeepAlive) -> SettingsChange {
@@ -707,6 +740,7 @@ mod tests {
             (c.theme, "theme"),
             (c.keep_alive, "keep_alive"),
             (c.agents_can_write, "agents_can_write"),
+            (c.agents_can_run, "agents_can_run"),
         ] {
             if on {
                 v.push(name);
@@ -752,6 +786,27 @@ mod tests {
         assert_eq!(st.token_status, HfTokenStatus::Checking);
         assert!(st.token_busy);
         assert!(!st.can_import_legacy_token());
+    }
+
+    #[test]
+    fn running_commands_needs_the_warning_accepted_and_turns_off_at_once() {
+        let (mut s, mut st) = fresh();
+        assert!(!s.agents_can_run);
+        // Flipping it on only raises the warning.
+        let c = st.set_agents_can_run(&mut s, true);
+        assert!(!c.any() && !s.agents_can_run && st.confirm_run);
+        // Declining leaves it off.
+        st.decline_run();
+        assert!(!st.confirm_run && !s.agents_can_run);
+        // Accepting turns it on and reports the change.
+        st.set_agents_can_run(&mut s, true);
+        let c = st.accept_run(&mut s);
+        assert_eq!(flags(c), ["agents_can_run"]);
+        assert!(s.agents_can_run && !st.confirm_run);
+        // Turning it off needs no warning.
+        let c = st.set_agents_can_run(&mut s, false);
+        assert_eq!(flags(c), ["agents_can_run"]);
+        assert!(!s.agents_can_run && !st.confirm_run);
     }
 
     #[test]

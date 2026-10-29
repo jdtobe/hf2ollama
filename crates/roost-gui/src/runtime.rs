@@ -554,6 +554,7 @@ fn start_chat(
             );
             let chat = ChatManager::spawn(runtime.handle(), writer, cfg, sink);
             chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
+            chat.send(ChatCommand::SetRunAllowed(settings.agents_can_run));
             Some(chat)
         }
         Err(StoreError::Locked) => {
@@ -609,6 +610,7 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
         BackendRequest::ApplySettings(settings) => {
             if let Some(chat) = &shared.chat {
                 chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
+                chat.send(ChatCommand::SetRunAllowed(settings.agents_can_run));
             }
             let rebuild = needs_rebuild(&shared.clients().settings, &settings);
             if rebuild {
@@ -2024,6 +2026,128 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn turning_the_write_switch_off_in_settings_stops_agents_writing() {
         a_write_with_the_switch_off_is_refused(false).await;
+    }
+
+    /// An agent whose model asks to run `touch ran.txt`, with the agent's
+    /// own setting at `permission`. Returns whether the user was asked (and
+    /// with what command) and whether the command ran.
+    async fn a_command_asked_for(
+        on_at_start: bool,
+        turned_off_after: bool,
+        permission: roost_core::session::Permission,
+    ) -> (Option<String>, bool) {
+        let server = version_server("0.9.2").await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"details":{"family":"llama"},"model_info":{"llama.context_length":8192},"capabilities":["completion","tools"],"digest":"sha256:abc"}"#,
+            ))
+            .mount(&server)
+            .await;
+        let call = "{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"run_command\",\"arguments\":{\"command\":\"touch ran.txt\"}}}]},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(call))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        let done = "{\"message\":{\"role\":\"assistant\",\"content\":\"Done.\"},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(done))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
+            log_dir: dir.path().join("logs"),
+            default_staging: dir.path().join("staging"),
+            portable: true,
+        };
+        let start = Settings {
+            ollama_url: server.uri(),
+            hf_endpoint: "http://127.0.0.1:9".into(),
+            agents_can_run: on_at_start,
+            ..Settings::default()
+        };
+        let (tx, rx) = Backend::spawn_with(
+            egui::Context::default(),
+            start.clone(),
+            paths,
+            Arc::new(MemoryStore::default()),
+        );
+        if turned_off_after {
+            tx.send(BackendRequest::ApplySettings(Settings {
+                agents_can_run: false,
+                ..start
+            }))
+            .unwrap();
+            wait_for(&rx, |e| {
+                matches!(e, UiEvent::SettingsSaved(_)).then_some(())
+            });
+        }
+        let work = tempfile::tempdir().unwrap();
+        tx.send(BackendRequest::Chat(ChatCommand::CreateAgent {
+            lifetime: roost_core::session::SessionLifetime::Persisted,
+            model: "llama3:8b".into(),
+            workspace: work.path().to_path_buf(),
+        }))
+        .unwrap();
+        let id = wait_for(&rx, |e| match e {
+            UiEvent::Chat(ChatEvent::Opened(s)) => Some(s.id),
+            _ => None,
+        });
+        tx.send(BackendRequest::Chat(ChatCommand::SetCapability(
+            id,
+            "shell.run".into(),
+            permission,
+        )))
+        .unwrap();
+        tx.send(BackendRequest::Chat(ChatCommand::Send {
+            session: id,
+            text: "run it".into(),
+        }))
+        .unwrap();
+        let mut asked = None;
+        wait_for(&rx, |e| match e {
+            UiEvent::Chat(ChatEvent::ApprovalRequested { run, .. }) => {
+                asked = run.as_ref().map(|r| r.command.clone());
+                Some(())
+            }
+            UiEvent::Chat(ChatEvent::RunEnded { .. }) => Some(()),
+            _ => None,
+        });
+        // A command that was allowed to run has finished by the time the
+        // run ends; give a stray one a moment before concluding it did not.
+        std::thread::sleep(Duration::from_millis(300));
+        (asked, work.path().join("ran.txt").exists())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn with_the_run_switch_on_a_command_waits_for_the_user() {
+        use roost_core::session::Permission;
+        let (asked, ran) = a_command_asked_for(true, false, Permission::Ask).await;
+        assert_eq!(asked.as_deref(), Some("touch ran.txt"));
+        assert!(!ran, "the command ran before the user answered");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_run_switch_off_at_launch_stops_agents_running_commands() {
+        use roost_core::session::Permission;
+        // Even an agent set to Allow cannot run anything.
+        let (asked, ran) = a_command_asked_for(false, false, Permission::Auto).await;
+        assert_eq!(asked, None);
+        assert!(!ran, "a command ran with the switch off");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn turning_the_run_switch_off_in_settings_stops_agents_running_commands() {
+        use roost_core::session::Permission;
+        let (asked, ran) = a_command_asked_for(true, true, Permission::Auto).await;
+        assert_eq!(asked, None);
+        assert!(!ran, "a command ran after the switch was turned off");
     }
 
     #[test]

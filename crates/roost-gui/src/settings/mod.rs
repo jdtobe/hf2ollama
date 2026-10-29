@@ -166,6 +166,7 @@ impl SettingsView {
             agents_card(ui, &mut cx, state, settings, width, &mut change);
             hardware_card(ui, &mut cx, state, settings, width, &mut change);
         });
+        run_warning(ui, &mut cx, state, settings, &mut change);
         #[cfg(test)]
         {
             self.probe.viewport = Some(shown.inner_rect);
@@ -853,7 +854,100 @@ fn agents_card(
                 }
             },
         );
+        row(
+            ui,
+            cx,
+            "Let agents run commands",
+            "Off until you turn it on. A command runs with your own rights, not limited to the agent's folder.",
+            22.0,
+            true,
+            |ui, cx, _| {
+                let mut on = settings.agents_can_run;
+                let r = toggle(ui, &mut on);
+                cx.rec("toggle-agent-run", r.rect);
+                if r.changed() {
+                    change.merge(state.set_agents_can_run(settings, on));
+                }
+            },
+        );
     });
+}
+
+/// The warning shown before commands are switched on. Keeping it off is the
+/// default button, so Enter never turns commands on by accident.
+fn run_warning(
+    ui: &mut egui::Ui,
+    cx: &mut Cx,
+    state: &mut SettingsState,
+    settings: &mut Settings,
+    change: &mut SettingsChange,
+) {
+    if !state.confirm_run {
+        return;
+    }
+    let t = cx.t;
+    let width = (ui.ctx().content_rect().width() - 64.0).clamp(240.0, 480.0);
+    let frame = egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, bad(cx.dark)))
+        .corner_radius(10.0)
+        .inner_margin(20.0);
+    let (mut turn_on, mut keep_off) = (false, false);
+    let modal = egui::Modal::new(egui::Id::NULL.with("run-warning"))
+        .frame(frame)
+        .show(ui.ctx(), |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            ui.label(
+                RichText::new("Let agents run commands?")
+                    .font(semibold(16.0))
+                    .color(t.fg),
+            );
+            let line = |ui: &mut egui::Ui, text: &str| {
+                ui.add(egui::Label::new(RichText::new(text).size(13.0).color(t.fg2)).wrap());
+            };
+            line(
+                ui,
+                "A command runs on this computer as you. It is not limited to the agent's folder.",
+            );
+            for bullet in [
+                "It can read, change or delete any file you can.",
+                "It can use the network.",
+                "A mistaken or manipulated model can do damage that Roost cannot undo.",
+            ] {
+                line(ui, &format!("•  {bullet}"));
+            }
+            line(
+                ui,
+                "Roost will ask before each command unless you say otherwise, and you can turn this off again at any time.",
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let keep = ui.add(
+                    egui::Button::new(RichText::new("Keep it off").size(13.0).color(t.accent_fg))
+                        .fill(t.accent)
+                        .min_size(vec2(0.0, 32.0)),
+                );
+                if ui.memory(|m| m.focused()).is_none() {
+                    keep.request_focus();
+                }
+                let on = ui.add(
+                    egui::Button::new(RichText::new("Turn on").size(13.0).color(bad(cx.dark)))
+                        .stroke(Stroke::new(1.0, bad(cx.dark)))
+                        .min_size(vec2(0.0, 32.0)),
+                );
+                cx.rec("run-keep-off", keep.rect);
+                cx.rec("run-turn-on", on.rect);
+                keep_off = keep.clicked();
+                turn_on = on.clicked();
+            });
+        });
+    let _ = modal;
+    if turn_on {
+        change.merge(state.accept_run(settings));
+    } else if keep_off || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.decline_run();
+    }
 }
 
 fn hardware_card(

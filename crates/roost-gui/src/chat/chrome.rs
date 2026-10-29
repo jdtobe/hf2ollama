@@ -602,19 +602,28 @@ fn cap_permission(cfg: &roost_core::session::EffectiveToolConfig, cap: Capabilit
 /// at a glance. Read is accent when allowed, write is amber when it asks;
 /// anything off is dimmed. No W when writing is off in Settings.
 fn capability_chips(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, s: &Session) {
+    let dark = ui.visuals().dark_mode;
     #[cfg(test)]
     {
         app.chat_ui.probe.chips.clear();
     }
-    let mut chips = vec![(Capability::Write, 'W', "Writing files")];
-    if !app.settings.agents_can_write {
-        chips.clear();
+    // Right-to-left: X is placed first, so W and then R end up on its left.
+    let mut chips = Vec::new();
+    if app.settings.agents_can_run {
+        chips.push((Capability::Run, 'X', "Running commands"));
+    }
+    if app.settings.agents_can_write {
+        chips.push((Capability::Write, 'W', "Writing files"));
     }
     chips.push((Capability::Read, 'R', "Reading files"));
-    // Right-to-left: W is placed first, so R ends up on its left.
     for (cap, letter, what) in chips {
         let perm = cap_permission(&s.effective_tools, cap);
+        // Running commands is never drawn in the calm accent colour.
+        let danger = cap == Capability::Run && perm == Permission::Auto;
         let (fg, fill, stroke) = match perm {
+            Permission::Auto if danger => {
+                (crate::app::bad(dark), t.surface2, crate::app::bad(dark))
+            }
             Permission::Auto => (t.accent, t.accent_soft, t.accent),
             Permission::Ask => (t.warn, t.warn_soft, t.warn),
             Permission::Off => (t.fg3, t.surface2, t.line),
@@ -752,143 +761,280 @@ fn agent_settings(
         .show(|ui| {
             ui.set_width(340.0);
             ui.spacing_mut().item_spacing.y = 10.0;
-            settings_card(ui, t, "Folder", "the agent works here", |ui| {
-                let path = s
-                    .workspace
-                    .as_ref()
-                    .map_or(String::new(), |p| p.display().to_string());
-                ui.add(egui::Label::new(RichText::new(path).font(mono(12.0)).color(t.fg2)).wrap());
-                if secondary(ui, "Change…", !running).clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Choose the agent's folder")
-                        .pick_folder()
-                    {
-                        out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
-                    }
-                }
-            });
-            settings_card(ui, t, "Run", "", |ui| {
-                ui.add_enabled_ui(!running, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Step budget").size(12.5).color(t.fg2));
-                        let mut steps = s.step_budget;
-                        if ui
-                            .add(egui::DragValue::new(&mut steps).range(1..=100))
-                            .changed()
-                        {
-                            out.push(BackendRequest::Chat(ChatCommand::SetStepBudget(id, steps)));
+            // The cards can be taller than the room below the button, so the
+            // popover scrolls instead of running off the bottom of the window.
+            let room = (ui.ctx().content_rect().bottom() - rect.bottom() - 24.0).max(200.0);
+            ui.set_max_height(room);
+            egui::ScrollArea::vertical()
+                .max_height(room)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    settings_card(ui, t, "Folder", "the agent works here", |ui| {
+                        let path = s
+                            .workspace
+                            .as_ref()
+                            .map_or(String::new(), |p| p.display().to_string());
+                        ui.add(
+                            egui::Label::new(RichText::new(path).font(mono(12.0)).color(t.fg2))
+                                .wrap(),
+                        );
+                        if secondary(ui, "Change…", !running).clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Choose the agent's folder")
+                                .pick_folder()
+                            {
+                                out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
+                            }
                         }
                     });
-                });
-            });
-            settings_card(ui, t, "Tools", "Files", |ui| {
-                ui.add_enabled_ui(!running, |ui| {
+                    settings_card(ui, t, "Run", "", |ui| {
+                        ui.add_enabled_ui(!running, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Step budget").size(12.5).color(t.fg2));
+                                let mut steps = s.step_budget;
+                                if ui
+                                    .add(egui::DragValue::new(&mut steps).range(1..=100))
+                                    .changed()
+                                {
+                                    out.push(BackendRequest::Chat(ChatCommand::SetStepBudget(
+                                        id, steps,
+                                    )));
+                                }
+                            });
+                        });
+                    });
                     #[cfg(test)]
                     {
                         app.chat_ui.probe.permission_buttons.clear();
                         app.chat_ui.probe.write_buttons.clear();
+                        app.chat_ui.probe.run_buttons.clear();
+                        app.chat_ui.probe.run_confirm = None;
+                        app.chat_ui.probe.tools_heads.clear();
                     }
-                    let writes = app.settings.agents_can_write;
-                    for cap in [Capability::Read, Capability::Write] {
-                        if cap == Capability::Write && !writes {
+                    for family in [Family::Files, Family::Shell] {
+                        if family == Family::Shell && !app.settings.agents_can_run {
                             continue;
                         }
-                        let (title, sub, tips): (&str, &str, &[(&str, &str)]) = match cap {
-                            Capability::Read => (
-                                "Read files",
-                                "list, find, search, read",
-                                &[
-                                    ("Off", "The agent cannot read files"),
-                                    ("Ask", "Ask before each file is read"),
-                                    ("Allow", "Read files without asking"),
-                                ],
-                            ),
-                            Capability::Write => (
-                                "Write files",
-                                "create and change files in the folder",
-                                &[
-                                    ("Off", "The agent cannot change files"),
-                                    ("Ask", "Ask before each change, with the changes shown"),
-                                    (
-                                        "Allow",
-                                        "Change files without asking. Each change is kept so you can undo it",
-                                    ),
-                                ],
-                            ),
-                            // The Run row arrives with the Settings switch.
-                            Capability::Run => continue,
-                        };
-                        ui.label(RichText::new(title).font(semibold(13.0)).color(t.fg));
-                        ui.label(RichText::new(sub).size(11.5).color(t.fg3));
-                        let current = cap_permission(&s.effective_tools, cap);
-                        let chosen = match current {
-                            Permission::Off => 0,
-                            Permission::Ask => 1,
-                            Permission::Auto => 2,
-                        };
-                        let mut rects = Vec::new();
-                        let picked = crate::widgets::segmented(ui, t, tips, chosen, &mut rects);
-                        #[cfg(test)]
-                        {
-                            if cap == Capability::Read {
-                                app.chat_ui.probe.permission_buttons = rects;
-                            } else {
-                                app.chat_ui.probe.write_buttons = rects;
-                            }
-                        }
-                        if let Some(i) = picked {
-                            let value = [Permission::Off, Permission::Ask, Permission::Auto][i];
-                            out.push(BackendRequest::Chat(ChatCommand::SetCapability(
-                                id,
-                                registry::capability_key(Family::Files, cap),
-                                value,
-                            )));
-                        }
+                        family_card(ui, app, out, t, s, family, running);
                     }
-                    let specs: Vec<_> = registry::specs()
-                        .into_iter()
-                        .filter(|sp| writes || sp.capability != Capability::Write)
-                        .collect();
-                    let on = specs
-                        .iter()
-                        .filter(|sp| registry::tool_enabled(&s.effective_tools, sp))
-                        .count();
-                    ui.label(
-                        RichText::new(format!("Individual tools · {on} of {} on", specs.len()))
-                            .size(11.5)
-                            .color(t.fg3),
-                    );
-                    for spec in specs {
-                        let mut on = registry::tool_enabled(&s.effective_tools, &spec);
-                        if ui
-                            .checkbox(&mut on, spec.name)
-                            .on_hover_text(spec.description)
-                            .changed()
-                        {
-                            out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
-                                id,
-                                spec.name.into(),
-                                on,
-                            )));
-                        }
+                    if !s.changes.is_empty() {
+                        changes_made(ui, app, out, t, s, running);
+                    }
+                    if running {
+                        ui.label(
+                            RichText::new("Locked while a run is active.")
+                                .size(11.5)
+                                .color(t.fg3),
+                        );
                     }
                 });
-            });
-            if !s.changes.is_empty() {
-                changes_made(ui, app, out, t, s, running);
-            }
-            if running {
-                ui.label(
-                    RichText::new("Locked while a run is active.")
-                        .size(11.5)
-                        .color(t.fg3),
-                );
-            }
         });
     #[cfg(test)]
     {
         app.chat_ui.probe.agent_chip = Some(rect);
     }
+}
+
+/// One card per family of tools: a Off / Ask / Allow row for each ability the
+/// family has, then its tools, each with a switch. The Shell family is only
+/// drawn when commands are switched on in Settings.
+fn family_card(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    s: &Session,
+    family: Family,
+    running: bool,
+) {
+    let id = s.id;
+    let writes = app.settings.agents_can_write;
+    let specs: Vec<_> = registry::specs()
+        .into_iter()
+        .filter(|sp| sp.family == family && (writes || sp.capability != Capability::Write))
+        .collect();
+    let on_count = specs
+        .iter()
+        .filter(|sp| registry::tool_enabled(&s.effective_tools, sp))
+        .count();
+    let note = format!("{on_count} of {} tools on", specs.len());
+    settings_card(ui, t, family.label(), &note, |ui| {
+        ui.add_enabled_ui(!running, |ui| {
+            for cap in [Capability::Read, Capability::Write, Capability::Run] {
+                if !specs.iter().any(|sp| sp.capability == cap) {
+                    continue;
+                }
+                let (title, sub, tips): (&str, &str, &[(&str, &str)]) = match cap {
+                    Capability::Read => (
+                        "Read files",
+                        "list, find, search, read",
+                        &[
+                            ("Off", "The agent cannot read files"),
+                            ("Ask", "Ask before each file is read"),
+                            ("Allow", "Read files without asking"),
+                        ],
+                    ),
+                    Capability::Write => (
+                        "Write files",
+                        "create and change files in the folder",
+                        &[
+                            ("Off", "The agent cannot change files"),
+                            ("Ask", "Ask before each change, with the changes shown"),
+                            (
+                                "Allow",
+                                "Change files without asking. Each change is kept so you can undo it",
+                            ),
+                        ],
+                    ),
+                    Capability::Run => (
+                        "Run commands",
+                        "runs as you, not limited to the folder",
+                        &[
+                            ("Off", "The agent cannot run commands"),
+                            ("Ask", "Ask before each command, showing exactly what will run"),
+                            (
+                                "Allow",
+                                "Run commands without asking. They run as you and can change anything you can",
+                            ),
+                        ],
+                    ),
+                };
+                ui.label(RichText::new(title).font(semibold(13.0)).color(t.fg));
+                ui.label(RichText::new(sub).size(11.5).color(t.fg3));
+                let current = cap_permission(&s.effective_tools, cap);
+                let chosen = match current {
+                    Permission::Off => 0,
+                    Permission::Ask => 1,
+                    Permission::Auto => 2,
+                };
+                let mut rects = Vec::new();
+                let picked = crate::widgets::segmented(ui, t, tips, chosen, &mut rects);
+                #[cfg(test)]
+                {
+                    match cap {
+                        Capability::Read => app.chat_ui.probe.permission_buttons = rects.clone(),
+                        Capability::Write => app.chat_ui.probe.write_buttons = rects.clone(),
+                        Capability::Run => app.chat_ui.probe.run_buttons = rects.clone(),
+                    }
+                }
+                let _ = rects;
+                if let Some(i) = picked {
+                    let value = [Permission::Off, Permission::Ask, Permission::Auto][i];
+                    let key = registry::capability_key(family, cap);
+                    if cap == Capability::Run && value == Permission::Auto {
+                        // Running commands without asking is confirmed once.
+                        app.chat_ui.run_allow_pending = Some(id);
+                    } else {
+                        if cap == Capability::Run {
+                            app.chat_ui.run_allow_pending = None;
+                        }
+                        out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                            id, key, value,
+                        )));
+                    }
+                }
+                if cap == Capability::Run && app.chat_ui.run_allow_pending == Some(id) {
+                    run_allow_confirm(ui, app, out, t, id, family);
+                }
+            }
+            let slot = (id, family as u8);
+            let open = app.chat_ui.tools_open.contains(&slot);
+            let arrow = if open { "▾" } else { "▸" };
+            let head = ui
+                .add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "{arrow}  Individual tools · {on_count} of {} on",
+                            specs.len()
+                        ))
+                        .size(11.5)
+                        .color(t.fg3),
+                    )
+                    .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.tools_heads.push(head.rect);
+            }
+            if head.clicked() {
+                if open {
+                    app.chat_ui.tools_open.remove(&slot);
+                } else {
+                    app.chat_ui.tools_open.insert(slot);
+                }
+            }
+            if open {
+                for spec in specs {
+                    let mut on = registry::tool_enabled(&s.effective_tools, &spec);
+                    let tag = match spec.capability {
+                        Capability::Read => 'R',
+                        Capability::Write => 'W',
+                        Capability::Run => 'X',
+                    };
+                    if ui
+                        .checkbox(&mut on, format!("{tag}   {}", spec.name))
+                        .on_hover_text(spec.description)
+                        .changed()
+                    {
+                        out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
+                            id,
+                            spec.name.into(),
+                            on,
+                        )));
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// The question after choosing Allow for Run. Cancel is the quiet default.
+fn run_allow_confirm(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    id: roost_core::session::SessionId,
+    family: Family,
+) {
+    let dark = ui.visuals().dark_mode;
+    ui.add(
+        egui::Label::new(
+            RichText::new(
+                "Commands will run without asking. They run as you and can change or delete anything you can.",
+            )
+            .size(12.0)
+            .color(crate::app::bad(dark)),
+        )
+        .wrap(),
+    );
+    ui.horizontal(|ui| {
+        let cancel = ui.add(egui::Button::new(RichText::new("Cancel").size(12.5)));
+        let confirm = ui.add(
+            egui::Button::new(
+                RichText::new("Run without asking")
+                    .size(12.5)
+                    .color(crate::app::bad(dark)),
+            )
+            .stroke(egui::Stroke::new(1.0, crate::app::bad(dark))),
+        );
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.run_confirm = Some((confirm.rect, cancel.rect));
+        }
+        if confirm.clicked() {
+            app.chat_ui.run_allow_pending = None;
+            out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                id,
+                registry::capability_key(family, Capability::Run),
+                Permission::Auto,
+            )));
+        } else if cancel.clicked() {
+            app.chat_ui.run_allow_pending = None;
+        }
+    });
+    let _ = t;
 }
 
 /// One line above the input: progress of a running agent, then any notice.

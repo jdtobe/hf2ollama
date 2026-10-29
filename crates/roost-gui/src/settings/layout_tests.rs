@@ -23,7 +23,7 @@ const CARD_NAMES: [&str; 6] = [
     "Agents",
     "Hardware and appearance",
 ];
-const CONTROLS: [&str; 18] = [
+const CONTROLS: [&str; 19] = [
     "ollama-url",
     "ollama-test",
     "select-keepalive",
@@ -39,6 +39,7 @@ const CONTROLS: [&str; 18] = [
     "token-clear",
     "hf-endpoint",
     "toggle-agent-write",
+    "toggle-agent-run",
     "toggle-override",
     "select-family",
     "select-theme",
@@ -771,6 +772,98 @@ fn the_write_switch_turns_agent_writing_off_and_sends_the_new_settings() {
             reqs.iter()
                 .any(|r| matches!(r, BackendRequest::ApplySettings(s) if !s.agents_can_write)),
             "{reqs:?}"
+        );
+    }
+}
+
+/// The warning's two buttons, after clicking the run switch.
+fn open_run_warning(app: &mut App, h: &mut Harness, size: (f32, f32)) -> (Rect, Rect) {
+    let r = reveal(app, h, size, "toggle-agent-run");
+    click(app, h, size, r.center());
+    let p = probe(app);
+    let keep = control(&p, "run-keep-off").expect("the warning is showing");
+    let on = control(&p, "run-turn-on").expect("Turn on button");
+    (keep, on)
+}
+
+#[test]
+fn turning_on_commands_shows_a_warning_that_fits_and_changes_nothing_yet() {
+    for size in SIZES {
+        let (mut app, sent) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        assert!(!app.state_mut().settings.agents_can_run);
+        let (keep, on) = open_run_warning(&mut app, &mut h, size);
+        assert!(
+            inside(keep, window(size)) && inside(on, window(size)),
+            "{size:?}"
+        );
+        assert!(!app.state_mut().settings.agents_can_run, "{size:?}");
+        assert!(
+            !sent
+                .try_iter()
+                .any(|r| matches!(r, BackendRequest::ApplySettings(_))),
+            "{size:?}: settings saved before the warning was accepted"
+        );
+    }
+}
+
+#[test]
+fn keeping_commands_off_or_pressing_escape_leaves_them_off() {
+    for escape in [false, true] {
+        let size = SIZES[0];
+        let (mut app, sent) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let (keep, _) = open_run_warning(&mut app, &mut h, size);
+        if escape {
+            h.frame(
+                vec2(size.0, size.1),
+                vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                |ui| app.show(ui),
+            );
+            run(&mut app, &mut h, size, 3);
+        } else {
+            click(&mut app, &mut h, size, keep.center());
+        }
+        assert!(!app.state_mut().settings.agents_can_run, "escape={escape}");
+        assert!(
+            control(&probe(&mut app), "run-turn-on").is_none(),
+            "escape={escape}"
+        );
+        assert!(!sent
+            .try_iter()
+            .any(|r| matches!(r, BackendRequest::ApplySettings(_))));
+    }
+}
+
+#[test]
+fn accepting_the_warning_turns_commands_on_and_sends_the_settings() {
+    for size in SIZES {
+        let (mut app, sent) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let (_, on) = open_run_warning(&mut app, &mut h, size);
+        click(&mut app, &mut h, size, on.center());
+        assert!(app.state_mut().settings.agents_can_run, "{size:?}");
+        assert!(
+            sent.try_iter()
+                .any(|r| matches!(r, BackendRequest::ApplySettings(s) if s.agents_can_run)),
+            "{size:?}"
+        );
+        // And the switch turns them off again with no warning.
+        let r = reveal(&mut app, &mut h, size, "toggle-agent-run");
+        click(&mut app, &mut h, size, r.center());
+        assert!(!app.state_mut().settings.agents_can_run, "{size:?}");
+        assert!(
+            control(&probe(&mut app), "run-turn-on").is_none(),
+            "{size:?}"
         );
     }
 }
