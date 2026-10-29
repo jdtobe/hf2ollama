@@ -51,3 +51,11 @@ pages) separates the header from the conversation and stays consistent.
   permissions design).
 - Segmented controls for Off / Ask / Auto with a filled selected segment.
 - The "···" menu keeps only session actions (rename, pin, delete).
+
+## Header actions (decided 2026-10-29)
+
+The "···" overflow menu was replaced by a pin, a red trash can and a rename
+pencil. When there are meaningful extra actions (export or copy as Markdown,
+duplicate, history manager actions), bring "···" back on the **left** end of
+the button stack, so it does not interrupt the right-in scan of the pin and
+the trash can. Not before there is a second such action.
