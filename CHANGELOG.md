@@ -36,8 +36,12 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 ### Agents can write files (first step)
 
 - New tools `write_file` and `edit_file` (replace one exact piece of text). Both stay inside the agent's folder, refuse protected names (`.env`, keys and the like), and need your approval every time: writing is a new capability that is **Ask** by default and cannot be made automatic yet (that waits for undo, which is next).
-- The approval question comes with a preview of the change: the path, whether the file is new, lines added and removed, and the changed lines with context. The window does not draw it yet.
+- The approval question comes with a preview of the change: the path, whether the file is new, lines added and removed, and the changed lines with context. The approval card in the window shows it: what the agent wants to do, the file, `+n −n`, the changed lines in a small scrolling box, and "… and n more changed lines" when there are many.
 - "Allow for this session" on a write allows edits to that file only, for as long as the chat is open, and never turns writing on for everything.
+- The header shows an **R** and a **W** chip beside Agent settings: accent when allowed, amber when it asks first, dimmed when off, with a tooltip saying exactly what each allows. On a narrow window the Agent settings button is the gear alone, so the title and folder keep their room.
+- The Tools card in Agent settings has a Read row (Off / Ask / Allow) and a Write row (Off / Ask), then "Individual tools · n of m on". Write has no Allow yet.
+- Settings has a new **Agents** card with "Let agents write files". Off makes every agent read-only: the write tools are not offered, a forced call is refused, and the W chip and Write row disappear. Older settings files keep writing on.
+- The permission labels read Off / Ask / Allow instead of Auto.
 - Agent prompt no longer says "read-only".
 
 ### One sidebar

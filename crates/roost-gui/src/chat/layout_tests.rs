@@ -1076,7 +1076,9 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
                     texts.contains("1 message waiting for the next step"),
                     "{tag}: {texts}"
                 );
-                assert!(texts.contains("Agent settings"), "{tag}: {texts}");
+                if size.0 >= 1000.0 {
+                    assert!(texts.contains("Agent settings"), "{tag}: {texts}");
+                }
             }
         }
     }
@@ -1123,7 +1125,9 @@ fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
     for want in [
         "Change…",
         "Step budget",
-        "Files · Read",
+        "Read files",
+        "Write files",
+        "write_file",
         "list_dir",
         "read_file",
         "find_files",
@@ -1965,7 +1969,7 @@ fn the_tools_menu_sets_files_read_to_off_ask_or_auto() {
         .expect("Agent chip");
     click(&mut app, &mut h, size, chip.center());
     let ask = app.state_mut().chat_ui.probe.permission_buttons.clone();
-    assert_eq!(ask.len(), 3, "Off, Ask, Auto");
+    assert_eq!(ask.len(), 3, "Off, Ask, Allow");
     let _ = sent_chat_commands(&sent);
     click(&mut app, &mut h, size, ask[1].center());
     let cmds = sent_chat_commands(&sent);
@@ -1987,7 +1991,9 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
             texts.contains("Config walkthrough") || texts.contains("Untitled"),
             "{texts}"
         );
-        assert!(texts.contains("Agent settings"), "{texts}");
+        if size.0 >= 1000.0 {
+            assert!(texts.contains("Agent settings"), "{texts}");
+        }
         assert!(texts.contains("Idle"), "{texts}");
         let path_line = texts
             .lines()
@@ -2109,6 +2115,148 @@ fn a_very_long_title_never_runs_into_the_status_or_the_buttons() {
             assert!(
                 pencil.right() <= status.left() - 4.0,
                 "{size:?}: pencil over the status"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_header_has_a_chip_per_capability_and_the_write_chip_goes_with_the_switch() {
+    use roost_core::session::Permission;
+    for size in SIZES {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let header = p.header.unwrap();
+        let settings = p.agent_chip.unwrap();
+        let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
+        assert_eq!(letters, ['R', 'W'], "{size:?}: no X until commands exist");
+        for (_, r, _) in &p.chips {
+            assert!(inside(*r, header), "{size:?}: chip {r:?}");
+            assert!(r.right() <= settings.left(), "{size:?}: left of the button");
+        }
+        assert!(p.chips[0].1.right() <= p.chips[1].1.left());
+        // Read allows, write asks, as a new agent is set.
+        assert_eq!(p.chips[0].2, Permission::Auto);
+        assert_eq!(p.chips[1].2, Permission::Ask);
+        // The title still ends before the first chip.
+        assert!(
+            p.title_rect.unwrap().right() <= p.chips[0].1.left(),
+            "{size:?}"
+        );
+        // Switched off in Settings: no W at all.
+        app.state_mut().settings.agents_can_write = false;
+        run(&mut app, &mut h, size, 3);
+        let letters: Vec<_> = app
+            .state_mut()
+            .chat_ui
+            .probe
+            .chips
+            .iter()
+            .map(|c| c.0)
+            .collect();
+        assert_eq!(letters, ['R'], "{size:?}");
+        let _ = s;
+    }
+}
+
+#[test]
+fn the_tools_menu_has_a_write_row_that_asks_or_is_off_and_never_allows() {
+    use roost_core::session::Permission;
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+    click(&mut app, &mut h, size, chip.center());
+    let write = app.state_mut().chat_ui.probe.write_buttons.clone();
+    assert_eq!(
+        write.len(),
+        2,
+        "Off and Ask only, until changes can be undone"
+    );
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, write[0].center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, key, Permission::Off)]
+            if *id == s.id && key == "files.write"),
+        "{cmds:?}"
+    );
+    // With writing off in Settings the row is not there.
+    app.state_mut().settings.agents_can_write = false;
+    run(&mut app, &mut h, size, 3);
+    assert!(app.state_mut().chat_ui.probe.write_buttons.is_empty());
+}
+
+fn ask_to_write(app: &mut App, session: roost_core::session::SessionId) {
+    use roost_core::agent::change::{DiffLine, LineKind};
+    let line = |kind, text: &str| DiffLine {
+        kind,
+        text: text.into(),
+    };
+    app.state_mut().chat.fold(ChatEvent::ApprovalRequested {
+        session,
+        call_id: "call_9".into(),
+        name: "edit_file".into(),
+        arguments: serde_json::json!({"path": "src/config.rs"}),
+        preview: Some(roost_core::agent::change::ChangePreview {
+            path: "src/config.rs".into(),
+            created: false,
+            added: 3,
+            removed: 1,
+            lines: vec![
+                line(LineKind::Same, "fn load() {"),
+                line(LineKind::Removed, "    let path = default_path();"),
+                line(LineKind::Added, "    let path = env_path();"),
+                line(LineKind::Added, "    let more = 1;"),
+                line(LineKind::Added, "    let again = 2;"),
+                line(LineKind::Same, "}"),
+            ],
+            more: 4,
+        }),
+    });
+}
+
+#[test]
+fn a_write_asks_with_the_file_the_counts_and_the_diff_and_can_be_answered() {
+    use roost_core::chat::ApprovalDecision;
+    for size in SIZES {
+        for (pick, want) in [
+            (0usize, ApprovalDecision::Allow),
+            (1, ApprovalDecision::AllowForSession),
+            (2, ApprovalDecision::Deny),
+        ] {
+            let (mut app, sent, s) = agent_fixture();
+            let mut h = Harness::new(false);
+            ask_to_write(&mut app, s.id);
+            run(&mut app, &mut h, size, 4);
+            let texts = texts_of(&mut app, &mut h, size);
+            for want_text in [
+                "The agent wants to change a file",
+                "src/config.rs",
+                "+3",
+                "−1",
+                "let path = env_path();",
+                "4 more changed lines",
+                "Allow edits to this file this session",
+            ] {
+                assert!(texts.contains(want_text), "{size:?}: {want_text}\n{texts}");
+            }
+            let p = app.state_mut().chat_ui.probe.clone();
+            let composer = p.composer.unwrap();
+            assert_eq!(p.approval_buttons.len(), 3);
+            for b in &p.approval_buttons {
+                assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
+            }
+            let _ = sent_chat_commands(&sent);
+            click(&mut app, &mut h, size, p.approval_buttons[pick].center());
+            let cmds = sent_chat_commands(&sent);
+            assert!(
+                matches!(cmds.as_slice(), [ChatCommand::ResolveApproval { decision, .. }]
+                    if *decision == want),
+                "{size:?} pick {pick}: {cmds:?}"
             );
         }
     }

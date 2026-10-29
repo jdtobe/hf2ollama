@@ -13,7 +13,7 @@ use eframe::egui::{
     containers::menu::{MenuButton, MenuConfig},
     Align, Key, Layout, PopupCloseBehavior, RichText,
 };
-use roost_core::agent::registry;
+use roost_core::agent::registry::{self, Capability, Family};
 use roost_core::chat::ChatCommand;
 use roost_core::session::{
     Message, MessageContent, Permission, Session, SessionLifetime, SessionMode, ToolStatus,
@@ -72,6 +72,9 @@ pub(super) enum StatusKind {
 /// Side of the rename pencil beside the title.
 const PENCIL_W: f32 = 24.0;
 
+/// Below this pane width the Agent settings button is the gear alone.
+const COMPACT_PANE_W: f32 = 600.0;
+
 /// Height of the square icon buttons in the header.
 const HEADER_BTN: f32 = 32.0;
 
@@ -123,6 +126,7 @@ pub(super) fn header(
             header_actions(ui, app, out, t, s, pinned, incognito, now);
             if s.mode == SessionMode::Agent {
                 agent_settings(ui, app, out, t, s);
+                capability_chips(ui, app, t, s);
             }
             if incognito {
                 tag(ui, "Incognito", t.accent, t.accent_soft);
@@ -438,6 +442,70 @@ fn header_actions(
     }
 }
 
+/// What a session has a capability set to, never above its maximum.
+fn cap_permission(cfg: &roost_core::session::EffectiveToolConfig, cap: Capability) -> Permission {
+    registry::specs()
+        .iter()
+        .find(|sp| sp.capability == cap)
+        .map_or(Permission::Off, |sp| registry::permission_of(cfg, sp))
+}
+
+/// The R and W chips beside the Agent settings button: what the agent may do,
+/// at a glance. Read is accent when allowed, write is amber when it asks;
+/// anything off is dimmed. No W when writing is off in Settings.
+fn capability_chips(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, s: &Session) {
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.chips.clear();
+    }
+    let mut chips = vec![(Capability::Write, 'W', "Writing files")];
+    if !app.settings.agents_can_write {
+        chips.clear();
+    }
+    chips.push((Capability::Read, 'R', "Reading files"));
+    // Right-to-left: W is placed first, so R ends up on its left.
+    for (cap, letter, what) in chips {
+        let perm = cap_permission(&s.effective_tools, cap);
+        let (fg, fill, stroke) = match perm {
+            Permission::Auto => (t.accent, t.accent_soft, t.accent),
+            Permission::Ask => (t.warn, t.warn_soft, t.warn),
+            Permission::Off => (t.fg3, t.surface2, t.line),
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::hover());
+        ui.painter().rect(
+            rect,
+            6.0,
+            fill,
+            egui::Stroke::new(1.0, stroke.gamma_multiply(0.6)),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            letter,
+            semibold(12.0),
+            fg,
+        );
+        let state = match perm {
+            Permission::Auto => "allowed without asking",
+            Permission::Ask => "asks first",
+            Permission::Off => "off",
+        };
+        resp.on_hover_text(format!("{what}: {state}"));
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.chips.push((letter, rect, perm));
+        }
+    }
+    #[cfg(test)]
+    {
+        app.chat_ui
+            .probe
+            .chips
+            .sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+    }
+}
+
 /// A card inside the agent settings: a small heading over a rounded panel.
 fn settings_card<R>(
     ui: &mut egui::Ui,
@@ -483,14 +551,25 @@ fn agent_settings(
     let running = app.chat.is_running(s.id);
     let id = s.id;
     let label = "Agent settings";
+    // A narrow pane keeps the room for the title and the folder: the button
+    // is the gear alone, and its hover text says what it is.
+    let compact = ui.max_rect().width() < COMPACT_PANE_W;
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), t.fg);
-    let size = egui::vec2(galley.size().x + 44.0, HEADER_BTN);
+    let size = if compact {
+        egui::vec2(HEADER_BTN + 4.0, HEADER_BTN)
+    } else {
+        egui::vec2(galley.size().x + 44.0, HEADER_BTN)
+    };
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let resp = resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("The folder this agent works in, its step budget and its tools");
+        .on_hover_text(if compact {
+            "Agent settings: the folder this agent works in, its step budget and its tools"
+        } else {
+            "The folder this agent works in, its step budget and its tools"
+        });
     ui.painter().rect(
         rect,
         8.0,
@@ -502,20 +581,24 @@ fn agent_settings(
         egui::Stroke::new(1.0, t.line),
         egui::StrokeKind::Inside,
     );
+    let gear_at = if compact {
+        rect.center()
+    } else {
+        egui::pos2(rect.left() + 18.0, rect.center().y)
+    };
     crate::icons::paint(
         ui.painter(),
-        egui::Rect::from_center_size(
-            egui::pos2(rect.left() + 18.0, rect.center().y),
-            egui::vec2(20.0, 20.0),
-        ),
+        egui::Rect::from_center_size(gear_at, egui::vec2(20.0, 20.0)),
         Icon::Gear,
         t.fg2,
     );
-    ui.painter().galley(
-        egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
-        galley,
-        t.fg,
-    );
+    if !compact {
+        ui.painter().galley(
+            egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            t.fg,
+        );
+    }
     egui::Popup::from_toggle_button_response(&resp)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
@@ -550,48 +633,79 @@ fn agent_settings(
                     });
                 });
             });
-            settings_card(ui, t, "Tools", "Files · Read", |ui| {
+            settings_card(ui, t, "Tools", "Files", |ui| {
                 ui.add_enabled_ui(!running, |ui| {
-                    let current = s
-                        .effective_tools
-                        .capabilities
-                        .get("files.read")
-                        .copied()
-                        .unwrap_or(Permission::Auto);
                     #[cfg(test)]
                     {
                         app.chat_ui.probe.permission_buttons.clear();
+                        app.chat_ui.probe.write_buttons.clear();
                     }
-                    let mut rects = Vec::new();
-                    let chosen = match current {
-                        Permission::Off => 0,
-                        Permission::Ask => 1,
-                        Permission::Auto => 2,
-                    };
-                    let picked = crate::widgets::segmented(
-                        ui,
-                        t,
-                        &[
-                            ("Off", "The agent cannot read files"),
-                            ("Ask", "Ask before each file is read"),
-                            ("Auto", "Read files without asking"),
-                        ],
-                        chosen,
-                        &mut rects,
+                    let writes = app.settings.agents_can_write;
+                    for cap in [Capability::Read, Capability::Write] {
+                        if cap == Capability::Write && !writes {
+                            continue;
+                        }
+                        let (title, sub, tips): (&str, &str, &[(&str, &str)]) = match cap {
+                            Capability::Read => (
+                                "Read files",
+                                "list, find, search, read",
+                                &[
+                                    ("Off", "The agent cannot read files"),
+                                    ("Ask", "Ask before each file is read"),
+                                    ("Allow", "Read files without asking"),
+                                ],
+                            ),
+                            // Allow joins this row once every change can be undone.
+                            Capability::Write => (
+                                "Write files",
+                                "create and change files in the folder",
+                                &[
+                                    ("Off", "The agent cannot change files"),
+                                    ("Ask", "Ask before each change, with the changes shown"),
+                                ],
+                            ),
+                        };
+                        ui.label(RichText::new(title).font(semibold(13.0)).color(t.fg));
+                        ui.label(RichText::new(sub).size(11.5).color(t.fg3));
+                        let current = cap_permission(&s.effective_tools, cap);
+                        let chosen = match current {
+                            Permission::Off => 0,
+                            Permission::Ask => 1,
+                            Permission::Auto => 2,
+                        };
+                        let mut rects = Vec::new();
+                        let picked = crate::widgets::segmented(ui, t, tips, chosen, &mut rects);
+                        #[cfg(test)]
+                        {
+                            if cap == Capability::Read {
+                                app.chat_ui.probe.permission_buttons = rects;
+                            } else {
+                                app.chat_ui.probe.write_buttons = rects;
+                            }
+                        }
+                        if let Some(i) = picked {
+                            let value = [Permission::Off, Permission::Ask, Permission::Auto][i];
+                            out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                                id,
+                                registry::capability_key(Family::Files, cap),
+                                value,
+                            )));
+                        }
+                    }
+                    let specs: Vec<_> = registry::specs()
+                        .into_iter()
+                        .filter(|sp| writes || sp.capability != Capability::Write)
+                        .collect();
+                    let on = specs
+                        .iter()
+                        .filter(|sp| registry::tool_enabled(&s.effective_tools, sp))
+                        .count();
+                    ui.label(
+                        RichText::new(format!("Individual tools · {on} of {} on", specs.len()))
+                            .size(11.5)
+                            .color(t.fg3),
                     );
-                    #[cfg(test)]
-                    {
-                        app.chat_ui.probe.permission_buttons = rects;
-                    }
-                    if let Some(i) = picked {
-                        let value = [Permission::Off, Permission::Ask, Permission::Auto][i];
-                        out.push(BackendRequest::Chat(ChatCommand::SetCapability(
-                            id,
-                            "files.read".into(),
-                            value,
-                        )));
-                    }
-                    for spec in registry::specs() {
+                    for spec in specs {
                         let mut on = registry::tool_enabled(&s.effective_tools, &spec);
                         if ui
                             .checkbox(&mut on, spec.name)
