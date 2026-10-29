@@ -1199,6 +1199,37 @@ fn the_row_is_always_on_the_latest_message_and_on_hover_for_older_ones() {
 }
 
 #[test]
+fn each_row_shows_when_the_message_was_sent_after_its_icons() {
+    for size in SIZES {
+        let mut f = fixture_with(1);
+        let mut h = Harness::new(false);
+        open_markdown_reply(&mut f, "A short answer.");
+        run(&mut f.app, &mut h, size, 3);
+        let probe = f.app.state_mut().chat_ui.probe.clone();
+        let pane = probe.pane.expect("pane");
+        assert_eq!(probe.stamps.len(), 1, "{size:?}: latest only at rest");
+        let (rect, text) = &probe.stamps[0];
+        assert!(inside(*rect, pane), "{size:?}");
+        assert!(
+            rect.left() > probe.details.expect("details").right(),
+            "{size:?}"
+        );
+        let (want, _) = super::state::local_stamp(now_ms(), now_ms()).expect("time");
+        assert_eq!(text.len(), want.len(), "{size:?}: {text}");
+        assert!(text.contains(':'), "{size:?}: {text}");
+        // Hovering the older bubble shows its row and time too.
+        let first = probe.cards[0];
+        h.frame(
+            vec2(size.0, size.1),
+            vec![egui::Event::PointerMoved(first.center())],
+            |ui| f.app.show(ui),
+        );
+        let probe = f.app.state_mut().chat_ui.probe.clone();
+        assert_eq!(probe.stamps.len(), 2, "{size:?}");
+    }
+}
+
+#[test]
 fn details_shows_tokens_and_speed_when_they_were_recorded() {
     use roost_core::session::ReplyStats;
     let size = (1180.0, 820.0);

@@ -86,6 +86,8 @@ pub struct ChatProbe {
     pub rail_search: Option<egui::Rect>,
     /// The Copy button of every message card painted this frame.
     pub copy_buttons: Vec<egui::Rect>,
+    /// The time label of every message row painted this frame, with its text.
+    pub stamps: Vec<(egui::Rect, String)>,
     /// The Regenerate button under the last reply, when shown.
     pub regenerate: Option<egui::Rect>,
     /// The Details button of the last reply, when shown.
@@ -1532,6 +1534,33 @@ fn message_actions(
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| details_card(ui, t, model, stats));
     }
+    message_time(ui, t, app, slot(row, n), m, card);
+}
+
+/// When the message was sent, muted, after the icons. The bubble carries the
+/// full date and time as a tooltip.
+fn message_time(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    after: egui::Rect,
+    m: &Message,
+    card: egui::Rect,
+) {
+    let now = now_ms();
+    let Some((label, full)) = crate::chat::state::local_stamp(m.created_at_ms, now) else {
+        return;
+    };
+    let at = egui::pos2(after.left() + 6.0, after.center().y);
+    let shown = ui
+        .painter()
+        .text(at, egui::Align2::LEFT_CENTER, &label, mono(11.0), t.fg3);
+    #[cfg(test)]
+    app.chat_ui.probe.stamps.push((shown, label));
+    #[cfg(not(test))]
+    let _ = (shown, &app);
+    ui.interact(card, egui::Id::unique("sent").with(m.id), Sense::hover())
+        .on_hover_text(full);
 }
 
 /// Read aloud / Stop under a finished reply. Disabled, with the reason, when

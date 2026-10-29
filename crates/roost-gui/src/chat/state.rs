@@ -24,6 +24,41 @@ pub fn local_day(ms: u64) -> i64 {
         })
 }
 
+/// How a message time reads under its bubble: `14:03` today, `Oct 28, 14:03`
+/// earlier, with the year when it is not this year.
+pub fn stamp_label<Tz: chrono::TimeZone>(
+    at: &chrono::DateTime<Tz>,
+    now: &chrono::DateTime<Tz>,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    use chrono::Datelike;
+    if at.date_naive() == now.date_naive() {
+        at.format("%H:%M").to_string()
+    } else if at.year() == now.year() {
+        at.format("%b %-d, %H:%M").to_string()
+    } else {
+        at.format("%b %-d, %Y, %H:%M").to_string()
+    }
+}
+
+/// The full local date and time with the weekday, for a tooltip.
+pub fn stamp_full<Tz: chrono::TimeZone>(at: &chrono::DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    at.format("%A, %B %-d, %Y at %H:%M:%S").to_string()
+}
+
+/// `(label, full)` for a message time in the local time zone.
+pub fn local_stamp(at_ms: u64, now_ms: u64) -> Option<(String, String)> {
+    use chrono::{Local, TimeZone};
+    let at = Local.timestamp_millis_opt(at_ms as i64).single()?;
+    let now = Local.timestamp_millis_opt(now_ms as i64).single()?;
+    Some((stamp_label(&at, &now), stamp_full(&at)))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunBadge {
     None,
@@ -759,6 +794,32 @@ mod tests {
 
     const DAY: u64 = DAY_MS;
     const NOW: u64 = 10 * DAY + 12 * 3_600_000;
+
+    #[test]
+    fn message_times_read_short_today_and_longer_before() {
+        use chrono::{FixedOffset, TimeZone};
+        let z = FixedOffset::west_opt(7 * 3600).unwrap();
+        let at = |y, mo, d, h, mi| z.with_ymd_and_hms(y, mo, d, h, mi, 9).unwrap();
+        let now = at(2026, 10, 29, 18, 0);
+        assert_eq!(stamp_label(&at(2026, 10, 29, 14, 3), &now), "14:03");
+        assert_eq!(stamp_label(&at(2026, 10, 29, 0, 5), &now), "00:05");
+        assert_eq!(stamp_label(&at(2026, 10, 28, 14, 3), &now), "Oct 28, 14:03");
+        assert_eq!(stamp_label(&at(2026, 1, 2, 9, 7), &now), "Jan 2, 09:07");
+        assert_eq!(
+            stamp_label(&at(2025, 12, 31, 23, 59), &now),
+            "Dec 31, 2025, 23:59"
+        );
+        assert_eq!(
+            stamp_full(&at(2026, 10, 28, 14, 3)),
+            "Wednesday, October 28, 2026 at 14:03:09"
+        );
+    }
+
+    #[test]
+    fn local_stamp_is_none_for_an_impossible_time() {
+        assert!(local_stamp(i64::MAX as u64, 0).is_none());
+        assert!(local_stamp(0, 0).is_some());
+    }
 
     fn utc_day(ms: u64) -> i64 {
         (ms / DAY) as i64
