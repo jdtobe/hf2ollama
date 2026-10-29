@@ -210,22 +210,38 @@ fn agent_chip(
                 });
                 ui.add_space(6.0);
                 ui.label(RichText::new("Tools").font(semibold(11.0)).color(t.fg3));
-                let mut allowed = !matches!(
-                    s.effective_tools.capabilities.get("files.read"),
-                    Some(Permission::Off)
-                );
-                if ui.checkbox(&mut allowed, "Files · Read").changed() {
-                    let p = if allowed {
-                        Permission::Auto
-                    } else {
-                        Permission::Off
-                    };
-                    out.push(BackendRequest::Chat(ChatCommand::SetCapability(
-                        id,
-                        "files.read".into(),
-                        p,
-                    )));
+                // Off, Ask each time, or Auto for the Files · Read tools.
+                let current = s
+                    .effective_tools
+                    .capabilities
+                    .get("files.read")
+                    .copied()
+                    .unwrap_or(Permission::Auto);
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.permission_buttons.clear();
                 }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Files · Read").size(12.5).color(t.fg2));
+                    for (value, label, tip) in [
+                        (Permission::Off, "Off", "The agent cannot read files"),
+                        (Permission::Ask, "Ask", "Ask before each file is read"),
+                        (Permission::Auto, "Auto", "Read files without asking"),
+                    ] {
+                        let r = ui
+                            .selectable_label(current == value, RichText::new(label).size(12.5))
+                            .on_hover_text(tip);
+                        #[cfg(test)]
+                        app.chat_ui.probe.permission_buttons.push(r.rect);
+                        if r.clicked() && current != value {
+                            out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                                id,
+                                "files.read".into(),
+                                value,
+                            )));
+                        }
+                    }
+                });
                 for spec in registry::specs() {
                     let mut on = registry::tool_enabled(&s.effective_tools, &spec);
                     if ui

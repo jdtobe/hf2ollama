@@ -8,7 +8,7 @@ The product is being extended from an importer into a local-model workbench (cha
 
 1. **Foundation (implemented):** the rename to Roost, safe migration of hf2ollama settings, import history, staging markers and (on request) the Hugging Face token, four theme families with light and dark variants, and the serializable session domain types in `roost-core`.
 2. **Streaming chat and history (implemented):** streaming chat, one file per session with a rebuildable index, incognito, the history rail with pinning, and background runs. Deferred inside this stage: markdown and code-block rendering, a copy button, regenerate, rail search and filters, and pagination of the Earlier group.
-3. **Read-only agents (implemented):** the Work tab, a workspace jail, the tool registry with four Files / Read tools, steering, Stop and a step budget. Not yet: write, shell and network tools, tool approval prompts, `/btw`.
+3. **Read-only agents (implemented):** the Work tab, a workspace jail, the tool registry with four Files / Read tools, steering, Stop and a step budget. Tool approval prompts (Ask) are implemented. Not yet: write, shell and network tools.
 4. `/btw` side threads, branches, automatic titles and the history manager. Not started.
 
 ## Done
@@ -47,6 +47,8 @@ Known limitations to address after the first release candidate:
 
 ## Later
 
+- **Chat and Work redesign**, carrying over what the Models tab settled on: the theme's own colours in stacked bands, icon buttons instead of text buttons, pills for facts, and a more modern conversation layout.
+- **Agent sessions without a folder.** The folder becomes optional and can be attached later; without one the file tools are simply not offered. Needs a decision on what a folder-less agent can do (for example answer with other tools once write, shell or network tools exist) and how the New agent form changes.
 - A less mechanical voice for Read aloud (the system tools use the default synthetic voices).
 - VRAM detection beyond NVIDIA and Apple Silicon (for example AMD and Intel), subject to reliable detection.
 - Accessibility improvements; egui has weaker accessibility than native toolkits.

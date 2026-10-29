@@ -78,6 +78,12 @@ pub enum ChatCommand {
     /// Compare a branch's original with what the branch was made from; answered
     /// with `BranchChecked`.
     CheckBranch(SessionId),
+    /// The answer to an `ApprovalRequested` event.
+    ResolveApproval {
+        session: SessionId,
+        call_id: String,
+        decision: ApprovalDecision,
+    },
     /// Show another version of a fork (`after` is the message before it).
     SwitchVersion {
         session: SessionId,
@@ -206,6 +212,13 @@ pub enum ChatEvent {
         session: SessionId,
         model: String,
     },
+    /// A tool set to Ask wants to run; the run waits for `ResolveApproval`.
+    ApprovalRequested {
+        session: SessionId,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
     /// A side question was sent.
     BtwStarted {
         session: SessionId,
@@ -237,6 +250,17 @@ pub enum ChatEvent {
         session: Option<SessionId>,
         message: String,
     },
+}
+
+/// What the user answered to a tool approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    /// Run this call.
+    Allow,
+    /// Run this call and stop asking for this kind of tool for the rest of the session.
+    AllowForSession,
+    /// Do not run it; the model is told.
+    Deny,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

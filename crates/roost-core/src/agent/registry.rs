@@ -149,12 +149,31 @@ pub fn check(config: &EffectiveToolConfig, spec: &ToolSpec) -> Result<(), ToolEr
     }
 }
 
-/// The tools the model is told about: those that would be allowed to run.
+/// The tools the model is told about: those that are on and not forbidden.
+/// A tool set to Ask is offered; its calls wait for the user.
 pub fn offered(config: &EffectiveToolConfig) -> Vec<ToolSpec> {
     specs()
         .into_iter()
-        .filter(|s| check(config, s).is_ok())
+        .filter(|s| matches!(check(config, s), Ok(()) | Err(ToolError::NeedsApproval(_))))
         .collect()
+}
+
+/// True when a call to `name` has to be approved first: the tool exists, is
+/// on, and its capability is set to Ask.
+pub fn needs_approval(config: &EffectiveToolConfig, name: &str) -> bool {
+    specs()
+        .iter()
+        .find(|s| s.name == name)
+        .is_some_and(|s| matches!(check(config, s), Err(ToolError::NeedsApproval(_))))
+}
+
+/// The settings key of the capability a tool belongs to (for "allow for this
+/// chat").
+pub fn capability_of(name: &str) -> Option<String> {
+    specs()
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| capability_key(s.family, s.capability))
 }
 
 /// `tools` for an Ollama chat request.
@@ -176,7 +195,8 @@ pub fn ollama_definitions(config: &EffectiveToolConfig) -> Value {
     )
 }
 
-/// Runs one tool call, after checking that it is allowed.
+/// Runs one tool call, after checking that it is allowed. A tool set to Ask
+/// is refused here; use `call_approved` once the user said yes.
 pub fn call(
     ws: &Workspace,
     config: &EffectiveToolConfig,
@@ -184,11 +204,37 @@ pub fn call(
     args: &Value,
     limits: &Limits,
 ) -> Result<String, ToolError> {
+    run(ws, config, name, args, limits, false)
+}
+
+/// Like `call`, for a call the user approved: a tool set to Ask may run. A
+/// tool that is off still may not.
+pub fn call_approved(
+    ws: &Workspace,
+    config: &EffectiveToolConfig,
+    name: &str,
+    args: &Value,
+    limits: &Limits,
+) -> Result<String, ToolError> {
+    run(ws, config, name, args, limits, true)
+}
+
+fn run(
+    ws: &Workspace,
+    config: &EffectiveToolConfig,
+    name: &str,
+    args: &Value,
+    limits: &Limits,
+    approved: bool,
+) -> Result<String, ToolError> {
     let spec = specs()
         .into_iter()
         .find(|s| s.name == name)
         .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
-    check(config, &spec)?;
+    match check(config, &spec) {
+        Err(ToolError::NeedsApproval(_)) if approved => {}
+        other => other?,
+    }
     // A model that sends no arguments means "defaults".
     let empty = json!({});
     let args = if args.is_null() { &empty } else { args };
@@ -262,14 +308,40 @@ mod tests {
         c.capabilities.insert("files.read".into(), Permission::Off);
         assert!(offered(&c).is_empty());
         c.capabilities.insert("files.read".into(), Permission::Ask);
-        assert!(offered(&c).is_empty(), "no approval flow exists yet");
+        assert_eq!(offered(&c).len(), 4, "tools that ask are still offered");
+        assert!(needs_approval(&c, "read_file"));
+        assert!(!needs_approval(&c, "no_such_tool"));
         let spec = &specs()[0];
         assert_eq!(
             check(&c, spec),
             Err(ToolError::NeedsApproval("list_dir".into()))
         );
+        assert_eq!(capability_of("read_file").as_deref(), Some("files.read"));
         c.capabilities.insert("files.read".into(), Permission::Auto);
         assert_eq!(offered(&c).len(), 4);
+    }
+
+    #[test]
+    fn an_approved_call_may_run_a_tool_that_asks_but_never_one_that_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let args = json!({"path": "a.txt"});
+        let mut c = cfg();
+        c.capabilities.insert("files.read".into(), Permission::Ask);
+        assert_eq!(
+            call(&ws, &c, "read_file", &args, &Limits::default()),
+            Err(ToolError::NeedsApproval("read_file".into()))
+        );
+        assert_eq!(
+            call_approved(&ws, &c, "read_file", &args, &Limits::default()),
+            Ok("1| hi".to_string())
+        );
+        c.capabilities.insert("files.read".into(), Permission::Off);
+        assert_eq!(
+            call_approved(&ws, &c, "read_file", &args, &Limits::default()),
+            Err(ToolError::Off("read_file".into()))
+        );
     }
 
     #[test]

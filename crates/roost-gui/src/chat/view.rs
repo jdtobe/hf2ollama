@@ -89,6 +89,10 @@ pub struct ChatProbe {
     /// The bubble of every message painted this frame.
     pub cards: Vec<egui::Rect>,
     pub edit_icon: Option<egui::Rect>,
+    /// The Allow / Allow for this session / Deny buttons of an approval card.
+    pub approval_buttons: Vec<egui::Rect>,
+    /// The Off / Ask / Auto buttons of the Files · Read permission.
+    pub permission_buttons: Vec<egui::Rect>,
     pub branch_icon: Option<egui::Rect>,
     pub btw_icon: Option<egui::Rect>,
     pub read_icon: Option<egui::Rect>,
@@ -813,7 +817,70 @@ fn pane(
                 }
                 i += 1;
             }
+            if let Some(ask) = app.chat.approval(s.id).cloned() {
+                approval_card(ui, t, app, out, s, &ask);
+            }
         });
+}
+
+/// What the agent wants to do and three ways to answer. The run waits.
+fn approval_card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+    ask: &super::state::PendingApproval,
+) {
+    use roost_core::chat::ApprovalDecision;
+    let mut answer = None;
+    egui::Frame::new()
+        .fill(t.warn_soft)
+        .stroke(Stroke::new(1.0, t.warn))
+        .corner_radius(10.0)
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("The agent wants to run").color(t.fg2));
+                ui.label(RichText::new(&ask.name).font(mono(13.0)).color(t.fg));
+            });
+            let args = serde_json::to_string(&ask.arguments).unwrap_or_default();
+            ui.add(
+                egui::Label::new(
+                    RichText::new(truncate_chars(&args, 240))
+                        .font(mono(12.0))
+                        .color(t.fg2),
+                )
+                .wrap(),
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let allow = primary_button(ui, "Allow", true);
+                let always = secondary(ui, "Allow for this session", true);
+                let deny = secondary(ui, "Deny", true);
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.approval_buttons = vec![allow.rect, always.rect, deny.rect];
+                }
+                if allow.clicked() {
+                    answer = Some(ApprovalDecision::Allow);
+                } else if always.clicked() {
+                    answer = Some(ApprovalDecision::AllowForSession);
+                } else if deny.clicked() {
+                    answer = Some(ApprovalDecision::Deny);
+                }
+            });
+        });
+    if let Some(decision) = answer {
+        app.chat.approval_answered(s.id);
+        out.push(BackendRequest::Chat(ChatCommand::ResolveApproval {
+            session: s.id,
+            call_id: ask.call_id.clone(),
+            decision,
+        }));
+    }
 }
 
 // ---------------------------------------------------------------- agents

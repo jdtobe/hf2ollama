@@ -326,6 +326,11 @@ impl Manager {
                 model,
             } => self.branch(session, message, model).await,
             ChatCommand::CheckBranch(id) => self.check_branch(id).await,
+            ChatCommand::ResolveApproval {
+                session,
+                call_id,
+                decision,
+            } => self.resolve_approval(session, call_id, decision).await,
             ChatCommand::Btw {
                 session,
                 message,
@@ -413,6 +418,7 @@ impl Manager {
         }
         let mut pending = None;
         let mut snapshot = None;
+        let mut waiting = None;
         if let Some(l) = self.sessions.get_mut(&id) {
             l.close_when_idle = false;
             // Text still waiting to be batched is already in the snapshot, so
@@ -428,6 +434,11 @@ impl Manager {
                 r.pending_since = None;
             }
             snapshot = Some(l.s.clone());
+            // A call still waiting for the user is asked about again, since
+            // the window forgot it when it left this chat.
+            if let Slot::Tools(t) = &l.slot {
+                waiting = t.waiting_call();
+            }
         }
         if let Some((turn, content, thinking)) = pending {
             self.emit(ChatEvent::Delta {
@@ -439,6 +450,14 @@ impl Manager {
         }
         if let Some(s) = snapshot {
             self.emit(ChatEvent::Opened(Box::new(s)));
+        }
+        if let Some((call_id, name, arguments)) = waiting {
+            self.emit(ChatEvent::ApprovalRequested {
+                session: id,
+                call_id,
+                name,
+                arguments,
+            });
         }
     }
 
@@ -718,7 +737,11 @@ impl Manager {
                 let _ = run.stop.send(true);
                 run.join.abort();
             }
-            Slot::Tools(tool) => tool.join.abort(),
+            Slot::Tools(tool) => {
+                if let Some(join) = tool.join {
+                    join.abort();
+                }
+            }
             _ => {}
         }
     }

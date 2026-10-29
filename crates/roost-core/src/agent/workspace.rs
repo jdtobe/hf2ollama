@@ -29,8 +29,10 @@ pub enum ToolError {
     UnknownTool(String),
     #[error("the tool {0} is turned off")]
     Off(String),
-    #[error("the tool {0} needs approval, which is not available yet")]
+    #[error("the tool {0} needs approval")]
     NeedsApproval(String),
+    #[error("the user declined this tool call")]
+    Declined,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

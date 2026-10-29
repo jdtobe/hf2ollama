@@ -8,13 +8,14 @@
 use super::context::{build_agent_request, window};
 use super::manager::{now_ms, Intent, Manager, ModelInfo, Run, Slot, CHAT_SYSTEM_PROMPT};
 use super::run::{drive, RunMsg};
-use super::types::{ChatEvent, RunOutcome, SendRejection, TurnOutcome};
+use super::types::{ApprovalDecision, ChatEvent, RunOutcome, SendRejection, TurnOutcome};
 use crate::agent::registry;
 use crate::agent::tools::Limits;
 use crate::agent::{ToolError, Workspace};
 use crate::ollama::ChatRequestBody;
 use crate::session::{
-    MessageId, RunId, Session, SessionId, SessionLifetime, SessionMode, ToolStatus, TurnId,
+    MessageId, Permission, RunId, Session, SessionId, SessionLifetime, SessionMode, ToolStatus,
+    TurnId,
 };
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -26,6 +27,7 @@ use tokio::time::Instant;
 
 pub const AGENT_PROMPT_ADDITION: &str = "You are operating as a read-only agent inside the attached workspace. Use only the provided tools, stay within the workspace, never invent tool results, honor steering messages, and stop when the task is complete or the step budget is exhausted.";
 
+#[derive(Clone)]
 struct PendingCall {
     call_id: String,
     name: String,
@@ -53,9 +55,21 @@ impl AgentRun {
 
 /// A tool call running on the blocking pool.
 pub(super) struct ToolRun {
-    pub(super) join: JoinHandle<()>,
+    /// The running task; `None` while the call waits for the user's answer.
+    pub(super) join: Option<JoinHandle<()>>,
     call_id: String,
     msg: MessageId,
+    /// The call, while it waits for approval.
+    waiting: Option<PendingCall>,
+}
+
+impl ToolRun {
+    /// The call waiting for the user's answer, if that is what this is.
+    pub(super) fn waiting_call(&self) -> Option<(String, String, Value)> {
+        self.waiting
+            .as_ref()
+            .map(|c| (c.call_id.clone(), c.name.clone(), c.arguments.clone()))
+    }
 }
 
 /// The system prompt for one agent step, with the workspace, the tools that
@@ -397,6 +411,34 @@ impl Manager {
             self.agent_next(id).await;
             return;
         };
+        if registry::needs_approval(&live.s.effective_tools, &call.name) {
+            // Ask the user first; the run waits in this slot.
+            live.slot = Slot::Tools(Box::new(ToolRun {
+                join: None,
+                call_id: call.call_id.clone(),
+                msg: call.msg,
+                waiting: Some(call.clone()),
+            }));
+            self.emit(ChatEvent::ApprovalRequested {
+                session: id,
+                call_id: call.call_id,
+                name: call.name,
+                arguments: call.arguments,
+            });
+            return;
+        }
+        self.start_tool_call(id, call, false);
+    }
+
+    /// Runs a tool call on the blocking pool. `approved` lets a tool set to
+    /// Ask through.
+    fn start_tool_call(&mut self, id: SessionId, call: PendingCall, approved: bool) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let Some(agent) = live.agent.as_mut() else {
+            return;
+        };
         live.s.start_tool(call.msg);
         let (workspace, config, run) = (
             Arc::clone(&agent.workspace),
@@ -410,7 +452,11 @@ impl Manager {
             call.call_id.clone(),
         );
         let join = tokio::task::spawn_blocking(move || {
-            let result = registry::call(&workspace, &config, &name, &args, &Limits::default());
+            let result = if approved {
+                registry::call_approved(&workspace, &config, &name, &args, &Limits::default())
+            } else {
+                registry::call(&workspace, &config, &name, &args, &Limits::default())
+            };
             let _ = tx.send(RunMsg::ToolDone {
                 session: id,
                 run,
@@ -419,9 +465,10 @@ impl Manager {
             });
         });
         live.slot = Slot::Tools(Box::new(ToolRun {
-            join,
+            join: Some(join),
             call_id: call.call_id.clone(),
             msg: call.msg,
+            waiting: None,
         }));
         self.emit(ChatEvent::ToolStarted {
             session: id,
@@ -429,6 +476,56 @@ impl Manager {
             name: call.name,
             arguments: call.arguments,
         });
+    }
+
+    /// The user answered a tool approval.
+    pub(super) async fn resolve_approval(
+        &mut self,
+        id: SessionId,
+        call_id: String,
+        decision: ApprovalDecision,
+    ) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let call = match &mut live.slot {
+            Slot::Tools(t) if t.call_id == call_id && t.waiting.is_some() => t.waiting.take(),
+            _ => None,
+        };
+        let Some(call) = call else {
+            return;
+        };
+        match decision {
+            ApprovalDecision::Allow => self.start_tool_call(id, call, true),
+            ApprovalDecision::AllowForSession => {
+                if let (Some(key), Some(live)) = (
+                    registry::capability_of(&call.name),
+                    self.sessions.get_mut(&id),
+                ) {
+                    live.s.set_capability(&key, Permission::Auto);
+                    let s = live.s.clone();
+                    self.save(&s);
+                }
+                self.start_tool_call(id, call, true);
+            }
+            ApprovalDecision::Deny => {
+                // Reported to the model like any failed call.
+                self.tool_done(
+                    id,
+                    self.current_run(id),
+                    call.call_id,
+                    Err(ToolError::Declined),
+                )
+                .await;
+            }
+        }
+    }
+
+    fn current_run(&self, id: SessionId) -> RunId {
+        self.sessions
+            .get(&id)
+            .and_then(|l| l.agent.as_ref())
+            .map_or_else(RunId::new, |a| a.run)
     }
 
     pub(super) async fn tool_done(
@@ -558,7 +655,9 @@ impl Manager {
             }
             Slot::Tools(_) => {
                 if let Slot::Tools(t) = std::mem::replace(&mut live.slot, Slot::Idle) {
-                    t.join.abort();
+                    if let Some(join) = t.join {
+                        join.abort();
+                    }
                 }
             }
             _ => return,
