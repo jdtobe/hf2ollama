@@ -1129,13 +1129,31 @@ mod tests {
         (env, request("tiny", vec![lfs_file("tiny.gguf", &data)]))
     }
 
+    /// Waits until the fake Hugging Face has been asked for a file. A job
+    /// announces its download stage before the request is on the wire, and
+    /// a slow machine can take a while in between.
+    async fn wait_for_hf_request(env: &Env) {
+        for _ in 0..1000 {
+            if env
+                .hf
+                .received_requests()
+                .await
+                .is_some_and(|r| !r.is_empty())
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the download never reached the fake Hugging Face");
+    }
+
     async fn run_and_cancel(env: &Env, id: u64, req: ImportRequest) -> Result<()> {
         let ctl = JobControl::new();
         let canceller = ctl.clone();
         let (res, ()) = tokio::join!(
             run_import(&env.ctx, JobId(id), req, ctl, env.tx.clone()),
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                wait_for_hf_request(env).await;
                 canceller.cancel();
             }
         );
@@ -1457,6 +1475,9 @@ mod tests {
             )
         })
         .await;
+        // Cancelling A before its request arrives would leave the server
+        // with nothing to count.
+        wait_for_hf_request(&env).await;
         let b = mgr.handle(Command::StartImport(req)).unwrap();
         mgr.handle(Command::Cancel(b));
         let mut events = collect_until(&env, |e| has(e, &JobEvent::Cancelled { id: b })).await;
