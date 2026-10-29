@@ -179,6 +179,18 @@ impl ChatState {
                 }
                 self.open = Some(*s);
             }
+            ChatEvent::Changes { session, changes } => {
+                if let Some(open) = self.open.as_mut().filter(|o| o.id == session) {
+                    open.changes = changes;
+                }
+            }
+            ChatEvent::UndoRefused {
+                session, reason, ..
+            } => {
+                if self.open.as_ref().is_some_and(|o| o.id == session) {
+                    self.notice = Some(reason);
+                }
+            }
             ChatEvent::BtwStarted {
                 session,
                 id,

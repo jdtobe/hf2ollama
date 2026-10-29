@@ -342,6 +342,9 @@ pub struct ChangeRecord {
     pub id: u32,
     /// The tool message that made it.
     pub message: MessageId,
+    /// The folder the agent worked in when it made the change; undo only
+    /// applies there.
+    pub root: PathBuf,
     /// Workspace-relative path.
     pub path: String,
     /// The file did not exist before.
@@ -541,6 +544,8 @@ impl Session {
         b.messages = messages;
         b.forks = Vec::new();
         b.btw = Vec::new();
+        // The branch did not make those changes and cannot take them back.
+        b.changes = Vec::new();
         b.pinned = false;
         b.run_state = RunState::Idle;
         b.title = if self.title == UNTITLED {
@@ -817,6 +822,7 @@ impl Session {
         self.changes.push(ChangeRecord {
             id,
             message,
+            root: self.workspace.clone().unwrap_or_default(),
             path: change.path.clone(),
             created: change.before.is_none(),
             before: change.before.clone().unwrap_or_default(),
@@ -1432,6 +1438,47 @@ mod tests {
         ];
         s.messages = msgs.clone();
         (s, msgs)
+    }
+
+    #[test]
+    fn a_branch_does_not_inherit_the_originals_changes_or_their_undo_copies() {
+        let (mut s, m) = four_message_chat();
+        s.record_change(
+            m[1].id,
+            &crate::agent::change::Change {
+                path: "a.txt".into(),
+                before: Some("secret original\n".into()),
+                after: "new\n".into(),
+            },
+        );
+        assert_eq!(s.changes.len(), 1);
+        let b = s.branch(m[1].id, None, T0).unwrap();
+        assert!(
+            b.changes.is_empty(),
+            "the branch cannot undo the original's work"
+        );
+    }
+
+    #[test]
+    fn changes_are_numbered_counted_against_the_undo_room_and_saved() {
+        let (mut s, m) = four_message_chat();
+        let change = |before: &str| crate::agent::change::Change {
+            path: "f".into(),
+            before: Some(before.into()),
+            after: "z\n".into(),
+        };
+        assert_eq!(s.record_change(m[0].id, &change("12345")), 1);
+        assert_eq!(s.record_change(m[0].id, &change("123")), 2);
+        assert_eq!(s.undo_bytes_used(), 8);
+        assert_eq!(s.undo_room(), MAX_UNDO_BYTES - 8);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.changes, s.changes);
+        // Older files have no changes.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v.as_object_mut().unwrap().remove("changes");
+        let old: Session = serde_json::from_value(v).unwrap();
+        assert!(old.changes.is_empty());
     }
 
     #[test]

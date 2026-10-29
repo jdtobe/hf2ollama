@@ -442,6 +442,154 @@ fn header_actions(
     }
 }
 
+/// "+3 −1" in the colours of the diff.
+fn counts(ui: &mut egui::Ui, t: &Tokens, added: u32, removed: u32) {
+    ui.label(
+        RichText::new(format!("+{added}"))
+            .font(mono(12.0))
+            .color(t.ok),
+    );
+    ui.label(
+        RichText::new(format!("−{removed}"))
+            .font(mono(12.0))
+            .color(crate::app::bad(ui.visuals().dark_mode)),
+    );
+}
+
+/// Under a group of tool calls: one row for each file those calls changed,
+/// with its diff on request and a way to take the change back.
+pub(super) fn change_rows(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+    msgs: &[Message],
+) {
+    let running = app.chat.is_running(s.id);
+    for rec in s
+        .changes
+        .iter()
+        .filter(|c| msgs.iter().any(|m| m.id == c.message))
+    {
+        let key = (s.id, rec.id);
+        let open = app.chat_ui.diffs_open.contains(&key);
+        let mut toggle = false;
+        let mut undo = false;
+        let frame = egui::Frame::new()
+            .fill(t.surface2)
+            .stroke(egui::Stroke::new(1.0, t.line))
+            .corner_radius(8.0)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+                ui.horizontal_wrapped(|ui| {
+                    let what = if rec.created { "Created" } else { "Changed" };
+                    ui.label(RichText::new(what).color(t.fg2));
+                    ui.label(RichText::new(&rec.path).font(mono(12.5)).color(t.fg));
+                    counts(ui, t, rec.added, rec.removed);
+                });
+                ui.label(
+                    RichText::new(if rec.undone {
+                        "Undone: the original was put back."
+                    } else {
+                        "The original was kept before the change."
+                    })
+                    .size(11.5)
+                    .color(t.fg3),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    let show = secondary(ui, if open { "Hide diff" } else { "Show diff" }, true);
+                    toggle = show.clicked();
+                    #[cfg(test)]
+                    {
+                        app.chat_ui
+                            .probe
+                            .show_diff_buttons
+                            .push((rec.id, show.rect));
+                    }
+                    if !rec.undone {
+                        let b = secondary(ui, "Undo this change", !running);
+                        undo = b.clicked();
+                        #[cfg(test)]
+                        {
+                            app.chat_ui.probe.undo_buttons.push((rec.id, b.rect));
+                        }
+                    }
+                });
+                if open {
+                    super::view::diff_box(ui, t, &rec.preview);
+                }
+            });
+        #[cfg(test)]
+        {
+            app.chat_ui
+                .probe
+                .change_rows
+                .push((rec.id, frame.response.rect));
+        }
+        let _ = frame;
+        if toggle {
+            if open {
+                app.chat_ui.diffs_open.remove(&key);
+            } else {
+                app.chat_ui.diffs_open.insert(key);
+            }
+        }
+        if undo {
+            out.push(BackendRequest::Chat(ChatCommand::UndoChange {
+                session: s.id,
+                change: rec.id,
+            }));
+        }
+        ui.add_space(6.0);
+    }
+}
+
+/// The Changes made card of the agent settings: every file touched, and one
+/// button that takes them all back, newest first.
+#[cfg_attr(not(test), allow(unused_variables))]
+fn changes_made(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    s: &Session,
+    running: bool,
+) {
+    let open_count = s.changes.iter().filter(|c| !c.undone).count();
+    settings_card(
+        ui,
+        t,
+        "Changes made",
+        &format!("{open_count} of {} still in place", s.changes.len()),
+        |ui| {
+            for rec in &s.changes {
+                ui.horizontal(|ui| {
+                    let room = (ui.available_width() - 110.0).max(60.0);
+                    let shown = crate::widgets::ellipsize_middle(ui, &rec.path, mono(12.0), room);
+                    let colour = if rec.undone { t.fg3 } else { t.fg };
+                    ui.label(RichText::new(shown).font(mono(12.0)).color(colour));
+                    if rec.undone {
+                        ui.label(RichText::new("undone").size(11.5).color(t.fg3));
+                    } else {
+                        counts(ui, t, rec.added, rec.removed);
+                    }
+                });
+            }
+            let all = secondary(ui, "Undo all", open_count > 0 && !running);
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.undo_all_button = Some(all.rect);
+            }
+            if all.clicked() {
+                out.push(BackendRequest::Chat(ChatCommand::UndoAll(s.id)));
+            }
+        },
+    );
+}
+
 /// What a session has a capability set to, never above its maximum.
 fn cap_permission(cfg: &roost_core::session::EffectiveToolConfig, cap: Capability) -> Permission {
     registry::specs()
@@ -655,13 +803,16 @@ fn agent_settings(
                                     ("Allow", "Read files without asking"),
                                 ],
                             ),
-                            // Allow joins this row once every change can be undone.
                             Capability::Write => (
                                 "Write files",
                                 "create and change files in the folder",
                                 &[
                                     ("Off", "The agent cannot change files"),
                                     ("Ask", "Ask before each change, with the changes shown"),
+                                    (
+                                        "Allow",
+                                        "Change files without asking. Each change is kept so you can undo it",
+                                    ),
                                 ],
                             ),
                         };
@@ -721,6 +872,9 @@ fn agent_settings(
                     }
                 });
             });
+            if !s.changes.is_empty() {
+                changes_made(ui, app, out, t, s, running);
+            }
             if running {
                 ui.label(
                     RichText::new("Locked while a run is active.")

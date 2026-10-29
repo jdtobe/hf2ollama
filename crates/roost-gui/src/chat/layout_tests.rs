@@ -2171,7 +2171,7 @@ fn the_header_has_a_chip_per_capability_and_the_write_chip_goes_with_the_switch(
 }
 
 #[test]
-fn the_tools_menu_has_a_write_row_that_asks_or_is_off_and_never_allows() {
+fn the_tools_menu_has_a_write_row_with_off_ask_and_allow() {
     use roost_core::session::Permission;
     let size = (1180.0, 820.0);
     let (mut app, sent, s) = agent_fixture();
@@ -2180,11 +2180,7 @@ fn the_tools_menu_has_a_write_row_that_asks_or_is_off_and_never_allows() {
     let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
     click(&mut app, &mut h, size, chip.center());
     let write = app.state_mut().chat_ui.probe.write_buttons.clone();
-    assert_eq!(
-        write.len(),
-        2,
-        "Off and Ask only, until changes can be undone"
-    );
+    assert_eq!(write.len(), 3, "Off, Ask, Allow");
     let _ = sent_chat_commands(&sent);
     click(&mut app, &mut h, size, write[0].center());
     let cmds = sent_chat_commands(&sent);
@@ -2269,4 +2265,178 @@ fn a_write_asks_with_the_file_the_counts_and_the_diff_and_can_be_answered() {
             );
         }
     }
+}
+
+/// An agent chat in which one write was made through the tool message
+/// `message` of the fixture.
+fn with_a_change(app: &mut App, session: &mut Session, undone: bool) {
+    use roost_core::agent::change::{ChangePreview, DiffLine, LineKind};
+    let message = session
+        .messages
+        .iter()
+        .find(|m| matches!(m.content, roost_core::session::MessageContent::Tool { .. }))
+        .map(|m| m.id)
+        .expect("the fixture has tool messages");
+    session.changes.push(roost_core::session::ChangeRecord {
+        id: 1,
+        message,
+        root: std::path::PathBuf::new(),
+        path: "src/config.rs".into(),
+        created: false,
+        before: if undone {
+            String::new()
+        } else {
+            "old\n".into()
+        },
+        after_hash: 7,
+        added: 3,
+        removed: 1,
+        preview: ChangePreview {
+            path: "src/config.rs".into(),
+            created: false,
+            added: 3,
+            removed: 1,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Removed,
+                    text: "let a = old();".into(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    text: "let a = brand_new();".into(),
+                },
+            ],
+            more: 0,
+        },
+        undone,
+    });
+    let open = app.state_mut().chat.open.as_mut().unwrap();
+    open.changes = session.changes.clone();
+}
+
+#[test]
+fn a_change_shows_under_its_tool_with_show_diff_and_undo_that_sends_the_command() {
+    for size in SIZES {
+        let (mut app, sent, mut s) = agent_fixture();
+        with_a_change(&mut app, &mut s, false);
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        for want in [
+            "Changed",
+            "src/config.rs",
+            "+3",
+            "−1",
+            "Show diff",
+            "Undo this change",
+        ] {
+            assert!(texts.contains(want), "{size:?}: {want}\n{texts}");
+        }
+        assert!(
+            !texts.contains("brand_new"),
+            "the diff is folded until asked for"
+        );
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (_, undo) = p.undo_buttons[0];
+        let pane = p.pane.unwrap();
+        assert!(inside(undo, pane), "{size:?}: {undo:?} in {pane:?}");
+        let (_, row) = p.change_rows[0];
+        assert!(inside(undo, row), "{size:?}: the button is inside its row");
+        // Show diff opens the changed lines.
+        let show = p.show_diff_buttons[0].1;
+        click(&mut app, &mut h, size, show.center());
+        run(&mut app, &mut h, size, 2);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("brand_new") && texts.contains("Hide diff"),
+            "{size:?}\n{texts}"
+        );
+        // Undo sends one command for that change.
+        let p = app.state_mut().chat_ui.probe.clone();
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.undo_buttons[0].1.center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::UndoChange { session, change: 1 }] if *session == s.id),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn an_undone_change_says_so_and_offers_no_second_undo() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, mut s) = agent_fixture();
+    with_a_change(&mut app, &mut s, true);
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("Undone"), "{texts}");
+    assert!(!texts.contains("Undo this change"), "{texts}");
+    assert!(app.state_mut().chat_ui.probe.undo_buttons.is_empty());
+}
+
+#[test]
+fn changes_made_lists_every_change_with_undo_all_in_the_agent_settings() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, mut s) = agent_fixture();
+    with_a_change(&mut app, &mut s, false);
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+    click(&mut app, &mut h, size, chip.center());
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.to_uppercase().contains("CHANGES MADE"), "{texts}");
+    assert!(texts.contains("Undo all"), "{texts}");
+    let all = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .undo_all_button
+        .expect("Undo all");
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, all.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::UndoAll(id)] if *id == s.id),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn undo_is_off_while_the_agent_is_working() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, mut s) = agent_fixture();
+    with_a_change(&mut app, &mut s, false);
+    app.state_mut().chat.fold(ChatEvent::TurnStarted {
+        session: s.id,
+        turn: roost_core::session::TurnId::new(),
+    });
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let p = app.state_mut().chat_ui.probe.clone();
+    let Some((_, undo)) = p.undo_buttons.first().copied() else {
+        return; // not drawn at all is also fine
+    };
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, undo.center());
+    assert!(
+        sent_chat_commands(&sent).is_empty(),
+        "a disabled button sends nothing"
+    );
+}
+
+#[test]
+fn a_refused_undo_tells_the_user_why() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, s) = agent_fixture();
+    app.state_mut().chat.fold(ChatEvent::UndoRefused {
+        session: s.id,
+        change: 1,
+        reason: "src/config.rs was changed after the agent wrote it, so it was left alone.".into(),
+    });
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("was left alone"), "{texts}");
 }

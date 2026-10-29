@@ -712,6 +712,17 @@ impl Manager {
                 refuse(self, cid, "That change was already undone.");
                 break;
             }
+            if rec.root != root {
+                refuse(
+                    self,
+                    cid,
+                    &format!(
+                        "This change was made in {}, not in the folder the agent works in now.",
+                        rec.root.display()
+                    ),
+                );
+                break;
+            }
             let rel = std::path::PathBuf::from(&rec.path);
             let now = match ws.read_text_for_edit(&rel) {
                 Ok(Some(t)) => t,

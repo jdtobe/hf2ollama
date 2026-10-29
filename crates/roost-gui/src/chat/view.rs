@@ -30,6 +30,8 @@ const COMPOSER_ROWS: usize = 3;
 /// Interaction state that is not part of the conversation data.
 #[derive(Default)]
 pub struct ChatUi {
+    /// Changes whose diff is shown under their tool.
+    pub diffs_open: std::collections::HashSet<(SessionId, u32)>,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -97,6 +99,12 @@ pub struct ChatProbe {
     pub permission_buttons: Vec<egui::Rect>,
     /// The Off / Ask buttons of the Write row in the tools menu.
     pub write_buttons: Vec<egui::Rect>,
+    /// Per change (by id): its row under the tool, its Undo and Show diff buttons.
+    pub change_rows: Vec<(u32, egui::Rect)>,
+    pub undo_buttons: Vec<(u32, egui::Rect)>,
+    pub show_diff_buttons: Vec<(u32, egui::Rect)>,
+    /// Undo all in the Changes made card.
+    pub undo_all_button: Option<egui::Rect>,
     /// The R / W chips in the header, with what each is set to.
     pub chips: Vec<(char, egui::Rect, roost_core::session::Permission)>,
     pub branch_icon: Option<egui::Rect>,
@@ -801,6 +809,7 @@ fn pane(
                         end += 1;
                     }
                     super::chrome::tool_group(ui, t, &s.messages[i..end], app);
+                    super::chrome::change_rows(ui, t, app, out, s, &s.messages[i..end]);
                     i = end;
                     continue;
                 }
@@ -833,7 +842,6 @@ fn pane(
 /// The top of a write's approval card: what it does to which file, how many
 /// lines, and the changed lines themselves.
 fn write_summary(ui: &mut egui::Ui, t: &Tokens, p: &roost_core::agent::change::ChangePreview) {
-    use roost_core::agent::change::LineKind;
     ui.horizontal_wrapped(|ui| {
         let what = if p.created {
             "The agent wants to create a file"
@@ -856,6 +864,23 @@ fn write_summary(ui: &mut egui::Ui, t: &Tokens, p: &roost_core::agent::change::C
                 .color(bad(ui.visuals().dark_mode)),
         );
     });
+    diff_box(ui, t, p);
+    if p.more > 0 {
+        ui.label(
+            RichText::new(format!("… and {} more changed lines", p.more))
+                .size(11.5)
+                .color(t.fg3),
+        );
+    }
+}
+
+/// The changed lines of a change in a small scrolling box.
+pub(super) fn diff_box(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    p: &roost_core::agent::change::ChangePreview,
+) {
+    use roost_core::agent::change::LineKind;
     egui::Frame::new()
         .fill(t.surface)
         .stroke(Stroke::new(1.0, t.line))
@@ -896,13 +921,6 @@ fn write_summary(ui: &mut egui::Ui, t: &Tokens, p: &roost_core::agent::change::C
                     }
                 });
         });
-    if p.more > 0 {
-        ui.label(
-            RichText::new(format!("… and {} more changed lines", p.more))
-                .size(11.5)
-                .color(t.fg3),
-        );
-    }
 }
 
 /// What the agent wants to do and three ways to answer. The run waits.

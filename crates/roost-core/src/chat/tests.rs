@@ -2398,6 +2398,37 @@ async fn undo_refuses_when_the_file_was_edited_since_and_leaves_it_alone() {
 }
 
 #[tokio::test]
+async fn undo_refuses_after_the_agent_moved_to_another_folder() {
+    let (_srv, h, id, ws) = agent_that_changed_a_file().await;
+    let other = workspace();
+    // Same relative file, same content as the agent wrote, in the new folder.
+    std::fs::write(other.path().join("a.txt"), "changed\n").unwrap();
+    h.cmd(ChatCommand::SetWorkspace(id, other.path().to_path_buf()));
+    h.wait("moved", |_| {
+        h.try_read(id)
+            .is_some_and(|s| s.workspace.as_deref() == Some(other.path()))
+    })
+    .await;
+    h.cmd(ChatCommand::UndoChange {
+        session: id,
+        change: 1,
+    });
+    h.wait("refused", |e| {
+        e.iter()
+            .any(|e| matches!(e, ChatEvent::UndoRefused { change: 1, .. }))
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(other.path().join("a.txt")).unwrap(),
+        "changed\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("a.txt")).unwrap(),
+        "changed\n"
+    );
+}
+
+#[tokio::test]
 async fn undoing_a_created_file_removes_it() {
     let (_srv, h, id, ws) = asking_agent(vec![
         chat_route(calls(
