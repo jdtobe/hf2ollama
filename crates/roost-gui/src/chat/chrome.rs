@@ -237,80 +237,76 @@ fn title_block(
         .as_ref()
         .filter(|_| agent)
         .map(|p| (home_relative(p), p.display().to_string()));
-    // What is left of the row, less the pencil that follows the title.
-    let room = (ui.available_width() - PENCIL_W - 8.0).max(40.0);
-    // The title keeps what it needs; the folder gets what is left.
-    let title_w = if path.is_some() {
-        natural.min(room * 0.62)
-    } else {
-        room.min(natural)
-    };
+    // The title over the folder, in one column beside the tile; the folder
+    // has the column's whole width because it is not beside the title.
     let mut rename = false;
-    ui.scope(|ui| {
-        ui.set_max_width(title_w);
-        let mut rich = RichText::new(&text)
-            .font(font)
-            .color(if untitled { t.fg3 } else { t.fg });
-        if untitled {
-            rich = rich.italics();
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // What is left of the row, less the pencil that follows the title.
+        let room = (ui.available_width() - PENCIL_W - 8.0).max(40.0);
+        ui.horizontal(|ui| {
+            ui.scope(|ui| {
+                ui.set_max_width(room.min(natural));
+                let mut rich =
+                    RichText::new(&text)
+                        .font(font)
+                        .color(if untitled { t.fg3 } else { t.fg });
+                if untitled {
+                    rich = rich.italics();
+                }
+                // Double-clicking the title edits it too.
+                let label = ui.add(
+                    egui::Label::new(rich)
+                        .truncate()
+                        .sense(egui::Sense::click()),
+                );
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.title_rect = Some(label.rect);
+                }
+                rename |= label.double_clicked();
+            });
+            // A small pencil beside the title, quiet until pointed at.
+            let (pencil, resp) =
+                ui.allocate_exact_size(egui::vec2(PENCIL_W, PENCIL_W), egui::Sense::click());
+            let resp = resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Rename");
+            if resp.hovered() {
+                ui.painter().rect_filled(pencil, 6.0, t.surface);
+            }
+            crate::icons::paint(
+                ui.painter(),
+                pencil,
+                Icon::Edit,
+                if resp.hovered() { t.fg } else { t.fg2 },
+            );
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.rename_button = Some(pencil);
+            }
+            rename |= resp.clicked();
+        });
+        if let Some((short, full)) = path {
+            let room = ui.available_width().max(0.0);
+            let cut_to = crate::widgets::ellipsize_middle(ui, &short, mono(12.5), room);
+            let cut = cut_to != short;
+            let r = ui.label(RichText::new(cut_to).font(mono(12.5)).color(t.fg2));
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.path_rect = Some(r.rect);
+            }
+            // Always say where it is on hover; the full path is the point
+            // when it was cut.
+            r.on_hover_text(if cut {
+                full
+            } else {
+                format!("The agent works in {full}")
+            });
         }
-        // Double-clicking the title edits it too.
-        let label = ui.add(
-            egui::Label::new(rich)
-                .truncate()
-                .sense(egui::Sense::click()),
-        );
-        #[cfg(test)]
-        {
-            app.chat_ui.probe.title_rect = Some(label.rect);
-        }
-        rename |= label.double_clicked();
     });
-    // A small pencil beside the title, quiet until pointed at.
-    let (pencil, resp) =
-        ui.allocate_exact_size(egui::vec2(PENCIL_W, PENCIL_W), egui::Sense::click());
-    let resp = resp
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Rename");
-    if resp.hovered() {
-        ui.painter().rect_filled(pencil, 6.0, t.surface);
-    }
-    crate::icons::paint(
-        ui.painter(),
-        pencil,
-        Icon::Edit,
-        if resp.hovered() { t.fg } else { t.fg2 },
-    );
-    #[cfg(test)]
-    {
-        app.chat_ui.probe.rename_button = Some(pencil);
-    }
-    rename |= resp.clicked();
     if rename {
         app.chat_ui.renaming = Some((s.id, shown.to_string()));
-    }
-    if let Some((short, full)) = path {
-        ui.add_space(8.0);
-        let room = ui.available_width().max(0.0);
-        if room < 24.0 {
-            // Not even "(…)" fits: the title matters more.
-            return;
-        }
-        let label = format!("({short})");
-        let shown = crate::widgets::ellipsize_middle(ui, &label, mono(12.5), room);
-        let cut = shown != label;
-        let r = ui.label(RichText::new(shown).font(mono(12.5)).color(t.fg2));
-        #[cfg(test)]
-        {
-            app.chat_ui.probe.path_rect = Some(r.rect);
-        }
-        // Always say where it is on hover; the full path is the point when
-        // it was cut.
-        r.on_hover_text(if cut {
-            full
-        } else {
-            format!("The agent works in {full}")
-        });
     }
 }
 

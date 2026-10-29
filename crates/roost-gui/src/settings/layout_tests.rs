@@ -758,7 +758,7 @@ fn every_theme_family_and_mode_keeps_settings_usable_at_minimum_size() {
 }
 
 #[test]
-fn the_write_switch_turns_agent_writing_off_and_tells_the_chat_core() {
+fn the_write_switch_turns_agent_writing_off_and_sends_the_new_settings() {
     for size in SIZES {
         let (mut app, sent) = settings_app();
         let mut h = Harness::new(false);

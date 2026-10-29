@@ -42,6 +42,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - The Tools card in Agent settings has a Read row (Off / Ask / Allow) and a Write row (Off / Ask), then "Individual tools · n of m on". Write has no Allow yet.
 - Settings has a new **Agents** card with "Let agents write files". Off makes every agent read-only: the write tools are not offered, a forced call is refused, and the W chip and Write row disappear. Older settings files keep writing on.
 - The permission labels read Off / Ask / Allow instead of Auto.
+- An agent's folder is now its own line under the title, without parentheses, so it has the whole column to itself; it is still cut in the middle when it is too long and the full path is in the tooltip.
 - Agent prompt no longer says "read-only".
 
 ### One sidebar

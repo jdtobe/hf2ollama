@@ -1995,16 +1995,28 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
             assert!(texts.contains("Agent settings"), "{texts}");
         }
         assert!(texts.contains("Idle"), "{texts}");
-        let path_line = texts
-            .lines()
-            .find(|l| l.starts_with('(') && (l.contains("a-project") || l.contains('…')))
-            .unwrap_or_else(|| panic!("no folder in parentheses:\n{texts}"));
-        assert!(path_line.ends_with(')'), "{path_line}");
+        assert!(
+            !texts
+                .lines()
+                .any(|l| l.starts_with('(') && (l.contains("a-project") || l.contains('…'))),
+            "the folder is not wrapped in parentheses:\n{texts}"
+        );
         let p = app.state_mut().chat_ui.probe.clone();
         let header = p.header.unwrap();
         let settings = p.agent_chip.unwrap();
         let more = p.delete_button.clone().unwrap().0;
         assert!(inside(settings, header) && inside(more, header), "{size:?}");
+        // The folder is its own line under the title, from the same left edge.
+        let (title, path) = (p.title_rect.unwrap(), p.path_rect.expect("the folder"));
+        assert!(
+            path.top() >= title.bottom() - 0.5,
+            "{size:?}: {path:?} under {title:?}"
+        );
+        assert!(
+            (path.left() - title.left()).abs() < 0.5,
+            "{size:?}: same left edge"
+        );
+        assert!(inside(path, header), "{size:?}: {path:?} in {header:?}");
         assert!(
             settings.right() <= more.left(),
             "{size:?}: settings left of the menu"
@@ -2058,12 +2070,9 @@ fn a_very_long_folder_is_cut_in_the_middle_and_the_header_still_fits() {
     let texts = texts_of(&mut app, &mut h, size);
     let line = texts
         .lines()
-        .find(|l| l.starts_with('(') && l.contains('…'))
+        .find(|l| l.contains('…') && l.ends_with("some-project-name"))
         .unwrap_or_else(|| panic!("the folder was not cut:\n{texts}"));
-    assert!(
-        line.ends_with("some-project-name)") || line.ends_with(')'),
-        "{line}"
-    );
+    assert!(!line.starts_with('('), "{line}");
     let p = app.state_mut().chat_ui.probe.clone();
     assert!(inside(p.agent_chip.unwrap(), p.header.unwrap()));
 }
@@ -2107,8 +2116,8 @@ fn a_very_long_title_never_runs_into_the_status_or_the_buttons() {
                     "{size:?}: folder {path:?} runs into the status {status:?}"
                 );
                 assert!(
-                    title.right() <= path.left() + 0.5,
-                    "{size:?}: title over the folder"
+                    path.top() >= title.bottom() - 0.5,
+                    "{size:?}: the folder is under the title"
                 );
             }
             let pencil = p.rename_button.unwrap();
