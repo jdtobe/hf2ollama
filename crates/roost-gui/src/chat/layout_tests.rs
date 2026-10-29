@@ -1869,6 +1869,7 @@ fn ask_for_approval(app: &mut App, session: roost_core::session::SessionId) {
         call_id: "call_9".into(),
         name: "read_file".into(),
         arguments: serde_json::json!({"path": "src/main.rs"}),
+        preview: None,
     });
 }
 

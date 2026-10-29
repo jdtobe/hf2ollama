@@ -1,6 +1,7 @@
 //! Which tools exist and which may run. Four layers: family, capability,
-//! permission and tool. The first release ships read-only Files tools only.
+//! permission and tool. The Files family has read tools and write tools.
 
+use super::change;
 use super::tools::{self, Limits};
 use super::workspace::{ToolError, Workspace};
 use crate::session::{EffectiveToolConfig, Permission};
@@ -14,6 +15,7 @@ pub enum Family {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     Read,
+    Write,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +40,7 @@ impl Capability {
     pub fn label(self) -> &'static str {
         match self {
             Capability::Read => "Read",
+            Capability::Write => "Write",
         }
     }
 }
@@ -49,15 +52,27 @@ pub fn capability_key(family: Family, capability: Capability) -> String {
     };
     let c = match capability {
         Capability::Read => "read",
+        Capability::Write => "write",
     };
     format!("{f}.{c}")
 }
 
-/// The most a capability may be set to. Read-only local capabilities may be
-/// `Auto`; anything that writes, runs or reaches the network never is.
+/// The most a capability may be set to. Reading may be `Auto`. Writing asks
+/// every time for now: it becomes `Auto` once every write is kept for undo.
+/// Whatever a session's file says, `permission_of` never goes above this.
 pub fn max_permission(_family: Family, capability: Capability) -> Permission {
     match capability {
         Capability::Read => Permission::Auto,
+        Capability::Write => Permission::Ask,
+    }
+}
+
+/// What a capability is set to when the session never configured it: reading
+/// is automatic, writing asks first.
+pub fn default_permission(_family: Family, capability: Capability) -> Permission {
+    match capability {
+        Capability::Read => Permission::Auto,
+        Capability::Write => Permission::Ask,
     }
 }
 
@@ -67,6 +82,13 @@ pub fn specs() -> Vec<ToolSpec> {
         name,
         family: Family::Files,
         capability: Capability::Read,
+        description,
+        parameters,
+    };
+    let write = |name, description, parameters| ToolSpec {
+        name,
+        family: Family::Files,
+        capability: Capability::Write,
         description,
         parameters,
     };
@@ -119,17 +141,47 @@ pub fn specs() -> Vec<ToolSpec> {
                 "required": ["pattern"]
             }),
         ),
+        write(
+            "write_file",
+            "Create a file, or replace a whole file, in the workspace with the given text. Folders are made as needed. Prefer edit_file for a small change to an existing file. The user may be asked to approve the change.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File relative to the workspace root."},
+                    "content": {"type": "string", "description": "The complete new text of the file."}
+                },
+                "required": ["path", "content"]
+            }),
+        ),
+        write(
+            "edit_file",
+            "Change part of an existing file: replace old_text, which must appear exactly once, with new_text. Read the file first and copy old_text exactly, with enough surrounding lines to be unique. The user may be asked to approve the change.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File relative to the workspace root."},
+                    "old_text": {"type": "string", "description": "The exact text to replace; it must occur once."},
+                    "new_text": {"type": "string", "description": "What to put there instead (may be empty to delete)."}
+                },
+                "required": ["path", "old_text", "new_text"]
+            }),
+        ),
     ]
 }
 
 /// The permission a spec currently has in a session's configuration. A
-/// capability that was never configured runs at its maximum.
+/// capability that was never configured has its default.
 pub fn permission_of(config: &EffectiveToolConfig, spec: &ToolSpec) -> Permission {
-    config
+    let wanted = config
         .capabilities
         .get(&capability_key(spec.family, spec.capability))
         .copied()
-        .unwrap_or_else(|| max_permission(spec.family, spec.capability))
+        .unwrap_or_else(|| default_permission(spec.family, spec.capability));
+    // Auto > Ask > Off: a setting above the maximum is lowered to it.
+    match (wanted, max_permission(spec.family, spec.capability)) {
+        (Permission::Auto, Permission::Ask) => Permission::Ask,
+        (w, _) => w,
+    }
 }
 
 /// Whether the tool is switched on for the session.
@@ -248,6 +300,10 @@ fn run(
         "read_file" => tools::read_file(ws, args, limits),
         "find_files" => tools::find_files(ws, args, limits),
         "search_text" => tools::search_text(ws, args, limits),
+        "write_file" | "edit_file" => match change::plan(ws, name, args)? {
+            Some(c) => change::apply(ws, &c),
+            None => Err(ToolError::UnknownTool(name.to_string())),
+        },
         other => Err(ToolError::UnknownTool(other.to_string())),
     }
 }
@@ -266,20 +322,89 @@ mod tests {
     }
 
     #[test]
-    fn the_first_release_has_exactly_the_four_read_tools() {
+    fn the_files_family_has_four_read_tools_and_two_write_tools() {
         let all = specs();
         assert_eq!(
             names(&all),
-            ["list_dir", "read_file", "find_files", "search_text"]
+            [
+                "list_dir",
+                "read_file",
+                "find_files",
+                "search_text",
+                "write_file",
+                "edit_file"
+            ]
         );
-        assert!(all
+        assert!(all.iter().all(|s| s.family == Family::Files));
+        let writes: Vec<_> = all
             .iter()
-            .all(|s| s.family == Family::Files && s.capability == Capability::Read));
+            .filter(|s| s.capability == Capability::Write)
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(writes, ["write_file", "edit_file"]);
+    }
+
+    #[test]
+    fn a_new_session_reads_automatically_and_asks_before_writing() {
+        let c = cfg();
+        assert_eq!(permission_of(&c, &specs()[0]), Permission::Auto);
+        let write = specs()
+            .into_iter()
+            .find(|s| s.name == "write_file")
+            .unwrap();
+        assert_eq!(permission_of(&c, &write), Permission::Ask);
+        assert!(needs_approval(&c, "write_file"));
+        assert!(needs_approval(&c, "edit_file"));
+        assert!(!needs_approval(&c, "read_file"));
+        assert_eq!(capability_of("edit_file").as_deref(), Some("files.write"));
+        // Both are offered to the model; their calls wait for the user.
+        assert_eq!(offered(&c).len(), 6);
+    }
+
+    #[test]
+    fn writing_can_be_turned_off_but_never_made_automatic() {
+        let mut c = cfg();
+        c.capabilities.insert("files.write".into(), Permission::Off);
+        assert_eq!(
+            offered(&c).len(),
+            4,
+            "a read-only agent is not offered writes"
+        );
+        c.capabilities
+            .insert("files.write".into(), Permission::Auto);
+        // Writing asks every time for now, whatever the file says.
+        assert!(needs_approval(&c, "write_file"));
+        assert_eq!(
+            max_permission(Family::Files, Capability::Write),
+            Permission::Ask
+        );
+    }
+
+    #[test]
+    fn a_write_tool_changes_the_file_only_once_approved() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let c = cfg();
+        let args = json!({"path": "n.txt", "content": "hi\n"});
+        let lim = Limits::default();
+        assert_eq!(
+            call(&ws, &c, "write_file", &args, &lim),
+            Err(ToolError::NeedsApproval("write_file".into()))
+        );
+        assert!(!dir.path().join("n.txt").exists());
+        let out = call_approved(&ws, &c, "write_file", &args, &lim).unwrap();
+        assert_eq!(out, "Created n.txt (+1 -0 lines).");
+        let edit = json!({"path": "n.txt", "old_text": "hi", "new_text": "yo"});
+        call_approved(&ws, &c, "edit_file", &edit, &lim).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("n.txt")).unwrap(),
+            "yo\n"
+        );
     }
 
     #[test]
     fn an_unconfigured_session_allows_read_tools_automatically() {
-        assert_eq!(offered(&cfg()).len(), 4);
+        assert_eq!(offered(&cfg()).len(), 6);
         assert_eq!(
             capability_key(Family::Files, Capability::Read),
             "files.read"
@@ -294,7 +419,16 @@ mod tests {
     fn a_single_tool_can_be_switched_off_without_losing_the_others() {
         let mut c = cfg();
         c.tools.insert("search_text".into(), false);
-        assert_eq!(names(&offered(&c)), ["list_dir", "read_file", "find_files"]);
+        assert_eq!(
+            names(&offered(&c)),
+            [
+                "list_dir",
+                "read_file",
+                "find_files",
+                "write_file",
+                "edit_file"
+            ]
+        );
         let spec = specs()
             .into_iter()
             .find(|s| s.name == "search_text")
@@ -306,9 +440,9 @@ mod tests {
     fn a_whole_capability_can_be_turned_off_or_set_to_ask() {
         let mut c = cfg();
         c.capabilities.insert("files.read".into(), Permission::Off);
-        assert!(offered(&c).is_empty());
+        assert_eq!(names(&offered(&c)), ["write_file", "edit_file"]);
         c.capabilities.insert("files.read".into(), Permission::Ask);
-        assert_eq!(offered(&c).len(), 4, "tools that ask are still offered");
+        assert_eq!(offered(&c).len(), 6, "tools that ask are still offered");
         assert!(needs_approval(&c, "read_file"));
         assert!(!needs_approval(&c, "no_such_tool"));
         let spec = &specs()[0];
@@ -318,7 +452,7 @@ mod tests {
         );
         assert_eq!(capability_of("read_file").as_deref(), Some("files.read"));
         c.capabilities.insert("files.read".into(), Permission::Auto);
-        assert_eq!(offered(&c).len(), 4);
+        assert_eq!(offered(&c).len(), 6);
     }
 
     #[test]
@@ -350,7 +484,7 @@ mod tests {
         c.tools.insert("find_files".into(), false);
         let defs = ollama_definitions(&c);
         let list = defs.as_array().unwrap();
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.len(), 5);
         for d in list {
             assert_eq!(d["type"], "function");
             assert!(d["function"]["name"].is_string());
@@ -377,7 +511,7 @@ mod tests {
             "a.txt"
         );
         assert!(matches!(
-            call(&ws, &cfg(), "write_file", &json!({}), &l),
+            call(&ws, &cfg(), "delete_file", &json!({}), &l),
             Err(ToolError::UnknownTool(_))
         ));
         assert!(matches!(

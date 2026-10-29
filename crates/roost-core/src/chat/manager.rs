@@ -149,6 +149,8 @@ pub(super) struct Live {
     pub(super) dirty: bool,
     /// The loop state while an agent run is active.
     pub(super) agent: Option<AgentRun>,
+    /// Files whose edits the user allowed for as long as this chat is open.
+    pub(super) allowed_files: std::collections::HashSet<String>,
 }
 
 impl Live {
@@ -160,6 +162,7 @@ impl Live {
             last_flush: Instant::now(),
             dirty: false,
             agent: None,
+            allowed_files: Default::default(),
         }
     }
 }
@@ -437,7 +440,10 @@ impl Manager {
             // A call still waiting for the user is asked about again, since
             // the window forgot it when it left this chat.
             if let Slot::Tools(t) = &l.slot {
-                waiting = t.waiting_call();
+                waiting = t.waiting_call().map(|(call_id, name, arguments)| {
+                    let preview = l.agent.as_ref().and_then(|a| a.preview(&name, &arguments));
+                    (call_id, name, arguments, preview)
+                });
             }
         }
         if let Some((turn, content, thinking)) = pending {
@@ -451,12 +457,13 @@ impl Manager {
         if let Some(s) = snapshot {
             self.emit(ChatEvent::Opened(Box::new(s)));
         }
-        if let Some((call_id, name, arguments)) = waiting {
+        if let Some((call_id, name, arguments, preview)) = waiting {
             self.emit(ChatEvent::ApprovalRequested {
                 session: id,
                 call_id,
                 name,
                 arguments,
+                preview,
             });
         }
     }

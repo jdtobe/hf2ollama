@@ -9,6 +9,7 @@ use super::context::{build_agent_request, window};
 use super::manager::{now_ms, Intent, Manager, ModelInfo, Run, Slot, CHAT_SYSTEM_PROMPT};
 use super::run::{drive, RunMsg};
 use super::types::{ApprovalDecision, ChatEvent, RunOutcome, SendRejection, TurnOutcome};
+use crate::agent::change::{self, ChangePreview};
 use crate::agent::registry;
 use crate::agent::tools::Limits;
 use crate::agent::{ToolError, Workspace};
@@ -25,7 +26,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-pub const AGENT_PROMPT_ADDITION: &str = "You are operating as a read-only agent inside the attached workspace. Use only the provided tools, stay within the workspace, never invent tool results, honor steering messages, and stop when the task is complete or the step budget is exhausted.";
+pub const AGENT_PROMPT_ADDITION: &str = "You are operating as an agent inside the attached workspace. Use only the provided tools, read a file before you change it, stay within the workspace, never invent tool results, honor steering messages, and stop when the task is complete or the step budget is exhausted.";
 
 #[derive(Clone)]
 struct PendingCall {
@@ -48,6 +49,15 @@ pub(super) struct AgentRun {
 }
 
 impl AgentRun {
+    /// What a write call would change, if `name` is a write tool and the call
+    /// makes sense.
+    pub(super) fn preview(&self, name: &str, arguments: &Value) -> Option<ChangePreview> {
+        change::plan(&self.workspace, name, arguments)
+            .ok()
+            .flatten()
+            .map(|c| c.card())
+    }
+
     pub(super) fn collect(&mut self, name: String, arguments: Value) {
         self.collected.push((name, arguments));
     }
@@ -411,7 +421,19 @@ impl Manager {
             self.agent_next(id).await;
             return;
         };
-        if registry::needs_approval(&live.s.effective_tools, &call.name) {
+        let mut ask = registry::needs_approval(&live.s.effective_tools, &call.name);
+        let preview = agent.preview(&call.name, &call.arguments);
+        if ask && registry::capability_of(&call.name).as_deref() == Some("files.write") {
+            match &preview {
+                // The user allowed edits to this file for the session.
+                Some(p) if live.allowed_files.contains(&p.path) => ask = false,
+                // A call that cannot be planned changes nothing; running it
+                // lets the model read why.
+                None => ask = false,
+                Some(_) => {}
+            }
+        }
+        if ask {
             // Ask the user first; the run waits in this slot.
             live.slot = Slot::Tools(Box::new(ToolRun {
                 join: None,
@@ -424,10 +446,12 @@ impl Manager {
                 call_id: call.call_id,
                 name: call.name,
                 arguments: call.arguments,
+                preview,
             });
             return;
         }
-        self.start_tool_call(id, call, false);
+        let approved = registry::needs_approval(&live.s.effective_tools, &call.name);
+        self.start_tool_call(id, call, approved);
     }
 
     /// Runs a tool call on the blocking pool. `approved` lets a tool set to
@@ -497,6 +521,20 @@ impl Manager {
         };
         match decision {
             ApprovalDecision::Allow => self.start_tool_call(id, call, true),
+            ApprovalDecision::AllowForSession
+                if registry::capability_of(&call.name).as_deref() == Some("files.write") =>
+            {
+                // Writing never becomes automatic: only this file is allowed.
+                if let Some(live) = self.sessions.get_mut(&id) {
+                    let path = live
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.preview(&call.name, &call.arguments))
+                        .map(|p| p.path);
+                    live.allowed_files.extend(path);
+                }
+                self.start_tool_call(id, call, true);
+            }
             ApprovalDecision::AllowForSession => {
                 if let (Some(key), Some(live)) = (
                     registry::capability_of(&call.name),

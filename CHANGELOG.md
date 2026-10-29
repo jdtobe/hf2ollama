@@ -33,6 +33,13 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### Agents can write files (first step)
+
+- New tools `write_file` and `edit_file` (replace one exact piece of text). Both stay inside the agent's folder, refuse protected names (`.env`, keys and the like), and need your approval every time: writing is a new capability that is **Ask** by default and cannot be made automatic yet (that waits for undo, which is next).
+- The approval question comes with a preview of the change: the path, whether the file is new, lines added and removed, and the changed lines with context. The window does not draw it yet.
+- "Allow for this session" on a write allows edits to that file only, for as long as the chat is open, and never turns writing on for everything.
+- Agent prompt no longer says "read-only".
+
 ### One sidebar
 
 - Chat, Work and Models share one left column of the same width (340 by default, as wide as the Models list was). Drag its right edge to change it, between 280 and 520 points; a narrow window limits it so the page beside it keeps at least 540. The width you choose is remembered between runs and is the same on every tab. Saving it (and changing the theme or the auto-dismiss time) no longer restarts the download engine: only settings the engines use (the Ollama address, the staging folder, the delete/keep options, simultaneous downloads, the Hugging Face address and keep-alive) rebuild them. Before, any settings change did, which let a download started afterwards ignore the simultaneous-downloads limit.

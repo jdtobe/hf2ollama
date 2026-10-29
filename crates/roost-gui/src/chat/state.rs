@@ -50,6 +50,8 @@ pub struct PendingApproval {
     pub call_id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+    /// For a write, what it would change.
+    pub preview: Option<roost_core::agent::change::ChangePreview>,
 }
 
 /// Where a check of a branch's original stands.
@@ -287,6 +289,7 @@ impl ChatState {
                 call_id,
                 name,
                 arguments,
+                preview,
             } => {
                 self.approvals.insert(
                     session,
@@ -294,6 +297,7 @@ impl ChatState {
                         call_id,
                         name,
                         arguments,
+                        preview,
                     },
                 );
             }

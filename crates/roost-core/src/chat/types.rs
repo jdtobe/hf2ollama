@@ -218,6 +218,8 @@ pub enum ChatEvent {
         call_id: String,
         name: String,
         arguments: serde_json::Value,
+        /// For a write, what it would change.
+        preview: Option<crate::agent::change::ChangePreview>,
     },
     /// A side question was sent.
     BtwStarted {

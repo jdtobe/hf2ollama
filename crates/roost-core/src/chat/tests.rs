@@ -1246,9 +1246,12 @@ async fn an_agent_reads_a_file_and_answers() {
     // What the model saw.
     let bodies = chat_bodies(&srv);
     assert_eq!(bodies.len(), 2);
-    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 6);
     let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
-    assert!(system.contains("read-only agent"), "{system}");
+    assert!(
+        system.contains("an agent inside the attached workspace"),
+        "{system}"
+    );
     assert!(
         system.contains(&ws.path().display().to_string()),
         "{system}"
@@ -1527,7 +1530,16 @@ async fn switched_off_tools_are_not_offered_to_the_model() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(names, ["list_dir", "read_file", "find_files"]);
+    assert_eq!(
+        names,
+        [
+            "list_dir",
+            "read_file",
+            "find_files",
+            "write_file",
+            "edit_file"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -2138,7 +2150,7 @@ async fn a_tool_set_to_ask_waits_for_the_user_and_runs_once_allowed() {
     h.send(id, "what is in a.txt?").await;
     h.wait("asked", |e| approval_for(e).is_some()).await;
     // The model was offered the tools even though they need approval.
-    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 6);
     let (call_id, name) = approval_for(&h.events()).unwrap();
     assert_eq!(name, "read_file");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2219,6 +2231,122 @@ async fn allow_for_this_session_stops_further_questions() {
         })
     })
     .await;
+}
+
+fn preview_of(e: &[ChatEvent]) -> Option<crate::agent::change::ChangePreview> {
+    e.iter().rev().find_map(|e| match e {
+        ChatEvent::ApprovalRequested { preview, .. } => preview.clone(),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn a_write_waits_with_a_diff_and_happens_only_once_allowed() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "notes/new.txt", "content": "hi\nthere\n"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "write a note").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let p = preview_of(&h.events()).expect("a write shows what it would change");
+    assert_eq!(p.path, "notes/new.txt");
+    assert!(p.created);
+    assert_eq!((p.added, p.removed), (2, 0));
+    assert!(
+        !ws.path().join("notes/new.txt").exists(),
+        "nothing before the answer"
+    );
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("notes/new.txt")).unwrap(),
+        "hi\nthere\n"
+    );
+}
+
+#[tokio::test]
+async fn a_denied_write_changes_nothing() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "a.txt", "content": "overwritten\n"}),
+        )),
+        chat_route(reply("Understood.")),
+    ])
+    .await;
+    let before = std::fs::read_to_string(ws.path().join("a.txt")).unwrap();
+    h.send(id, "overwrite it").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let p = preview_of(&h.events()).unwrap();
+    assert!(!p.created, "an existing file is changed, not created");
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("a.txt")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn allowing_edits_to_a_file_covers_that_file_only_and_never_makes_writing_automatic() {
+    let (_srv, h, id, ws) = asking_agent(vec![
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "x.txt", "content": "1\n"}),
+        )),
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "x.txt", "content": "2\n"}),
+        )),
+        chat_route(calls(
+            "write_file",
+            serde_json::json!({"path": "y.txt", "content": "other\n"}),
+        )),
+        chat_route(reply("Done.")),
+    ])
+    .await;
+    h.send(id, "write x twice and y once").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::AllowForSession,
+    });
+    // x.txt is written again without asking; y.txt asks.
+    h.wait("asked about y", |e| count_approvals(e) == 2).await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("x.txt")).unwrap(),
+        "2\n"
+    );
+    assert!(!ws.path().join("y.txt").exists());
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Deny,
+    });
+    h.wait_run_ended(1).await;
+    assert!(!ws.path().join("y.txt").exists());
+    let s = h.try_read(id).unwrap();
+    assert_ne!(
+        s.effective_tools.capabilities.get("files.write"),
+        Some(&crate::session::Permission::Auto)
+    );
 }
 
 #[tokio::test]

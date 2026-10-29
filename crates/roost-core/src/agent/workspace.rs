@@ -198,6 +198,46 @@ impl Workspace {
         Ok(out)
     }
 
+    /// The text of a file about to be changed: `None` when it does not exist.
+    /// Directories, files that are not UTF-8 text and files over 1 MiB are
+    /// refused, so a change never rewrites something the model cannot see.
+    pub fn read_text_for_edit(&self, rel: &Path) -> Result<Option<String>, ToolError> {
+        let meta = match self.dir.metadata(Self::here(rel)) {
+            Ok(m) => m,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(map_io(rel, e)),
+        };
+        if meta.is_dir() {
+            return Err(ToolError::NotAFile(describe(rel)));
+        }
+        if meta.len() > 1024 * 1024 {
+            return Err(ToolError::Unreadable(format!(
+                "{} is too large to change with a tool",
+                describe(rel)
+            )));
+        }
+        match self.dir.read_to_string(Self::here(rel)) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == ErrorKind::InvalidData => Err(ToolError::Unreadable(format!(
+                "{} is not a text file",
+                describe(rel)
+            ))),
+            Err(e) => Err(map_io(rel, e)),
+        }
+    }
+
+    /// Writes `text` to a file inside the workspace, making missing folders.
+    pub fn write_text(&self, rel: &Path, text: &str) -> Result<(), ToolError> {
+        if let Some(parent) = rel.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.dir
+                .create_dir_all(parent)
+                .map_err(|e| map_io(parent, e))?;
+        }
+        self.dir
+            .write(Self::here(rel), text.as_bytes())
+            .map_err(|e| map_io(rel, e))
+    }
+
     /// Opens a regular file for reading. Sensitive names are refused first,
     /// whether or not the file exists.
     pub fn open_file(&self, rel: &Path) -> Result<(File, u64), ToolError> {
@@ -224,6 +264,42 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn text_for_edit_is_none_for_a_new_file_and_refuses_binary_and_folders() {
+        let (root, _o, w) = ws();
+        assert_eq!(w.read_text_for_edit(Path::new("nope.txt")).unwrap(), None);
+        assert_eq!(
+            w.read_text_for_edit(Path::new("a.txt")).unwrap().as_deref(),
+            Some("hello\nworld\n")
+        );
+        fs::write(root.path().join("bin.dat"), [0xff, 0xfe, 0x00]).unwrap();
+        assert!(matches!(
+            w.read_text_for_edit(Path::new("bin.dat")),
+            Err(ToolError::Unreadable(_))
+        ));
+        assert!(matches!(
+            w.read_text_for_edit(Path::new("sub")),
+            Err(ToolError::NotAFile(_))
+        ));
+    }
+
+    #[test]
+    fn writing_makes_folders_and_cannot_leave_the_workspace() {
+        let (root, outside, w) = ws();
+        w.write_text(Path::new("x/y/z.txt"), "ok").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("x/y/z.txt")).unwrap(),
+            "ok"
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), root.path().join("link")).unwrap();
+            assert!(w.write_text(Path::new("link/pwned.txt"), "no").is_err());
+            assert!(!outside.path().join("pwned.txt").exists());
+        }
+        let _ = outside;
+    }
 
     fn ws() -> (TempDir, TempDir, Workspace) {
         let outside = TempDir::new().unwrap();
