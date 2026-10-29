@@ -555,6 +555,7 @@ fn start_chat(
             let chat = ChatManager::spawn(runtime.handle(), writer, cfg, sink);
             chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
             chat.send(ChatCommand::SetRunAllowed(settings.agents_can_run));
+            chat.send(ChatCommand::SetLimits(Box::new(settings.tools.clone())));
             Some(chat)
         }
         Err(StoreError::Locked) => {
@@ -611,6 +612,7 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
             if let Some(chat) = &shared.chat {
                 chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
                 chat.send(ChatCommand::SetRunAllowed(settings.agents_can_run));
+                chat.send(ChatCommand::SetLimits(Box::new(settings.tools.clone())));
             }
             let rebuild = needs_rebuild(&shared.clients().settings, &settings);
             if rebuild {
@@ -829,6 +831,18 @@ mod tests {
             },
             Settings {
                 auto_dismiss: AutoDismiss::OneHour,
+                ..base.clone()
+            },
+            // Tool limits and the agent switches go to the chat core only.
+            Settings {
+                tools: roost_core::agent::tools::Limits {
+                    list_entries: 50,
+                    ..Default::default()
+                },
+                ..base.clone()
+            },
+            Settings {
+                agents_can_run: true,
                 ..base.clone()
             },
         ] {
@@ -2148,6 +2162,112 @@ mod tests {
         let (asked, ran) = a_command_asked_for(true, true, Permission::Auto).await;
         assert_eq!(asked, None);
         assert!(!ran, "a command ran after the switch was turned off");
+    }
+
+    /// An agent whose model asks to list the folder, run under `tools`
+    /// limits that are either in the settings the app starts with or applied
+    /// afterwards. Returns what the list said.
+    async fn a_listing_under_limits(at_start: bool) -> String {
+        let server = version_server("0.9.2").await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"details":{"family":"llama"},"model_info":{"llama.context_length":8192},"capabilities":["completion","tools"],"digest":"sha256:abc"}"#,
+            ))
+            .mount(&server)
+            .await;
+        let call = "{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}}]},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(call))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        let done = "{\"message\":{\"role\":\"assistant\",\"content\":\"Listed.\"},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(done))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
+            log_dir: dir.path().join("logs"),
+            default_staging: dir.path().join("staging"),
+            portable: true,
+        };
+        let limits = roost_core::agent::tools::Limits {
+            list_entries: 1,
+            ..Default::default()
+        };
+        let start = Settings {
+            ollama_url: server.uri(),
+            hf_endpoint: "http://127.0.0.1:9".into(),
+            tools: if at_start {
+                limits.clone()
+            } else {
+                Default::default()
+            },
+            ..Settings::default()
+        };
+        let (tx, rx) = Backend::spawn_with(
+            egui::Context::default(),
+            start.clone(),
+            paths,
+            Arc::new(MemoryStore::default()),
+        );
+        if !at_start {
+            tx.send(BackendRequest::ApplySettings(Settings {
+                tools: limits,
+                ..start
+            }))
+            .unwrap();
+            wait_for(&rx, |e| {
+                matches!(e, UiEvent::SettingsSaved(_)).then_some(())
+            });
+        }
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("a.txt"), "a").unwrap();
+        std::fs::write(work.path().join("b.txt"), "b").unwrap();
+        tx.send(BackendRequest::Chat(ChatCommand::CreateAgent {
+            lifetime: roost_core::session::SessionLifetime::Persisted,
+            model: "llama3:8b".into(),
+            workspace: work.path().to_path_buf(),
+        }))
+        .unwrap();
+        let id = wait_for(&rx, |e| match e {
+            UiEvent::Chat(ChatEvent::Opened(s)) => Some(s.id),
+            _ => None,
+        });
+        tx.send(BackendRequest::Chat(ChatCommand::Send {
+            session: id,
+            text: "list the folder".into(),
+        }))
+        .unwrap();
+        let mut listing = String::new();
+        wait_for(&rx, |e| match e {
+            UiEvent::Chat(ChatEvent::ToolFinished { output, .. }) => {
+                listing = output.clone();
+                None
+            }
+            UiEvent::Chat(ChatEvent::RunEnded { .. }) => Some(()),
+            _ => None,
+        });
+        listing
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn limits_in_the_settings_the_app_starts_with_apply_to_agents() {
+        let out = a_listing_under_limits(true).await;
+        assert!(out.contains("[showing entries 1-1 of 2"), "{out}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn limits_applied_later_in_settings_apply_to_agents() {
+        let out = a_listing_under_limits(false).await;
+        assert!(out.contains("[showing entries 1-1 of 2"), "{out}");
     }
 
     #[test]

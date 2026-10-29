@@ -134,17 +134,21 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         read(
             "list_dir",
-            "List the entries of a directory in the workspace (at most 200, sorted by name). Directories end with /.",
+            "List the entries of a directory in the workspace, by name or sorted by size or time. Directories end with /. A long listing is cut, and the result says which offset to use to see the rest.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory relative to the workspace root. Defaults to the root."}
+                    "path": {"type": "string", "description": "Directory relative to the workspace root. Defaults to the root."},
+                    "offset": {"type": "integer", "description": "Entries to skip, to continue a cut listing. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
+                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
+                    "reverse": {"type": "boolean", "description": "Flip the order."}
                 }
             }),
         ),
         read(
             "read_file",
-            "Read a text file from the workspace, with line numbers. Returns at most 200 lines by default (1000 max) and says which offset to use to continue.",
+            "Read a text file from the workspace, with line numbers. Long files are cut, and the result says which offset to use to continue.",
             json!({
                 "type": "object",
                 "properties": {
@@ -157,7 +161,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         read(
             "read_binary",
-            "Show the bytes of any file (a ROM, an image, an archive …) as a hex dump: offset, 16 bytes in hex, and the same bytes as text. Returns at most 4096 bytes per call and says which offset to use to continue. Offsets may be written as 4096 or 0x1000. Use this when read_file says a file is binary.",
+            "Show the bytes of any file (a ROM, an image, an archive …) as a hex dump: offset, 16 bytes in hex, and the same bytes as text. Returns a limited number of bytes per call and says which offset to use to continue. Offsets may be written as 4096 or 0x1000. Use this when read_file says a file is binary.",
             json!({
                 "type": "object",
                 "properties": {
@@ -170,25 +174,46 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         read(
             "find_files",
-            "Find files and directories whose path matches a glob such as *.rs or src/*.toml. A pattern without a slash matches at any depth.",
+            "Find files and directories whose path matches a glob such as *.rs or src/*.toml. A pattern without a slash matches at any depth. Results can be sorted by size or time (to find the largest or newest files). Many results are cut, and the result says which offset to use to see the next ones.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Glob pattern."},
-                    "path": {"type": "string", "description": "Directory to search in. Defaults to the workspace root."}
+                    "path": {"type": "string", "description": "Directory to search in. Defaults to the workspace root."},
+                    "offset": {"type": "integer", "description": "Results to skip, to continue a cut list. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."},
+                    "sort": {"type": "string", "enum": ["name", "size", "modified"], "description": "Order: name (default), size (largest first) or modified (newest first)."},
+                    "reverse": {"type": "boolean", "description": "Flip the order."}
                 },
                 "required": ["pattern"]
             }),
         ),
         read(
             "search_text",
-            "Search text files for a regular expression. Returns path:line: text for each match (at most 200).",
+            "Search text files for a regular expression. Returns path:line: text for each match. Many matches are cut, and the result says which offset to use to see the next ones and which files could not be searched (binary files, files too large).",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Regular expression."},
                     "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
-                    "case_insensitive": {"type": "boolean", "description": "Ignore letter case."}
+                    "case_insensitive": {"type": "boolean", "description": "Ignore letter case."},
+                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
+                },
+                "required": ["pattern"]
+            }),
+        ),
+        read(
+            "search_bytes",
+            "Search files for a byte pattern, such as a ROM header or a file signature. The pattern is hex pairs, with ?? for any byte: \"4E 45 53 1A\" or \"de ?? be ef\". Returns path:0xOFFSET: bytes for each match. Use read_binary to look around an offset. Many matches are cut, and the result says which offset to use to see the next ones.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Hex byte pairs, ?? for any byte. Up to 64 bytes."},
+                    "path": {"type": "string", "description": "File or directory to search. Defaults to the workspace root."},
+                    "glob": {"type": "string", "description": "Only search files whose name matches, such as *.nes."},
+                    "offset": {"type": "integer", "description": "Matches to skip, to continue a cut list. Defaults to 0."},
+                    "limit": {"type": "integer", "description": "Return at most this many (never more than the user allows). Ask for fewer when a few will do."}
                 },
                 "required": ["pattern"]
             }),
@@ -385,7 +410,8 @@ fn run(
         "read_binary" => (tools::read_binary(ws, args, limits), None),
         "find_files" => (tools::find_files(ws, args, limits), None),
         "search_text" => (tools::search_text(ws, args, limits), None),
-        "write_file" | "edit_file" => write(ws, name, args, undo_room),
+        "search_bytes" => (tools::search_bytes(ws, args, limits), None),
+        "write_file" | "edit_file" => write(ws, name, args, undo_room, limits),
         "run_command" => (run_command(ws, args, limits, cancel), None),
         other => (Err(ToolError::UnknownTool(other.to_string())), None),
     }
@@ -412,8 +438,9 @@ fn write(
     name: &str,
     args: &Value,
     undo_room: usize,
+    limits: &Limits,
 ) -> (Result<String, ToolError>, Option<change::Change>) {
-    let change = match change::plan(ws, name, args) {
+    let change = match change::plan(ws, name, args, limits) {
         Ok(Some(c)) => c,
         Ok(None) => return (Err(ToolError::UnknownTool(name.to_string())), None),
         Err(e) => return (Err(e), None),
@@ -450,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_has_five_read_tools_two_write_tools_and_one_command_tool() {
+    fn the_registry_has_six_read_tools_two_write_tools_and_one_command_tool() {
         let all = specs();
         assert_eq!(
             names(&all),
@@ -460,6 +487,7 @@ mod tests {
                 "read_binary",
                 "find_files",
                 "search_text",
+                "search_bytes",
                 "write_file",
                 "edit_file",
                 "run_command"
@@ -496,7 +524,7 @@ mod tests {
         assert!(!needs_approval(&c, "read_file"));
         assert_eq!(capability_of("edit_file").as_deref(), Some("files.write"));
         // Both are offered to the model; their calls wait for the user.
-        assert_eq!(offered(&c).len(), 7);
+        assert_eq!(offered(&c).len(), 8);
     }
 
     #[test]
@@ -547,7 +575,7 @@ mod tests {
         c.capabilities.insert("files.write".into(), Permission::Off);
         assert_eq!(
             offered(&c).len(),
-            5,
+            6,
             "a read-only agent is not offered writes"
         );
         c.capabilities
@@ -584,7 +612,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_session_allows_read_tools_automatically() {
-        assert_eq!(offered(&cfg()).len(), 7);
+        assert_eq!(offered(&cfg()).len(), 8);
         assert_eq!(
             capability_key(Family::Files, Capability::Read),
             "files.read"
@@ -606,6 +634,7 @@ mod tests {
                 "read_file",
                 "read_binary",
                 "find_files",
+                "search_bytes",
                 "write_file",
                 "edit_file"
             ]
@@ -623,7 +652,7 @@ mod tests {
         c.capabilities.insert("files.read".into(), Permission::Off);
         assert_eq!(names(&offered(&c)), ["write_file", "edit_file"]);
         c.capabilities.insert("files.read".into(), Permission::Ask);
-        assert_eq!(offered(&c).len(), 7, "tools that ask are still offered");
+        assert_eq!(offered(&c).len(), 8, "tools that ask are still offered");
         assert!(needs_approval(&c, "read_file"));
         assert!(!needs_approval(&c, "no_such_tool"));
         let spec = &specs()[0];
@@ -633,7 +662,7 @@ mod tests {
         );
         assert_eq!(capability_of("read_file").as_deref(), Some("files.read"));
         c.capabilities.insert("files.read".into(), Permission::Auto);
-        assert_eq!(offered(&c).len(), 7);
+        assert_eq!(offered(&c).len(), 8);
     }
 
     #[test]
@@ -665,7 +694,7 @@ mod tests {
         c.tools.insert("find_files".into(), false);
         let defs = ollama_definitions(&c);
         let list = defs.as_array().unwrap();
-        assert_eq!(list.len(), 6);
+        assert_eq!(list.len(), 7);
         for d in list {
             assert_eq!(d["type"], "function");
             assert!(d["function"]["name"].is_string());

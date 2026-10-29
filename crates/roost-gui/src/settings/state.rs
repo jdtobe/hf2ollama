@@ -37,6 +37,7 @@ pub struct SettingsChange {
     pub keep_alive: bool,
     pub agents_can_write: bool,
     pub agents_can_run: bool,
+    pub tools: bool,
 }
 
 impl SettingsChange {
@@ -57,6 +58,7 @@ impl SettingsChange {
         self.keep_alive |= other.keep_alive;
         self.agents_can_write |= other.agents_can_write;
         self.agents_can_run |= other.agents_can_run;
+        self.tools |= other.tools;
     }
 }
 
@@ -430,6 +432,19 @@ impl SettingsState {
         }
     }
 
+    /// A tool limit was changed. The new limits are kept inside the range the
+    /// tools allow, so a value that cannot work never reaches them.
+    pub fn set_tools(
+        &mut self,
+        s: &mut Settings,
+        limits: roost_core::agent::tools::Limits,
+    ) -> SettingsChange {
+        SettingsChange {
+            tools: Self::flag(&mut s.tools, limits.clamped()),
+            ..Default::default()
+        }
+    }
+
     /// "Turn on" in the warning.
     pub fn accept_run(&mut self, s: &mut Settings) -> SettingsChange {
         self.confirm_run = false;
@@ -741,6 +756,7 @@ mod tests {
             (c.keep_alive, "keep_alive"),
             (c.agents_can_write, "agents_can_write"),
             (c.agents_can_run, "agents_can_run"),
+            (c.tools, "tools"),
         ] {
             if on {
                 v.push(name);
@@ -786,6 +802,21 @@ mod tests {
         assert_eq!(st.token_status, HfTokenStatus::Checking);
         assert!(st.token_busy);
         assert!(!st.can_import_legacy_token());
+    }
+
+    #[test]
+    fn changing_a_tool_limit_reports_it_keeps_it_in_range_and_ignores_no_change() {
+        let (mut s, mut st) = fresh();
+        let mut l = s.tools.clone();
+        l.list_entries = 50;
+        let c = st.set_tools(&mut s, l.clone());
+        assert_eq!(flags(c), ["tools"]);
+        assert_eq!(s.tools.list_entries, 50);
+        assert!(!st.set_tools(&mut s, l).any(), "same value, no change");
+        let mut wild = s.tools.clone();
+        wild.list_entries = 0;
+        st.set_tools(&mut s, wild);
+        assert_eq!(s.tools.list_entries, 1, "moved into range");
     }
 
     #[test]

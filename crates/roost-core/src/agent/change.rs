@@ -2,13 +2,12 @@
 //! diff before saying yes), then applied. A plan reads the file and works out
 //! the new text; nothing is written until `apply`.
 
+use super::tools::Limits;
 use super::workspace::{is_sensitive, ToolError, Workspace};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
-/// Most text a single write may carry.
-pub const MAX_WRITE_BYTES: usize = 256 * 1024;
 /// Files longer than this (in lines) get a coarse diff instead of an exact one.
 const DIFF_LINE_LIMIT: usize = 2_000;
 /// Changed lines shown in a preview, with two lines of context around them.
@@ -195,20 +194,25 @@ fn target(ws: &Workspace, path: &str) -> Result<std::path::PathBuf, ToolError> {
 
 /// Works out the change a write tool call would make. `Ok(None)` when `name`
 /// is not a write tool.
-pub fn plan(ws: &Workspace, name: &str, args: &Value) -> Result<Option<Change>, ToolError> {
+pub fn plan(
+    ws: &Workspace,
+    name: &str,
+    args: &Value,
+    lim: &Limits,
+) -> Result<Option<Change>, ToolError> {
     match name {
         "write_file" => {
             let path = required(args, "path")?;
             let content = required(args, "content")?;
-            if content.len() > MAX_WRITE_BYTES {
+            if content.len() > lim.write_bytes {
                 return Err(ToolError::InvalidArguments(format!(
                     "content is {} bytes; one write may carry at most {}",
                     content.len(),
-                    MAX_WRITE_BYTES
+                    lim.write_bytes
                 )));
             }
             let rel = target(ws, &path)?;
-            let before = ws.read_text_for_edit(&rel)?;
+            let before = ws.read_text_for_edit(&rel, lim.edit_file_bytes)?;
             Ok(Some(Change {
                 path: super::tools::show(&rel),
                 before,
@@ -225,7 +229,7 @@ pub fn plan(ws: &Workspace, name: &str, args: &Value) -> Result<Option<Change>, 
                 ));
             }
             let rel = target(ws, &path)?;
-            let Some(before) = ws.read_text_for_edit(&rel)? else {
+            let Some(before) = ws.read_text_for_edit(&rel, lim.edit_file_bytes)? else {
                 return Err(ToolError::NotFound(super::tools::show(&rel)));
             };
             let found = before.matches(&old).count();
@@ -240,7 +244,7 @@ pub fn plan(ws: &Workspace, name: &str, args: &Value) -> Result<Option<Change>, 
                 }));
             }
             let after = before.replacen(&old, &new, 1);
-            if after.len() > MAX_WRITE_BYTES * 4 {
+            if after.len() > lim.write_bytes.saturating_mul(4) {
                 return Err(ToolError::InvalidArguments(
                     "the result would be too large".into(),
                 ));
@@ -276,6 +280,11 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
+
+    /// `plan` under the built-in limits.
+    fn plan(ws: &Workspace, name: &str, args: &Value) -> Result<Option<Change>, ToolError> {
+        super::plan(ws, name, args, &Limits::default())
+    }
 
     fn ws() -> (TempDir, Workspace) {
         let root = TempDir::new().unwrap();
@@ -364,7 +373,7 @@ mod tests {
             let e = plan(&w, "write_file", &json!({"path": path, "content": "x"})).unwrap_err();
             assert!(matches!(e, ToolError::Denied(_)), "{path}: {e:?}");
         }
-        let big = "x".repeat(MAX_WRITE_BYTES + 1);
+        let big = "x".repeat(Limits::default().write_bytes + 1);
         assert!(matches!(
             plan(&w, "write_file", &json!({"path": "b.txt", "content": big})).unwrap_err(),
             ToolError::InvalidArguments(_)

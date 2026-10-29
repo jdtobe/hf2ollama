@@ -331,10 +331,6 @@ pub struct Session {
     pub messages: Vec<Message>,
 }
 
-/// The most the originals kept for undo may add up to in one session. A write
-/// that would go past it is refused, so every change stays undoable.
-pub const MAX_UNDO_BYTES: usize = 8 * 1024 * 1024;
-
 /// One file change an agent made, with what is needed to take it back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeRecord {
@@ -807,8 +803,8 @@ impl Session {
     }
 
     /// How much more a write may need to keep.
-    pub fn undo_room(&self) -> usize {
-        MAX_UNDO_BYTES.saturating_sub(self.undo_bytes_used())
+    pub fn undo_room(&self, max: usize) -> usize {
+        max.saturating_sub(self.undo_bytes_used())
     }
 
     /// Notes a change the agent made through tool message `message`.
@@ -1470,7 +1466,7 @@ mod tests {
         assert_eq!(s.record_change(m[0].id, &change("12345")), 1);
         assert_eq!(s.record_change(m[0].id, &change("123")), 2);
         assert_eq!(s.undo_bytes_used(), 8);
-        assert_eq!(s.undo_room(), MAX_UNDO_BYTES - 8);
+        assert_eq!(s.undo_room(1000), 1000 - 8);
         let json = serde_json::to_string(&s).unwrap();
         let back: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(back.changes, s.changes);

@@ -1246,7 +1246,7 @@ async fn an_agent_reads_a_file_and_answers() {
     // What the model saw.
     let bodies = chat_bodies(&srv);
     assert_eq!(bodies.len(), 2);
-    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 8);
     let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
     assert!(
         system.contains("an agent inside the attached workspace"),
@@ -1537,6 +1537,7 @@ async fn switched_off_tools_are_not_offered_to_the_model() {
             "read_file",
             "read_binary",
             "find_files",
+            "search_bytes",
             "write_file",
             "edit_file"
         ]
@@ -2151,7 +2152,7 @@ async fn a_tool_set_to_ask_waits_for_the_user_and_runs_once_allowed() {
     h.send(id, "what is in a.txt?").await;
     h.wait("asked", |e| approval_for(e).is_some()).await;
     // The model was offered the tools even though they need approval.
-    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 8);
     let (call_id, name) = approval_for(&h.events()).unwrap();
     assert_eq!(name, "read_file");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2302,7 +2303,8 @@ async fn with_writing_switched_off_in_settings_no_agent_is_offered_or_can_use_a_
             "read_file",
             "read_binary",
             "find_files",
-            "search_text"
+            "search_text",
+            "search_bytes"
         ]
     );
 }
@@ -2616,7 +2618,9 @@ async fn a_command_waits_shows_exactly_what_will_run_and_runs_once_allowed() {
     assert_eq!(p.command, "echo -roost-says-hi");
     assert_eq!(p.folder, ws.path());
     assert_eq!(p.prefix.as_deref(), Some("echo"));
-    assert_eq!((p.timeout_secs, p.output_kb), (120, 20));
+    // The card states what will really be kept: the setting's 20 KB, cut to
+    // the share of this model's 8192-token window one result may take.
+    assert_eq!((p.timeout_secs, p.output_kb), (120, 4));
     assert!(
         tool_outputs(&h.events()).is_empty(),
         "nothing ran before the answer"
@@ -2917,4 +2921,153 @@ async fn reopening_a_chat_that_is_waiting_asks_the_question_again() {
         decision: ApprovalDecision::Allow,
     });
     h.wait_run_ended(1).await;
+}
+
+/// An agent that may read and write without asking, with the given limits.
+async fn free_agent(
+    routes: Vec<Route>,
+    limits: crate::agent::tools::Limits,
+) -> (TcpScript, H, SessionId, TempDir) {
+    let ws = workspace();
+    let srv = fake_agent(routes).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.cmd(ChatCommand::SetLimits(Box::new(limits)));
+    for key in ["files.read", "files.write"] {
+        h.cmd(ChatCommand::SetCapability(
+            id,
+            key.into(),
+            crate::session::Permission::Auto,
+        ));
+    }
+    h.wait("capabilities set", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.effective_tools.capabilities.get("files.write")
+                == Some(&crate::session::Permission::Auto)
+        })
+    })
+    .await;
+    (srv, h, id, ws)
+}
+
+#[tokio::test]
+async fn a_smaller_write_limit_from_settings_refuses_a_bigger_write() {
+    let limits = crate::agent::tools::Limits {
+        write_bytes: 1024,
+        ..Default::default()
+    };
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls(
+                "write_file",
+                serde_json::json!({"path": "big.txt", "content": "x".repeat(2000)}),
+            )),
+            chat_route(reply("Too big.")),
+        ],
+        limits,
+    )
+    .await;
+    h.send(id, "write it").await;
+    h.wait_run_ended(1).await;
+    assert!(!ws.path().join("big.txt").exists());
+    let out = tool_outputs(&h.events()).join("\n");
+    assert!(out.contains("at most 1024"), "{out}");
+}
+
+#[tokio::test]
+async fn a_larger_write_limit_from_settings_allows_what_the_default_refuses() {
+    let limits = crate::agent::tools::Limits {
+        write_bytes: 400 * 1024,
+        ..Default::default()
+    };
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls(
+                "write_file",
+                serde_json::json!({"path": "big.txt", "content": "x".repeat(300 * 1024)}),
+            )),
+            chat_route(reply("Written.")),
+        ],
+        limits,
+    )
+    .await;
+    h.send(id, "write it").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        std::fs::metadata(ws.path().join("big.txt")).unwrap().len(),
+        300 * 1024
+    );
+}
+
+#[tokio::test]
+async fn the_list_limit_from_settings_cuts_a_listing_and_says_so() {
+    let limits = crate::agent::tools::Limits {
+        list_entries: 1,
+        ..Default::default()
+    };
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls("list_dir", serde_json::json!({"path": "."}))),
+            chat_route(reply("Listed.")),
+        ],
+        limits,
+    )
+    .await;
+    std::fs::write(ws.path().join("one.txt"), "1").unwrap();
+    std::fs::write(ws.path().join("two.txt"), "2").unwrap();
+    h.send(id, "list").await;
+    h.wait_run_ended(1).await;
+    let out = tool_outputs(&h.events()).join("\n");
+    assert!(out.contains("[showing entries 1-1 of "), "{out}");
+}
+
+#[tokio::test]
+async fn the_undo_limit_from_settings_refuses_a_change_it_could_not_take_back() {
+    let limits = crate::agent::tools::Limits {
+        undo_bytes: 1024 * 1024,
+        ..Default::default()
+    };
+    let edit = |n: u32| {
+        chat_route(calls(
+            "edit_file",
+            serde_json::json!({"path": "big.txt", "old_text": format!("marker{n}"), "new_text": format!("marker{}", n + 1)}),
+        ))
+    };
+    let (_srv, h, id, ws) =
+        free_agent(vec![edit(0), edit(1), chat_route(reply("Done."))], limits).await;
+    // Each edit keeps the 600 KB original, so the second would pass 1 MiB.
+    let body = format!("marker0 {}", "y".repeat(600_000));
+    std::fs::write(ws.path().join("big.txt"), body).unwrap();
+    h.send(id, "edit twice").await;
+    h.wait_run_ended(1).await;
+    let out = tool_outputs(&h.events());
+    assert!(out[0].starts_with("Changed"), "{out:?}");
+    assert!(out[1].contains("cannot keep another copy"), "{out:?}");
+}
+
+#[tokio::test]
+async fn a_small_context_window_shrinks_what_one_tool_call_may_return() {
+    // The test model gets an 8192-token window, so one result may carry
+    // about 4 KB even though the setting allows 24 KB.
+    let (_srv, h, id, ws) = free_agent(
+        vec![
+            chat_route(calls(
+                "read_file",
+                serde_json::json!({"path": "log.txt", "limit": 1000}),
+            )),
+            chat_route(reply("Read.")),
+        ],
+        Default::default(),
+    )
+    .await;
+    let lines: String = (1..=400).map(|i| format!("line number {i}\n")).collect();
+    std::fs::write(ws.path().join("log.txt"), lines).unwrap();
+    h.send(id, "read the log").await;
+    h.wait_run_ended(1).await;
+    let out = tool_outputs(&h.events()).join("\n");
+    assert!(out.len() < 4_400, "{} bytes", out.len());
+    assert!(
+        out.contains("[truncated; call read_file again with offset="),
+        "{out}"
+    );
 }

@@ -49,6 +49,13 @@ pub struct Entry {
     pub kind: EntryKind,
 }
 
+/// What `Workspace::stat` found out about an entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stat {
+    pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
+}
+
 pub struct Workspace {
     root: PathBuf,
     dir: Dir,
@@ -198,10 +205,26 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Size and last-modified time of an entry (not following a symlink), for
+    /// sorting. An entry that cannot be read counts as empty and oldest.
+    pub fn stat(&self, rel: &Path) -> Stat {
+        match self.dir.symlink_metadata(Self::here(rel)) {
+            Ok(m) => Stat {
+                size: if m.is_dir() { 0 } else { m.len() },
+                modified: m.modified().ok().map(|t| t.into_std()),
+            },
+            Err(_) => Stat::default(),
+        }
+    }
+
     /// The text of a file about to be changed: `None` when it does not exist.
-    /// Directories, files that are not UTF-8 text and files over 1 MiB are
+    /// Directories, files that are not UTF-8 text and files over `max_bytes` are
     /// refused, so a change never rewrites something the model cannot see.
-    pub fn read_text_for_edit(&self, rel: &Path) -> Result<Option<String>, ToolError> {
+    pub fn read_text_for_edit(
+        &self,
+        rel: &Path,
+        max_bytes: usize,
+    ) -> Result<Option<String>, ToolError> {
         let meta = match self.dir.metadata(Self::here(rel)) {
             Ok(m) => m,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
@@ -210,7 +233,7 @@ impl Workspace {
         if meta.is_dir() {
             return Err(ToolError::NotAFile(describe(rel)));
         }
-        if meta.len() > 1024 * 1024 {
+        if meta.len() > max_bytes as u64 {
             return Err(ToolError::Unreadable(format!(
                 "{} is too large to change with a tool",
                 describe(rel)
@@ -277,18 +300,24 @@ mod tests {
     #[test]
     fn text_for_edit_is_none_for_a_new_file_and_refuses_binary_and_folders() {
         let (root, _o, w) = ws();
-        assert_eq!(w.read_text_for_edit(Path::new("nope.txt")).unwrap(), None);
         assert_eq!(
-            w.read_text_for_edit(Path::new("a.txt")).unwrap().as_deref(),
+            w.read_text_for_edit(Path::new("nope.txt"), 1024 * 1024)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            w.read_text_for_edit(Path::new("a.txt"), 1024 * 1024)
+                .unwrap()
+                .as_deref(),
             Some("hello\nworld\n")
         );
         fs::write(root.path().join("bin.dat"), [0xff, 0xfe, 0x00]).unwrap();
         assert!(matches!(
-            w.read_text_for_edit(Path::new("bin.dat")),
+            w.read_text_for_edit(Path::new("bin.dat"), 1024 * 1024),
             Err(ToolError::Unreadable(_))
         ));
         assert!(matches!(
-            w.read_text_for_edit(Path::new("sub")),
+            w.read_text_for_edit(Path::new("sub"), 1024 * 1024),
             Err(ToolError::NotAFile(_))
         ));
     }
