@@ -9,13 +9,14 @@ use super::context::{build_agent_request, window};
 use super::manager::{now_ms, Intent, Manager, ModelInfo, Run, Slot, CHAT_SYSTEM_PROMPT};
 use super::run::{drive, RunMsg};
 use super::types::{ApprovalDecision, ChatEvent, RunOutcome, SendRejection, TurnOutcome};
+use crate::agent::change::{self, ChangePreview};
 use crate::agent::registry;
 use crate::agent::tools::Limits;
 use crate::agent::{ToolError, Workspace};
 use crate::ollama::ChatRequestBody;
 use crate::session::{
-    MessageId, Permission, RunId, Session, SessionId, SessionLifetime, SessionMode, ToolStatus,
-    TurnId,
+    EffectiveToolConfig, MessageId, Permission, RunId, Session, SessionId, SessionLifetime,
+    SessionMode, ToolStatus, TurnId,
 };
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -25,7 +26,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-pub const AGENT_PROMPT_ADDITION: &str = "You are operating as a read-only agent inside the attached workspace. Use only the provided tools, stay within the workspace, never invent tool results, honor steering messages, and stop when the task is complete or the step budget is exhausted.";
+pub const AGENT_PROMPT_ADDITION: &str = "You are operating as an agent inside the attached workspace. Use only the provided tools, read a file before you change it, stay within the workspace, never invent tool results, honor steering messages, and stop when the task is complete or the step budget is exhausted.";
 
 #[derive(Clone)]
 struct PendingCall {
@@ -48,6 +49,15 @@ pub(super) struct AgentRun {
 }
 
 impl AgentRun {
+    /// What a write call would change, if `name` is a write tool and the call
+    /// makes sense.
+    pub(super) fn preview(&self, name: &str, arguments: &Value) -> Option<ChangePreview> {
+        change::plan(&self.workspace, name, arguments)
+            .ok()
+            .flatten()
+            .map(|c| c.card())
+    }
+
     pub(super) fn collect(&mut self, name: String, arguments: Value) {
         self.collected.push((name, arguments));
     }
@@ -72,13 +82,22 @@ impl ToolRun {
     }
 }
 
+/// A session's tool configuration with the app-wide switch applied: with
+/// writing off in Settings, the write capability is off whatever the session
+/// says.
+fn gated(config: &EffectiveToolConfig, writes_allowed: bool) -> EffectiveToolConfig {
+    let mut c = config.clone();
+    if !writes_allowed {
+        c.capabilities
+            .insert("files.write".to_string(), Permission::Off);
+    }
+    c
+}
+
 /// The system prompt for one agent step, with the workspace, the tools that
 /// are on and the steps left appended as structured context.
-fn system_prompt(s: &Session, steps_left: u32) -> String {
-    let tools: Vec<&str> = registry::offered(&s.effective_tools)
-        .iter()
-        .map(|t| t.name)
-        .collect();
+fn system_prompt(s: &Session, tools: &EffectiveToolConfig, steps_left: u32) -> String {
+    let tools: Vec<&str> = registry::offered(tools).iter().map(|t| t.name).collect();
     let workspace = s
         .workspace
         .as_ref()
@@ -249,6 +268,7 @@ impl Manager {
 
     /// Streams one model reply for the run.
     async fn agent_step(&mut self, id: SessionId) {
+        let writes = self.writes_allowed;
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -258,7 +278,8 @@ impl Manager {
         agent.steps += 1;
         let (run_id, steps_before) = (agent.run, agent.steps - 1);
         let left = live.s.step_budget.saturating_sub(steps_before);
-        let system = system_prompt(&live.s, left);
+        let config = gated(&live.s.effective_tools, writes);
+        let system = system_prompt(&live.s, &config, left);
         let context = self.ctx_cache.get(&live.s.model).and_then(|i| i.context);
         let win = window(live.s.model_options.num_ctx, context);
         let trimmed = match build_agent_request(&system, &live.s.messages, win) {
@@ -271,7 +292,7 @@ impl Manager {
         };
         let turn = TurnId::new();
         let assistant = live.s.begin_assistant(run_id, turn, now_ms());
-        let tools = registry::ollama_definitions(&live.s.effective_tools);
+        let tools = registry::ollama_definitions(&config);
         let body = ChatRequestBody {
             model: live.s.model.clone(),
             messages: trimmed.messages,
@@ -401,6 +422,7 @@ impl Manager {
 
     /// Starts the next queued tool call, or moves on when none are left.
     async fn run_next_tool(&mut self, id: SessionId) {
+        let writes = self.writes_allowed;
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -411,7 +433,20 @@ impl Manager {
             self.agent_next(id).await;
             return;
         };
-        if registry::needs_approval(&live.s.effective_tools, &call.name) {
+        let config = gated(&live.s.effective_tools, writes);
+        let mut ask = registry::needs_approval(&config, &call.name);
+        let preview = agent.preview(&call.name, &call.arguments);
+        if ask && registry::capability_of(&call.name).as_deref() == Some("files.write") {
+            match &preview {
+                // The user allowed edits to this file for the session.
+                Some(p) if live.allowed_files.contains(&p.path) => ask = false,
+                // A call that cannot be planned changes nothing; running it
+                // lets the model read why.
+                None => ask = false,
+                Some(_) => {}
+            }
+        }
+        if ask {
             // Ask the user first; the run waits in this slot.
             live.slot = Slot::Tools(Box::new(ToolRun {
                 join: None,
@@ -424,15 +459,18 @@ impl Manager {
                 call_id: call.call_id,
                 name: call.name,
                 arguments: call.arguments,
+                preview,
             });
             return;
         }
-        self.start_tool_call(id, call, false);
+        let approved = registry::needs_approval(&config, &call.name);
+        self.start_tool_call(id, call, approved);
     }
 
     /// Runs a tool call on the blocking pool. `approved` lets a tool set to
     /// Ask through.
     fn start_tool_call(&mut self, id: SessionId, call: PendingCall, approved: bool) {
+        let writes = self.writes_allowed;
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -440,10 +478,11 @@ impl Manager {
             return;
         };
         live.s.start_tool(call.msg);
-        let (workspace, config, run) = (
+        let (workspace, config, run, room) = (
             Arc::clone(&agent.workspace),
-            live.s.effective_tools.clone(),
+            gated(&live.s.effective_tools, writes),
             agent.run,
+            live.s.undo_room(),
         );
         let (tx, name, args, call_id) = (
             self.run_tx.clone(),
@@ -452,16 +491,21 @@ impl Manager {
             call.call_id.clone(),
         );
         let join = tokio::task::spawn_blocking(move || {
-            let result = if approved {
-                registry::call_approved(&workspace, &config, &name, &args, &Limits::default())
-            } else {
-                registry::call(&workspace, &config, &name, &args, &Limits::default())
-            };
+            let (result, change) = registry::call_tracked(
+                &workspace,
+                &config,
+                &name,
+                &args,
+                &Limits::default(),
+                approved,
+                room,
+            );
             let _ = tx.send(RunMsg::ToolDone {
                 session: id,
                 run,
                 call_id,
                 result,
+                change,
             });
         });
         live.slot = Slot::Tools(Box::new(ToolRun {
@@ -497,6 +541,20 @@ impl Manager {
         };
         match decision {
             ApprovalDecision::Allow => self.start_tool_call(id, call, true),
+            ApprovalDecision::AllowForSession
+                if registry::capability_of(&call.name).as_deref() == Some("files.write") =>
+            {
+                // Writing never becomes automatic: only this file is allowed.
+                if let Some(live) = self.sessions.get_mut(&id) {
+                    let path = live
+                        .agent
+                        .as_ref()
+                        .and_then(|a| a.preview(&call.name, &call.arguments))
+                        .map(|p| p.path);
+                    live.allowed_files.extend(path);
+                }
+                self.start_tool_call(id, call, true);
+            }
             ApprovalDecision::AllowForSession => {
                 if let (Some(key), Some(live)) = (
                     registry::capability_of(&call.name),
@@ -515,6 +573,7 @@ impl Manager {
                     self.current_run(id),
                     call.call_id,
                     Err(ToolError::Declined),
+                    None,
                 )
                 .await;
             }
@@ -534,7 +593,13 @@ impl Manager {
         run: RunId,
         call_id: String,
         result: Result<String, ToolError>,
+        change: Option<change::Change>,
     ) {
+        // A write that happened is kept for undo even if the run was stopped
+        // meanwhile and nobody is waiting for the answer any more.
+        if let Some(ch) = &change {
+            self.record_change(id, &call_id, ch);
+        }
         let Some(live) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -565,6 +630,153 @@ impl Manager {
             output,
         });
         self.run_next_tool(id).await;
+    }
+
+    /// Keeps a change for undo, saves it and tells the window.
+    fn record_change(&mut self, id: SessionId, call_id: &str, ch: &change::Change) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let msg = match &live.slot {
+            Slot::Tools(t) if t.call_id == call_id => t.msg,
+            _ => MessageId::new(),
+        };
+        live.s.record_change(msg, ch);
+        let (s, changes) = (live.s.clone(), live.s.changes.clone());
+        self.save(&s);
+        self.emit(ChatEvent::Changes {
+            session: id,
+            changes,
+        });
+    }
+
+    /// Puts changed files back as they were: one change, or all of them
+    /// newest first. A file edited since is left alone, and nothing is undone
+    /// while the agent is working.
+    pub(super) fn undo(&mut self, id: SessionId, only: Option<u32>) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let refuse = |this: &mut Self, change: u32, reason: &str| {
+            this.emit(ChatEvent::UndoRefused {
+                session: id,
+                change,
+                reason: reason.to_string(),
+            });
+        };
+        let ids: Vec<u32> = match only {
+            Some(one) => vec![one],
+            None => live
+                .s
+                .changes
+                .iter()
+                .rev()
+                .filter(|c| !c.undone)
+                .map(|c| c.id)
+                .collect(),
+        };
+        if !matches!(live.slot, Slot::Idle) {
+            let first = ids.first().copied().unwrap_or(0);
+            refuse(
+                self,
+                first,
+                "Stop the agent first; changes can be undone when it is idle.",
+            );
+            return;
+        }
+        let Some(root) = live.s.workspace.clone() else {
+            refuse(
+                self,
+                ids.first().copied().unwrap_or(0),
+                "This chat has no folder.",
+            );
+            return;
+        };
+        let ws = match Workspace::open(&root) {
+            Ok(w) => w,
+            Err(e) => {
+                refuse(self, ids.first().copied().unwrap_or(0), &e.to_string());
+                return;
+            }
+        };
+        let mut changed = false;
+        for cid in ids {
+            let Some(live) = self.sessions.get_mut(&id) else {
+                return;
+            };
+            let Some(rec) = live.s.changes.iter().find(|c| c.id == cid).cloned() else {
+                refuse(self, cid, "That change is not in this chat.");
+                break;
+            };
+            if rec.undone {
+                refuse(self, cid, "That change was already undone.");
+                break;
+            }
+            if rec.root != root {
+                refuse(
+                    self,
+                    cid,
+                    &format!(
+                        "This change was made in {}, not in the folder the agent works in now.",
+                        rec.root.display()
+                    ),
+                );
+                break;
+            }
+            let rel = std::path::PathBuf::from(&rec.path);
+            let now = match ws.read_text_for_edit(&rel) {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    refuse(
+                        self,
+                        cid,
+                        &format!(
+                            "{} is gone, so there is nothing to put back over.",
+                            rec.path
+                        ),
+                    );
+                    break;
+                }
+                Err(e) => {
+                    refuse(self, cid, &e.to_string());
+                    break;
+                }
+            };
+            if change::fingerprint(&now) != rec.after_hash {
+                refuse(
+                    self,
+                    cid,
+                    &format!("{} was changed after the agent wrote it, so it was left alone. Undo later changes first, or restore it yourself.", rec.path),
+                );
+                break;
+            }
+            let done = if rec.created {
+                ws.remove_file(&rel)
+            } else {
+                ws.write_text(&rel, &rec.before)
+            };
+            if let Err(e) = done {
+                refuse(self, cid, &e.to_string());
+                break;
+            }
+            if let Some(live) = self.sessions.get_mut(&id) {
+                if let Some(c) = live.s.changes.iter_mut().find(|c| c.id == cid) {
+                    c.undone = true;
+                    c.before.clear();
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            if let Some(live) = self.sessions.get(&id) {
+                let (s, changes) = (live.s.clone(), live.s.changes.clone());
+                self.save(&s);
+                self.emit(ChatEvent::Changes {
+                    session: id,
+                    changes,
+                });
+            }
+        }
     }
 
     /// A safe point (no reply streaming, no tool running): apply waiting

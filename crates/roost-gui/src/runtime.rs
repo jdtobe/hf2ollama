@@ -552,7 +552,9 @@ fn start_chat(
             let cfg = ChatConfig::new(
                 OllamaClient::new(&settings.ollama_url).with_keep_alive(settings.keep_alive),
             );
-            Some(ChatManager::spawn(runtime.handle(), writer, cfg, sink))
+            let chat = ChatManager::spawn(runtime.handle(), writer, cfg, sink);
+            chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
+            Some(chat)
         }
         Err(StoreError::Locked) => {
             out.emit(UiEvent::ChatUnavailable(
@@ -605,6 +607,9 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
             }
         }
         BackendRequest::ApplySettings(settings) => {
+            if let Some(chat) = &shared.chat {
+                chat.send(ChatCommand::SetWritesAllowed(settings.agents_can_write));
+            }
             let rebuild = needs_rebuild(&shared.clients().settings, &settings);
             if rebuild {
                 shared.install_settings(&settings);
@@ -1920,6 +1925,105 @@ mod tests {
             _ => None,
         });
         assert_eq!(outcome, roost_core::chat::TurnOutcome::Completed);
+    }
+
+    /// An agent asks the model-side to write a file. `switch_off_at_start`
+    /// puts the Settings switch in the settings the app starts with; otherwise
+    /// it is turned off afterwards through `ApplySettings`. Either way the
+    /// write must be refused without the user being asked.
+    async fn a_write_with_the_switch_off_is_refused(switch_off_at_start: bool) {
+        let server = version_server("0.9.2").await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"details":{"family":"llama"},"model_info":{"llama.context_length":8192},"capabilities":["completion","tools"],"digest":"sha256:abc"}"#,
+            ))
+            .mount(&server)
+            .await;
+        let call = "{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"write_file\",\"arguments\":{\"path\":\"sneaky.txt\",\"content\":\"x\\n\"}}}]},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(call))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        let done = "{\"message\":{\"role\":\"assistant\",\"content\":\"Could not.\"},\"done\":false}\n{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true}\n";
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(done))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("roost.toml"),
+            import_history_file: dir.path().join("history.json"),
+            sessions_dir: dir.path().join("sessions"),
+            log_dir: dir.path().join("logs"),
+            default_staging: dir.path().join("staging"),
+            portable: true,
+        };
+        let start = Settings {
+            ollama_url: server.uri(),
+            hf_endpoint: "http://127.0.0.1:9".into(),
+            agents_can_write: !switch_off_at_start,
+            ..Settings::default()
+        };
+        let (tx, rx) = Backend::spawn_with(
+            egui::Context::default(),
+            start.clone(),
+            paths,
+            Arc::new(MemoryStore::default()),
+        );
+        if !switch_off_at_start {
+            tx.send(BackendRequest::ApplySettings(Settings {
+                agents_can_write: false,
+                ..start
+            }))
+            .unwrap();
+            wait_for(&rx, |e| {
+                matches!(e, UiEvent::SettingsSaved(_)).then_some(())
+            });
+        }
+        let work = tempfile::tempdir().unwrap();
+        tx.send(BackendRequest::Chat(ChatCommand::CreateAgent {
+            lifetime: roost_core::session::SessionLifetime::Persisted,
+            model: "llama3:8b".into(),
+            workspace: work.path().to_path_buf(),
+        }))
+        .unwrap();
+        let id = wait_for(&rx, |e| match e {
+            UiEvent::Chat(ChatEvent::Opened(s)) => Some(s.id),
+            _ => None,
+        });
+        tx.send(BackendRequest::Chat(ChatCommand::Send {
+            session: id,
+            text: "write a file".into(),
+        }))
+        .unwrap();
+        let mut asked = false;
+        wait_for(&rx, |e| match e {
+            UiEvent::Chat(ChatEvent::ApprovalRequested { .. }) => {
+                asked = true;
+                None
+            }
+            UiEvent::Chat(ChatEvent::RunEnded { .. }) => Some(()),
+            _ => None,
+        });
+        assert!(
+            !asked,
+            "a write was offered for approval with the switch off"
+        );
+        assert!(!work.path().join("sneaky.txt").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_write_switch_off_at_launch_stops_agents_writing() {
+        a_write_with_the_switch_off_is_refused(true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn turning_the_write_switch_off_in_settings_stops_agents_writing() {
+        a_write_with_the_switch_off_is_refused(false).await;
     }
 
     #[test]

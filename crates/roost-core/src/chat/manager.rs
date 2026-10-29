@@ -97,6 +97,7 @@ impl ChatManager {
             ctx_cache: HashMap::new(),
             run_tx,
             next_token: 0,
+            writes_allowed: true,
         };
         rt.spawn(manager.run(rx, run_rx));
         ChatHandle { tx }
@@ -149,6 +150,8 @@ pub(super) struct Live {
     pub(super) dirty: bool,
     /// The loop state while an agent run is active.
     pub(super) agent: Option<AgentRun>,
+    /// Files whose edits the user allowed for as long as this chat is open.
+    pub(super) allowed_files: std::collections::HashSet<String>,
 }
 
 impl Live {
@@ -160,6 +163,7 @@ impl Live {
             last_flush: Instant::now(),
             dirty: false,
             agent: None,
+            allowed_files: Default::default(),
         }
     }
 }
@@ -175,6 +179,8 @@ pub(super) struct Manager {
     pub(super) ctx_cache: HashMap<String, ModelInfo>,
     pub(super) run_tx: mpsc::UnboundedSender<RunMsg>,
     pub(super) next_token: u64,
+    /// Settings: may agents write files at all.
+    pub(super) writes_allowed: bool,
 }
 
 pub(super) fn now_ms() -> u64 {
@@ -359,6 +365,9 @@ impl Manager {
             } => self.create_agent(lifetime, &model, workspace).await,
             ChatCommand::CheckModel(model) => self.check_model(model),
             ChatCommand::SetWorkspace(id, path) => self.set_workspace(id, path).await,
+            ChatCommand::SetWritesAllowed(on) => self.writes_allowed = on,
+            ChatCommand::UndoChange { session, change } => self.undo(session, Some(change)),
+            ChatCommand::UndoAll(session) => self.undo(session, None),
             ChatCommand::SetStepBudget(id, steps) => {
                 self.edit_idle(id, move |s| {
                     s.step_budget = steps.clamp(1, 100);
@@ -437,7 +446,10 @@ impl Manager {
             // A call still waiting for the user is asked about again, since
             // the window forgot it when it left this chat.
             if let Slot::Tools(t) = &l.slot {
-                waiting = t.waiting_call();
+                waiting = t.waiting_call().map(|(call_id, name, arguments)| {
+                    let preview = l.agent.as_ref().and_then(|a| a.preview(&name, &arguments));
+                    (call_id, name, arguments, preview)
+                });
             }
         }
         if let Some((turn, content, thinking)) = pending {
@@ -449,14 +461,22 @@ impl Manager {
             });
         }
         if let Some(s) = snapshot {
+            let changes = s.changes.clone();
             self.emit(ChatEvent::Opened(Box::new(s)));
+            if !changes.is_empty() {
+                self.emit(ChatEvent::Changes {
+                    session: id,
+                    changes,
+                });
+            }
         }
-        if let Some((call_id, name, arguments)) = waiting {
+        if let Some((call_id, name, arguments, preview)) = waiting {
             self.emit(ChatEvent::ApprovalRequested {
                 session: id,
                 call_id,
                 name,
                 arguments,
+                preview,
             });
         }
     }
@@ -1101,7 +1121,8 @@ impl Manager {
                 run,
                 call_id,
                 result,
-            } => self.tool_done(session, run, call_id, result).await,
+                change,
+            } => self.tool_done(session, run, call_id, result, change).await,
             RunMsg::Event {
                 session,
                 turn,

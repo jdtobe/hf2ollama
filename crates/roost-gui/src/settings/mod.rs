@@ -163,6 +163,7 @@ impl SettingsView {
             downloads_card(ui, &mut cx, state, settings, width, &mut change);
             cached_card(ui, &mut cx, state, width);
             hugging_face_card(ui, &mut cx, state, settings, width, &mut change);
+            agents_card(ui, &mut cx, state, settings, width, &mut change);
             hardware_card(ui, &mut cx, state, settings, width, &mut change);
         });
         #[cfg(test)]
@@ -825,6 +826,34 @@ fn token_badge_ui(ui: &mut egui::Ui, cx: &mut Cx, state: &SettingsState, w: f32)
             ui.set_max_width(w - 14.0);
             ui.add(egui::Label::new(RichText::new(text).size(11.5).color(fg)).wrap());
         });
+}
+
+fn agents_card(
+    ui: &mut egui::Ui,
+    cx: &mut Cx,
+    state: &mut SettingsState,
+    settings: &mut Settings,
+    width: f32,
+    change: &mut SettingsChange,
+) {
+    card(ui, cx, "Agents", width, |ui, cx| {
+        row(
+            ui,
+            cx,
+            "Let agents write files",
+            "Off keeps every agent read-only and hides the write controls. On, an agent still asks before each change unless you say otherwise for that agent.",
+            22.0,
+            true,
+            |ui, cx, _| {
+                let mut on = settings.agents_can_write;
+                let r = toggle(ui, &mut on);
+                cx.rec("toggle-agent-write", r.rect);
+                if r.changed() {
+                    change.merge(state.set_agents_can_write(settings, on));
+                }
+            },
+        );
+    });
 }
 
 fn hardware_card(

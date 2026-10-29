@@ -122,7 +122,7 @@ fn bool_arg(args: &Value, name: &str) -> Result<bool, ToolError> {
     }
 }
 
-fn show(rel: &Path) -> String {
+pub(crate) fn show(rel: &Path) -> String {
     let s = rel.to_string_lossy().replace('\\', "/");
     if s.is_empty() {
         ".".into()

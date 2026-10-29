@@ -3,7 +3,7 @@
 //! (interaction state); commands are queued as `BackendRequest::Chat`.
 
 use super::state::{local_day, status_label, RailRow, RunBadge, SendAttempt};
-use crate::app::{AppState, View};
+use crate::app::{bad, AppState, View};
 use crate::browse::markdown::{self, Block};
 use crate::confirm::Confirm;
 use crate::runtime::BackendRequest;
@@ -30,6 +30,8 @@ const COMPOSER_ROWS: usize = 3;
 /// Interaction state that is not part of the conversation data.
 #[derive(Default)]
 pub struct ChatUi {
+    /// Changes whose diff is shown under their tool.
+    pub diffs_open: std::collections::HashSet<(SessionId, u32)>,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -95,6 +97,16 @@ pub struct ChatProbe {
     pub approval_buttons: Vec<egui::Rect>,
     /// The Off / Ask / Auto buttons of the Files · Read permission.
     pub permission_buttons: Vec<egui::Rect>,
+    /// The Off / Ask buttons of the Write row in the tools menu.
+    pub write_buttons: Vec<egui::Rect>,
+    /// Per change (by id): its row under the tool, its Undo and Show diff buttons.
+    pub change_rows: Vec<(u32, egui::Rect)>,
+    pub undo_buttons: Vec<(u32, egui::Rect)>,
+    pub show_diff_buttons: Vec<(u32, egui::Rect)>,
+    /// Undo all in the Changes made card.
+    pub undo_all_button: Option<egui::Rect>,
+    /// The R / W chips in the header, with what each is set to.
+    pub chips: Vec<(char, egui::Rect, roost_core::session::Permission)>,
     pub branch_icon: Option<egui::Rect>,
     pub btw_icon: Option<egui::Rect>,
     pub read_icon: Option<egui::Rect>,
@@ -797,6 +809,7 @@ fn pane(
                         end += 1;
                     }
                     super::chrome::tool_group(ui, t, &s.messages[i..end], app);
+                    super::chrome::change_rows(ui, t, app, out, s, &s.messages[i..end]);
                     i = end;
                     continue;
                 }
@@ -826,6 +839,90 @@ fn pane(
         });
 }
 
+/// The top of a write's approval card: what it does to which file, how many
+/// lines, and the changed lines themselves.
+fn write_summary(ui: &mut egui::Ui, t: &Tokens, p: &roost_core::agent::change::ChangePreview) {
+    ui.horizontal_wrapped(|ui| {
+        let what = if p.created {
+            "The agent wants to create a file"
+        } else {
+            "The agent wants to change a file"
+        };
+        ui.label(RichText::new(what).font(semibold(13.0)).color(t.fg));
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(RichText::new(&p.path).font(mono(12.5)).color(t.fg));
+        ui.label(
+            RichText::new(format!("+{}", p.added))
+                .font(mono(12.0))
+                .color(t.ok),
+        );
+        ui.label(
+            RichText::new(format!("−{}", p.removed))
+                .font(mono(12.0))
+                .color(bad(ui.visuals().dark_mode)),
+        );
+    });
+    diff_box(ui, t, p);
+    if p.more > 0 {
+        ui.label(
+            RichText::new(format!("… and {} more changed lines", p.more))
+                .size(11.5)
+                .color(t.fg3),
+        );
+    }
+}
+
+/// The changed lines of a change in a small scrolling box.
+pub(super) fn diff_box(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    p: &roost_core::agent::change::ChangePreview,
+) {
+    use roost_core::agent::change::LineKind;
+    egui::Frame::new()
+        .fill(t.surface)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(6.0)
+        .inner_margin(Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 1.0;
+            egui::ScrollArea::vertical()
+                .max_height(180.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for l in &p.lines {
+                        let (mark, colour, fill) = match l.kind {
+                            LineKind::Same => (' ', t.fg3, None),
+                            LineKind::Added => ('+', t.ok, Some(t.ok.gamma_multiply(0.12))),
+                            LineKind::Removed => (
+                                '-',
+                                bad(ui.visuals().dark_mode),
+                                Some(bad(ui.visuals().dark_mode).gamma_multiply(0.12)),
+                            ),
+                        };
+                        let text = format!("{mark} {}", truncate_chars(&l.text, 200));
+                        let label =
+                            egui::Label::new(RichText::new(text).font(mono(12.0)).color(colour))
+                                .truncate();
+                        let r = ui.add(label);
+                        if let Some(f) = fill {
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(r.rect.left() - 4.0, r.rect.top()),
+                                    egui::pos2(ui.max_rect().right() + 4.0, r.rect.bottom()),
+                                ),
+                                2.0,
+                                f,
+                            );
+                        }
+                    }
+                });
+        });
+}
+
 /// What the agent wants to do and three ways to answer. The run waits.
 fn approval_card(
     ui: &mut egui::Ui,
@@ -845,23 +942,32 @@ fn approval_card(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 8.0;
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("The agent wants to run").color(t.fg2));
-                ui.label(RichText::new(&ask.name).font(mono(13.0)).color(t.fg));
-            });
-            let args = serde_json::to_string(&ask.arguments).unwrap_or_default();
-            ui.add(
-                egui::Label::new(
-                    RichText::new(truncate_chars(&args, 240))
-                        .font(mono(12.0))
-                        .color(t.fg2),
-                )
-                .wrap(),
-            );
+            let always_label = match &ask.preview {
+                Some(p) => {
+                    write_summary(ui, t, p);
+                    "Allow edits to this file this session"
+                }
+                None => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("The agent wants to run").color(t.fg2));
+                        ui.label(RichText::new(&ask.name).font(mono(13.0)).color(t.fg));
+                    });
+                    let args = serde_json::to_string(&ask.arguments).unwrap_or_default();
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(truncate_chars(&args, 240))
+                                .font(mono(12.0))
+                                .color(t.fg2),
+                        )
+                        .wrap(),
+                    );
+                    "Allow for this session"
+                }
+            };
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let allow = primary_button(ui, "Allow", true);
-                let always = secondary(ui, "Allow for this session", true);
+                let always = secondary(ui, always_label, true);
                 let deny = secondary(ui, "Deny", true);
                 #[cfg(test)]
                 {

@@ -1076,7 +1076,9 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
                     texts.contains("1 message waiting for the next step"),
                     "{tag}: {texts}"
                 );
-                assert!(texts.contains("Agent settings"), "{tag}: {texts}");
+                if size.0 >= 1000.0 {
+                    assert!(texts.contains("Agent settings"), "{tag}: {texts}");
+                }
             }
         }
     }
@@ -1123,7 +1125,9 @@ fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
     for want in [
         "Change…",
         "Step budget",
-        "Files · Read",
+        "Read files",
+        "Write files",
+        "write_file",
         "list_dir",
         "read_file",
         "find_files",
@@ -1869,6 +1873,7 @@ fn ask_for_approval(app: &mut App, session: roost_core::session::SessionId) {
         call_id: "call_9".into(),
         name: "read_file".into(),
         arguments: serde_json::json!({"path": "src/main.rs"}),
+        preview: None,
     });
 }
 
@@ -1964,7 +1969,7 @@ fn the_tools_menu_sets_files_read_to_off_ask_or_auto() {
         .expect("Agent chip");
     click(&mut app, &mut h, size, chip.center());
     let ask = app.state_mut().chat_ui.probe.permission_buttons.clone();
-    assert_eq!(ask.len(), 3, "Off, Ask, Auto");
+    assert_eq!(ask.len(), 3, "Off, Ask, Allow");
     let _ = sent_chat_commands(&sent);
     click(&mut app, &mut h, size, ask[1].center());
     let cmds = sent_chat_commands(&sent);
@@ -1986,18 +1991,32 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
             texts.contains("Config walkthrough") || texts.contains("Untitled"),
             "{texts}"
         );
-        assert!(texts.contains("Agent settings"), "{texts}");
+        if size.0 >= 1000.0 {
+            assert!(texts.contains("Agent settings"), "{texts}");
+        }
         assert!(texts.contains("Idle"), "{texts}");
-        let path_line = texts
-            .lines()
-            .find(|l| l.starts_with('(') && (l.contains("a-project") || l.contains('…')))
-            .unwrap_or_else(|| panic!("no folder in parentheses:\n{texts}"));
-        assert!(path_line.ends_with(')'), "{path_line}");
+        assert!(
+            !texts
+                .lines()
+                .any(|l| l.starts_with('(') && (l.contains("a-project") || l.contains('…'))),
+            "the folder is not wrapped in parentheses:\n{texts}"
+        );
         let p = app.state_mut().chat_ui.probe.clone();
         let header = p.header.unwrap();
         let settings = p.agent_chip.unwrap();
         let more = p.delete_button.clone().unwrap().0;
         assert!(inside(settings, header) && inside(more, header), "{size:?}");
+        // The folder is its own line under the title, from the same left edge.
+        let (title, path) = (p.title_rect.unwrap(), p.path_rect.expect("the folder"));
+        assert!(
+            path.top() >= title.bottom() - 0.5,
+            "{size:?}: {path:?} under {title:?}"
+        );
+        assert!(
+            (path.left() - title.left()).abs() < 0.5,
+            "{size:?}: same left edge"
+        );
+        assert!(inside(path, header), "{size:?}: {path:?} in {header:?}");
         assert!(
             settings.right() <= more.left(),
             "{size:?}: settings left of the menu"
@@ -2051,12 +2070,9 @@ fn a_very_long_folder_is_cut_in_the_middle_and_the_header_still_fits() {
     let texts = texts_of(&mut app, &mut h, size);
     let line = texts
         .lines()
-        .find(|l| l.starts_with('(') && l.contains('…'))
+        .find(|l| l.contains('…') && l.ends_with("some-project-name"))
         .unwrap_or_else(|| panic!("the folder was not cut:\n{texts}"));
-    assert!(
-        line.ends_with("some-project-name)") || line.ends_with(')'),
-        "{line}"
-    );
+    assert!(!line.starts_with('('), "{line}");
     let p = app.state_mut().chat_ui.probe.clone();
     assert!(inside(p.agent_chip.unwrap(), p.header.unwrap()));
 }
@@ -2100,8 +2116,8 @@ fn a_very_long_title_never_runs_into_the_status_or_the_buttons() {
                     "{size:?}: folder {path:?} runs into the status {status:?}"
                 );
                 assert!(
-                    title.right() <= path.left() + 0.5,
-                    "{size:?}: title over the folder"
+                    path.top() >= title.bottom() - 0.5,
+                    "{size:?}: the folder is under the title"
                 );
             }
             let pencil = p.rename_button.unwrap();
@@ -2111,4 +2127,316 @@ fn a_very_long_title_never_runs_into_the_status_or_the_buttons() {
             );
         }
     }
+}
+
+#[test]
+fn the_header_has_a_chip_per_capability_and_the_write_chip_goes_with_the_switch() {
+    use roost_core::session::Permission;
+    for size in SIZES {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let header = p.header.unwrap();
+        let settings = p.agent_chip.unwrap();
+        let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
+        assert_eq!(letters, ['R', 'W'], "{size:?}: no X until commands exist");
+        for (_, r, _) in &p.chips {
+            assert!(inside(*r, header), "{size:?}: chip {r:?}");
+            assert!(r.right() <= settings.left(), "{size:?}: left of the button");
+        }
+        assert!(p.chips[0].1.right() <= p.chips[1].1.left());
+        // Read allows, write asks, as a new agent is set.
+        assert_eq!(p.chips[0].2, Permission::Auto);
+        assert_eq!(p.chips[1].2, Permission::Ask);
+        // The title still ends before the first chip.
+        assert!(
+            p.title_rect.unwrap().right() <= p.chips[0].1.left(),
+            "{size:?}"
+        );
+        // Switched off in Settings: no W at all.
+        app.state_mut().settings.agents_can_write = false;
+        run(&mut app, &mut h, size, 3);
+        let letters: Vec<_> = app
+            .state_mut()
+            .chat_ui
+            .probe
+            .chips
+            .iter()
+            .map(|c| c.0)
+            .collect();
+        assert_eq!(letters, ['R'], "{size:?}");
+        let _ = s;
+    }
+}
+
+#[test]
+fn the_tools_menu_has_a_write_row_with_off_ask_and_allow() {
+    use roost_core::session::Permission;
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+    click(&mut app, &mut h, size, chip.center());
+    let write = app.state_mut().chat_ui.probe.write_buttons.clone();
+    assert_eq!(write.len(), 3, "Off, Ask, Allow");
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, write[0].center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, key, Permission::Off)]
+            if *id == s.id && key == "files.write"),
+        "{cmds:?}"
+    );
+    // With writing off in Settings the row is not there.
+    app.state_mut().settings.agents_can_write = false;
+    run(&mut app, &mut h, size, 3);
+    assert!(app.state_mut().chat_ui.probe.write_buttons.is_empty());
+}
+
+fn ask_to_write(app: &mut App, session: roost_core::session::SessionId) {
+    use roost_core::agent::change::{DiffLine, LineKind};
+    let line = |kind, text: &str| DiffLine {
+        kind,
+        text: text.into(),
+    };
+    app.state_mut().chat.fold(ChatEvent::ApprovalRequested {
+        session,
+        call_id: "call_9".into(),
+        name: "edit_file".into(),
+        arguments: serde_json::json!({"path": "src/config.rs"}),
+        preview: Some(roost_core::agent::change::ChangePreview {
+            path: "src/config.rs".into(),
+            created: false,
+            added: 3,
+            removed: 1,
+            lines: vec![
+                line(LineKind::Same, "fn load() {"),
+                line(LineKind::Removed, "    let path = default_path();"),
+                line(LineKind::Added, "    let path = env_path();"),
+                line(LineKind::Added, "    let more = 1;"),
+                line(LineKind::Added, "    let again = 2;"),
+                line(LineKind::Same, "}"),
+            ],
+            more: 4,
+        }),
+    });
+}
+
+#[test]
+fn a_write_asks_with_the_file_the_counts_and_the_diff_and_can_be_answered() {
+    use roost_core::chat::ApprovalDecision;
+    for size in SIZES {
+        for (pick, want) in [
+            (0usize, ApprovalDecision::Allow),
+            (1, ApprovalDecision::AllowForSession),
+            (2, ApprovalDecision::Deny),
+        ] {
+            let (mut app, sent, s) = agent_fixture();
+            let mut h = Harness::new(false);
+            ask_to_write(&mut app, s.id);
+            run(&mut app, &mut h, size, 4);
+            let texts = texts_of(&mut app, &mut h, size);
+            for want_text in [
+                "The agent wants to change a file",
+                "src/config.rs",
+                "+3",
+                "−1",
+                "let path = env_path();",
+                "4 more changed lines",
+                "Allow edits to this file this session",
+            ] {
+                assert!(texts.contains(want_text), "{size:?}: {want_text}\n{texts}");
+            }
+            let p = app.state_mut().chat_ui.probe.clone();
+            let composer = p.composer.unwrap();
+            assert_eq!(p.approval_buttons.len(), 3);
+            for b in &p.approval_buttons {
+                assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
+            }
+            let _ = sent_chat_commands(&sent);
+            click(&mut app, &mut h, size, p.approval_buttons[pick].center());
+            let cmds = sent_chat_commands(&sent);
+            assert!(
+                matches!(cmds.as_slice(), [ChatCommand::ResolveApproval { decision, .. }]
+                    if *decision == want),
+                "{size:?} pick {pick}: {cmds:?}"
+            );
+        }
+    }
+}
+
+/// An agent chat in which one write was made through the tool message
+/// `message` of the fixture.
+fn with_a_change(app: &mut App, session: &mut Session, undone: bool) {
+    use roost_core::agent::change::{ChangePreview, DiffLine, LineKind};
+    let message = session
+        .messages
+        .iter()
+        .find(|m| matches!(m.content, roost_core::session::MessageContent::Tool { .. }))
+        .map(|m| m.id)
+        .expect("the fixture has tool messages");
+    session.changes.push(roost_core::session::ChangeRecord {
+        id: 1,
+        message,
+        root: std::path::PathBuf::new(),
+        path: "src/config.rs".into(),
+        created: false,
+        before: if undone {
+            String::new()
+        } else {
+            "old\n".into()
+        },
+        after_hash: 7,
+        added: 3,
+        removed: 1,
+        preview: ChangePreview {
+            path: "src/config.rs".into(),
+            created: false,
+            added: 3,
+            removed: 1,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Removed,
+                    text: "let a = old();".into(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    text: "let a = brand_new();".into(),
+                },
+            ],
+            more: 0,
+        },
+        undone,
+    });
+    let open = app.state_mut().chat.open.as_mut().unwrap();
+    open.changes = session.changes.clone();
+}
+
+#[test]
+fn a_change_shows_under_its_tool_with_show_diff_and_undo_that_sends_the_command() {
+    for size in SIZES {
+        let (mut app, sent, mut s) = agent_fixture();
+        with_a_change(&mut app, &mut s, false);
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        for want in [
+            "Changed",
+            "src/config.rs",
+            "+3",
+            "−1",
+            "Show diff",
+            "Undo this change",
+        ] {
+            assert!(texts.contains(want), "{size:?}: {want}\n{texts}");
+        }
+        assert!(
+            !texts.contains("brand_new"),
+            "the diff is folded until asked for"
+        );
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (_, undo) = p.undo_buttons[0];
+        let pane = p.pane.unwrap();
+        assert!(inside(undo, pane), "{size:?}: {undo:?} in {pane:?}");
+        let (_, row) = p.change_rows[0];
+        assert!(inside(undo, row), "{size:?}: the button is inside its row");
+        // Show diff opens the changed lines.
+        let show = p.show_diff_buttons[0].1;
+        click(&mut app, &mut h, size, show.center());
+        run(&mut app, &mut h, size, 2);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("brand_new") && texts.contains("Hide diff"),
+            "{size:?}\n{texts}"
+        );
+        // Undo sends one command for that change.
+        let p = app.state_mut().chat_ui.probe.clone();
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.undo_buttons[0].1.center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::UndoChange { session, change: 1 }] if *session == s.id),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn an_undone_change_says_so_and_offers_no_second_undo() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, mut s) = agent_fixture();
+    with_a_change(&mut app, &mut s, true);
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("Undone"), "{texts}");
+    assert!(!texts.contains("Undo this change"), "{texts}");
+    assert!(app.state_mut().chat_ui.probe.undo_buttons.is_empty());
+}
+
+#[test]
+fn changes_made_lists_every_change_with_undo_all_in_the_agent_settings() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, mut s) = agent_fixture();
+    with_a_change(&mut app, &mut s, false);
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 3);
+    let chip = app.state_mut().chat_ui.probe.agent_chip.unwrap();
+    click(&mut app, &mut h, size, chip.center());
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.to_uppercase().contains("CHANGES MADE"), "{texts}");
+    assert!(texts.contains("Undo all"), "{texts}");
+    let all = app
+        .state_mut()
+        .chat_ui
+        .probe
+        .undo_all_button
+        .expect("Undo all");
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, all.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::UndoAll(id)] if *id == s.id),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn undo_is_off_while_the_agent_is_working() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, mut s) = agent_fixture();
+    with_a_change(&mut app, &mut s, false);
+    app.state_mut().chat.fold(ChatEvent::TurnStarted {
+        session: s.id,
+        turn: roost_core::session::TurnId::new(),
+    });
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let p = app.state_mut().chat_ui.probe.clone();
+    let Some((_, undo)) = p.undo_buttons.first().copied() else {
+        return; // not drawn at all is also fine
+    };
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, undo.center());
+    assert!(
+        sent_chat_commands(&sent).is_empty(),
+        "a disabled button sends nothing"
+    );
+}
+
+#[test]
+fn a_refused_undo_tells_the_user_why() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, s) = agent_fixture();
+    app.state_mut().chat.fold(ChatEvent::UndoRefused {
+        session: s.id,
+        change: 1,
+        reason: "src/config.rs was changed after the agent wrote it, so it was left alone.".into(),
+    });
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("was left alone"), "{texts}");
 }

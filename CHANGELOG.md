@@ -33,6 +33,20 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### Agents can write files (first step)
+
+- New tools `write_file` and `edit_file` (replace one exact piece of text). Both stay inside the agent's folder, refuse protected names (`.env`, keys and the like), and ask for your approval by default: writing is a new capability that is **Ask** unless you set it to Allow (or Off) for an agent.
+- The approval question comes with a preview of the change: the path, whether the file is new, lines added and removed, and the changed lines with context. The approval card in the window shows it: what the agent wants to do, the file, `+n −n`, the changed lines in a small scrolling box, and "… and n more changed lines" when there are many.
+- "Allow for this session" on a write allows edits to that file only, for as long as the chat is open, and never turns writing on for everything.
+- The header shows an **R** and a **W** chip beside Agent settings: accent when allowed, amber when it asks first, dimmed when off, with a tooltip saying exactly what each allows. On a narrow window the Agent settings button is the gear alone, so the title and folder keep their room.
+- The Tools card in Agent settings has a Read row and a Write row (each Off / Ask / Allow), then "Individual tools · n of m on".
+- Settings has a new **Agents** card with "Let agents write files". Off makes every agent read-only: the write tools are not offered, a forced call is refused, and the W chip and Write row disappear. Older settings files keep writing on.
+- The permission labels read Off / Ask / Allow instead of Auto.
+- An agent's folder is now its own line under the title, without parentheses, so it has the whole column to itself; it is still cut in the middle when it is too long and the full path is in the tooltip.
+- **Every write can be undone.** Before a change, the original is kept in the chat's own file (not in your project), up to 8 MB per chat; a write that would not fit is refused before anything is touched. Under the tool call a row says what changed (`Changed src/config.rs +3 −1`) with **Show diff** and **Undo this change**; Agent settings has a **Changes made** card with **Undo all** (newest first). Undo refuses, and says why, when the file was edited after the agent wrote it, when the agent is working, or when the agent has since moved to another folder; it never overwrites your own edits. A new file is removed on undo.
+- Because the originals are kept in the chat file, deleting the chat deletes them. A branch starts with no changes of its own and cannot undo the original's.
+- Agent prompt no longer says "read-only".
+
 ### One sidebar
 
 - Chat, Work and Models share one left column of the same width (340 by default, as wide as the Models list was). Drag its right edge to change it, between 280 and 520 points; a narrow window limits it so the page beside it keeps at least 540. The width you choose is remembered between runs and is the same on every tab. Saving it (and changing the theme or the auto-dismiss time) no longer restarts the download engine: only settings the engines use (the Ollama address, the staging folder, the delete/keep options, simultaneous downloads, the Hugging Face address and keep-alive) rebuild them. Before, any settings change did, which let a download started afterwards ignore the simultaneous-downloads limit.

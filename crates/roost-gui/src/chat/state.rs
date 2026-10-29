@@ -50,6 +50,8 @@ pub struct PendingApproval {
     pub call_id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+    /// For a write, what it would change.
+    pub preview: Option<roost_core::agent::change::ChangePreview>,
 }
 
 /// Where a check of a branch's original stands.
@@ -177,6 +179,18 @@ impl ChatState {
                 }
                 self.open = Some(*s);
             }
+            ChatEvent::Changes { session, changes } => {
+                if let Some(open) = self.open.as_mut().filter(|o| o.id == session) {
+                    open.changes = changes;
+                }
+            }
+            ChatEvent::UndoRefused {
+                session, reason, ..
+            } => {
+                if self.open.as_ref().is_some_and(|o| o.id == session) {
+                    self.notice = Some(reason);
+                }
+            }
             ChatEvent::BtwStarted {
                 session,
                 id,
@@ -287,6 +301,7 @@ impl ChatState {
                 call_id,
                 name,
                 arguments,
+                preview,
             } => {
                 self.approvals.insert(
                     session,
@@ -294,6 +309,7 @@ impl ChatState {
                         call_id,
                         name,
                         arguments,
+                        preview,
                     },
                 );
             }

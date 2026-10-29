@@ -323,9 +323,42 @@ pub struct Session {
     /// Other versions of parts of the conversation (see `Fork`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forks: Vec<Fork>,
+    /// Files an agent changed, oldest first, each with what it takes to undo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<ChangeRecord>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub messages: Vec<Message>,
+}
+
+/// The most the originals kept for undo may add up to in one session. A write
+/// that would go past it is refused, so every change stays undoable.
+pub const MAX_UNDO_BYTES: usize = 8 * 1024 * 1024;
+
+/// One file change an agent made, with what is needed to take it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeRecord {
+    /// 1, 2, 3 … within the session.
+    pub id: u32,
+    /// The tool message that made it.
+    pub message: MessageId,
+    /// The folder the agent worked in when it made the change; undo only
+    /// applies there.
+    pub root: PathBuf,
+    /// Workspace-relative path.
+    pub path: String,
+    /// The file did not exist before.
+    pub created: bool,
+    /// The text before the change; empty for a new file, and again once the
+    /// change was undone (the copy is no longer needed).
+    pub before: String,
+    /// Fingerprint of the text the agent wrote, to notice later edits.
+    pub after_hash: u64,
+    pub added: u32,
+    pub removed: u32,
+    /// The changed lines, for "Show diff".
+    pub preview: crate::agent::change::ChangePreview,
+    pub undone: bool,
 }
 
 fn check_workspace(path: &Path) -> Result<(), SessionError> {
@@ -366,6 +399,7 @@ impl Session {
             origin_hash: None,
             btw: Vec::new(),
             forks: Vec::new(),
+            changes: Vec::new(),
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             messages: Vec::new(),
@@ -510,6 +544,8 @@ impl Session {
         b.messages = messages;
         b.forks = Vec::new();
         b.btw = Vec::new();
+        // The branch did not make those changes and cannot take them back.
+        b.changes = Vec::new();
         b.pinned = false;
         b.run_state = RunState::Idle;
         b.title = if self.title == UNTITLED {
@@ -763,6 +799,40 @@ impl Session {
             *status = new_status;
         }
         self.updated_at_ms = now_ms;
+    }
+
+    /// Bytes of originals still held for undo.
+    pub fn undo_bytes_used(&self) -> usize {
+        self.changes.iter().map(|c| c.before.len()).sum()
+    }
+
+    /// How much more a write may need to keep.
+    pub fn undo_room(&self) -> usize {
+        MAX_UNDO_BYTES.saturating_sub(self.undo_bytes_used())
+    }
+
+    /// Notes a change the agent made through tool message `message`.
+    pub fn record_change(
+        &mut self,
+        message: MessageId,
+        change: &crate::agent::change::Change,
+    ) -> u32 {
+        let id = self.changes.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+        let (added, removed) = change.stats();
+        self.changes.push(ChangeRecord {
+            id,
+            message,
+            root: self.workspace.clone().unwrap_or_default(),
+            path: change.path.clone(),
+            created: change.before.is_none(),
+            before: change.before.clone().unwrap_or_default(),
+            after_hash: crate::agent::change::fingerprint(&change.after),
+            added,
+            removed,
+            preview: change.card(),
+            undone: false,
+        });
+        id
     }
 
     /// Changes an agent's workspace (the caller makes sure no run is active).
@@ -1368,6 +1438,47 @@ mod tests {
         ];
         s.messages = msgs.clone();
         (s, msgs)
+    }
+
+    #[test]
+    fn a_branch_does_not_inherit_the_originals_changes_or_their_undo_copies() {
+        let (mut s, m) = four_message_chat();
+        s.record_change(
+            m[1].id,
+            &crate::agent::change::Change {
+                path: "a.txt".into(),
+                before: Some("secret original\n".into()),
+                after: "new\n".into(),
+            },
+        );
+        assert_eq!(s.changes.len(), 1);
+        let b = s.branch(m[1].id, None, T0).unwrap();
+        assert!(
+            b.changes.is_empty(),
+            "the branch cannot undo the original's work"
+        );
+    }
+
+    #[test]
+    fn changes_are_numbered_counted_against_the_undo_room_and_saved() {
+        let (mut s, m) = four_message_chat();
+        let change = |before: &str| crate::agent::change::Change {
+            path: "f".into(),
+            before: Some(before.into()),
+            after: "z\n".into(),
+        };
+        assert_eq!(s.record_change(m[0].id, &change("12345")), 1);
+        assert_eq!(s.record_change(m[0].id, &change("123")), 2);
+        assert_eq!(s.undo_bytes_used(), 8);
+        assert_eq!(s.undo_room(), MAX_UNDO_BYTES - 8);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.changes, s.changes);
+        // Older files have no changes.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v.as_object_mut().unwrap().remove("changes");
+        let old: Session = serde_json::from_value(v).unwrap();
+        assert!(old.changes.is_empty());
     }
 
     #[test]
