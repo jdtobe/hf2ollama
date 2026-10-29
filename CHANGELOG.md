@@ -33,6 +33,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### Theme roles
+
+- Every theme family gains a **second hue** (steel blue for Meadow, deep teal for Ember, rose for Plum, violet for Tide, each with a soft background and a darker/lighter pair for dark mode) and a **header** tone. Links and the "installed" tag use the second hue; the page headers on the Models tab use the header tone instead of the accent tint; your chat messages sit on the raised surface with an accent edge instead of a filled accent bubble. The accent keeps primary actions and selection. A test checks the text contrast of the new pairs in all eight palettes.
+
 ### One Models tab
 
 - **Models** is one view instead of Browse and Installed behind a switch: a list with the models Ollama has (with a usage bar) above the Hugging Face results, one search box that narrows both, and one detail pane. Filters are chips above the list (a Filters popover, Fits my machine, and the sort order) instead of a side rail.

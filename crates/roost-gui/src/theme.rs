@@ -111,7 +111,7 @@ fn style_for(style: &mut egui::Style, t: &Tokens) {
     v.extreme_bg_color = t.surface;
     v.faint_bg_color = t.surface2;
     v.text_edit_bg_color = Some(t.surface);
-    v.hyperlink_color = t.accent;
+    v.hyperlink_color = t.accent2;
     v.selection.bg_fill = t.accent_soft;
     v.selection.stroke = Stroke::new(1.0, t.accent);
     let r = CornerRadius::same(6);
