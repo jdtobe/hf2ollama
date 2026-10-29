@@ -2060,3 +2060,55 @@ fn a_very_long_folder_is_cut_in_the_middle_and_the_header_still_fits() {
     let p = app.state_mut().chat_ui.probe.clone();
     assert!(inside(p.agent_chip.unwrap(), p.header.unwrap()));
 }
+
+#[test]
+fn a_very_long_title_never_runs_into_the_status_or_the_buttons() {
+    let long = "A really quite remarkably long title that just keeps going and going well past the end of the line ".repeat(3);
+    for size in SIZES {
+        for agent in [false, true] {
+            let (mut app, _sent, _s) = agent_fixture();
+            let mut h = Harness::new(false);
+            let id = {
+                let open = app.state_mut().chat.open.as_mut().unwrap();
+                open.title = long.clone();
+                if !agent {
+                    open.mode = SessionMode::Chat;
+                }
+                open.id
+            };
+            // The list row carries the title that is shown.
+            let mut row = row_for(app.state_mut().chat.open.as_ref().unwrap(), &long);
+            row.id = id;
+            row.mode = if agent {
+                SessionMode::Agent
+            } else {
+                SessionMode::Chat
+            };
+            app.state_mut().view = if agent { View::Work } else { View::Chat };
+            app.state_mut().chat.fold(ChatEvent::Rows(vec![row]));
+            run(&mut app, &mut h, size, 4);
+            let p = app.state_mut().chat_ui.probe.clone();
+            let title = p.title_rect.expect("title");
+            let status = p.status_rect.expect("status text");
+            assert!(
+                title.right() <= status.left() - 8.0,
+                "{size:?} agent={agent}: title {title:?} runs into the status {status:?}"
+            );
+            if let Some(path) = p.path_rect {
+                assert!(
+                    path.right() <= status.left() - 8.0,
+                    "{size:?}: folder {path:?} runs into the status {status:?}"
+                );
+                assert!(
+                    title.right() <= path.left() + 0.5,
+                    "{size:?}: title over the folder"
+                );
+            }
+            let pencil = p.rename_button.unwrap();
+            assert!(
+                pencil.right() <= status.left() - 4.0,
+                "{size:?}: pencil over the status"
+            );
+        }
+    }
+}
