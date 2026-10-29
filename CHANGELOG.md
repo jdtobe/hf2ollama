@@ -33,6 +33,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Chats without a title show the start of their first message in the rail and the header (display only; a rename always wins).
 
+### One sidebar
+
+- Chat, Work and Models share one left column of the same width (340 by default, as wide as the Models list was). Drag its right edge to change it, between 280 and 520 points; a narrow window limits it so the page beside it keeps at least 540. The width you choose is remembered between runs and is the same on every tab. Saving it (and changing the theme or the auto-dismiss time) no longer restarts the download engine: only settings the engines use (the Ollama address, the staging folder, the delete/keep options, simultaneous downloads, the Hugging Face address and keep-alive) rebuild them. Before, any settings change did, which let a download started afterwards ignore the simultaneous-downloads limit.
+
 ### Chat and Work header
 
 - The title row is a header band (the theme's header tone): a tile showing the kind of session (a speech bubble for a chat, a bubble with a spark for an agent), the title in a larger, bolder type (an untitled session reads "Untitled" in grey italics), and for an agent its folder in parentheses with the home directory written as `~`, cut in the middle when it does not fit and shown in full on hover. On the right: a status dot with Idle, Working (with the step) or Waiting for you; for an agent an **Agent settings** button with a gear; a pin that fills when the session is pinned (not offered for incognito chats) and a red trash can that asks twice, the second time saying "Click again to delete". A pencil beside the title (or a double-click on it) edits the name; Enter or clicking away keeps it, Escape cancels.

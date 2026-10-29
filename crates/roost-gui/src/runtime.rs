@@ -155,6 +155,20 @@ impl Emitter {
     }
 }
 
+/// Whether new settings need the clients and the job manager rebuilt. A new
+/// manager does not know about running downloads, so the parallel limit
+/// would stop counting them: only settings the engines use qualify, never
+/// the look of the window or its layout.
+fn needs_rebuild(old: &Settings, new: &Settings) -> bool {
+    old.ollama_url != new.ollama_url
+        || old.staging_dir != new.staging_dir
+        || old.delete_after_import != new.delete_after_import
+        || old.keep_partials != new.keep_partials
+        || old.max_parallel != new.max_parallel
+        || old.hf_endpoint != new.hf_endpoint
+        || old.keep_alive != new.keep_alive
+}
+
 /// Everything rebuilt by `ApplySettings`.
 struct Clients {
     hf: HfClient,
@@ -591,8 +605,14 @@ fn dispatch(shared: &Arc<Shared>, req: BackendRequest) {
             }
         }
         BackendRequest::ApplySettings(settings) => {
-            shared.install_settings(&settings);
-            shared.recheck.notify_one();
+            let rebuild = needs_rebuild(&shared.clients().settings, &settings);
+            if rebuild {
+                shared.install_settings(&settings);
+                shared.recheck.notify_one();
+            } else {
+                // Only the look changed: remember it, keep the engines.
+                shared.clients().settings = settings.clone();
+            }
             let saved = text(settings.save(&shared.paths.config_file));
             shared.out.emit(UiEvent::SettingsSaved(saved));
         }
@@ -780,6 +800,67 @@ async fn serve(shared: &Shared, req: BackendRequest) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_settings_the_engines_use_rebuild_them() {
+        use roost_core::config::{AutoDismiss, KeepAlive, ThemeFamily, ThemeMode};
+        let base = Settings::default();
+        // Looks and window layout: no rebuild, so a running download keeps
+        // its manager and the parallel limit keeps counting.
+        for changed in [
+            Settings {
+                sidebar_width: 400.0,
+                ..base.clone()
+            },
+            Settings {
+                theme_family: ThemeFamily::Tide,
+                ..base.clone()
+            },
+            Settings {
+                theme_mode: ThemeMode::Dark,
+                ..base.clone()
+            },
+            Settings {
+                auto_dismiss: AutoDismiss::OneHour,
+                ..base.clone()
+            },
+        ] {
+            assert!(!needs_rebuild(&base, &changed), "{changed:?}");
+        }
+        // What the clients and the job manager are built from: rebuild.
+        for changed in [
+            Settings {
+                ollama_url: "http://box:1".into(),
+                ..base.clone()
+            },
+            Settings {
+                staging_dir: Some("/x".into()),
+                ..base.clone()
+            },
+            Settings {
+                delete_after_import: false,
+                ..base.clone()
+            },
+            Settings {
+                keep_partials: false,
+                ..base.clone()
+            },
+            Settings {
+                max_parallel: 3,
+                ..base.clone()
+            },
+            Settings {
+                hf_endpoint: "https://mirror.example".into(),
+                ..base.clone()
+            },
+            Settings {
+                keep_alive: KeepAlive::OneHour,
+                ..base.clone()
+            },
+        ] {
+            assert!(needs_rebuild(&base, &changed), "{changed:?}");
+        }
+    }
     use roost_core::events::Stage;
     use roost_core::history::History;
     use roost_core::model::ImportRequest;

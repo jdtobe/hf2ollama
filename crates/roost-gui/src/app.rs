@@ -48,6 +48,11 @@ pub struct AppState {
     pub delete_after_import: bool,
     /// The live settings; the Settings view edits them in place.
     pub settings: Settings,
+    /// The sidebar's width as last drawn, whether a drag moved it, and
+    /// whether the new width still has to be saved.
+    pub sidebar_seen: f32,
+    pub sidebar_moved: bool,
+    pub sidebar_dirty: bool,
     pub settings_view: SettingsView,
     /// Detected or overridden once at startup; NVML probing is not free.
     pub machine: Machine,
@@ -114,6 +119,9 @@ impl AppState {
             default_staging: PathBuf::new(),
             delete_after_import: true,
             settings: Settings::default(),
+            sidebar_seen: 0.0,
+            sidebar_moved: false,
+            sidebar_dirty: false,
             settings_view: SettingsView::new(&Settings::default(), PathBuf::new(), None),
             machine: Machine {
                 ram_gb: 0.0,
@@ -952,6 +960,12 @@ impl App {
             });
         for r in pill_requests {
             let _ = self.tx.send(r);
+        }
+        if std::mem::take(&mut self.state.sidebar_dirty) {
+            // The sidebar was dragged to a new width: remember it.
+            let _ = self
+                .tx
+                .send(BackendRequest::ApplySettings(self.state.settings.clone()));
         }
         if !theme_actions.is_empty() {
             let ctx = ui.ctx().clone();
@@ -2138,6 +2152,104 @@ mod tests {
         click_at(&mut app, &mut h, dots[3].center());
         assert_eq!(app.state.settings.theme_family, ThemeFamily::Tide);
         let _ = ThemeMode::System;
+    }
+
+    /// The sidebar's width on the tab `view`, after a few frames.
+    fn sidebar_width_on(
+        app: &mut App,
+        h: &mut crate::browse::test_util::Harness,
+        view: View,
+    ) -> f32 {
+        app.state.select(view);
+        for _ in 0..4 {
+            h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
+        }
+        match view {
+            View::Models => app.state.browse.probe.list.expect("models list").width(),
+            _ => app.state.chat_ui.probe.rail.expect("rail").width() + 24.0,
+        }
+    }
+
+    #[test]
+    fn every_tab_has_the_same_sidebar_and_a_drag_on_one_changes_all() {
+        let (mut app, mut h) = nav_app(View::Models);
+        let size = vec2(1180.0, 820.0);
+        let w = sidebar_width_on(&mut app, &mut h, View::Models);
+        assert!((w - 340.0).abs() < 5.0, "default width {w}");
+        for v in [View::Chat, View::Work] {
+            let other = sidebar_width_on(&mut app, &mut h, v);
+            assert!((other - w).abs() < 5.0, "{v:?}: {other} vs {w}");
+        }
+        // Drag the edge on Models 60 points wider.
+        app.state.select(View::Models);
+        for _ in 0..3 {
+            h.frame(size, vec![], |ui| app.show(ui));
+        }
+        let edge = app.state.browse.probe.list.unwrap().right();
+        let y = 400.0;
+        h.frame(
+            size,
+            vec![egui::Event::PointerMoved(egui::pos2(edge, y))],
+            |ui| app.show(ui),
+        );
+        let button = |pressed| egui::Event::PointerButton {
+            pos: egui::pos2(edge, y),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        h.frame(size, vec![button(true)], |ui| app.show(ui));
+        for step in 1..=6 {
+            h.frame(
+                size,
+                vec![egui::Event::PointerMoved(egui::pos2(
+                    edge + 10.0 * step as f32,
+                    y,
+                ))],
+                |ui| app.show(ui),
+            );
+        }
+        h.frame(
+            size,
+            vec![egui::Event::PointerButton {
+                pos: egui::pos2(edge + 60.0, y),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            |ui| app.show(ui),
+        );
+        for _ in 0..3 {
+            h.frame(size, vec![], |ui| app.show(ui));
+        }
+        let wider = app.state.browse.probe.list.unwrap().width();
+        assert!(wider > w + 40.0, "dragged from {w} to {wider}");
+        assert!(
+            (app.state.settings.sidebar_width - wider).abs() < 5.0,
+            "remembered {} vs drawn {wider}",
+            app.state.settings.sidebar_width
+        );
+        for v in [View::Chat, View::Work] {
+            let other = sidebar_width_on(&mut app, &mut h, v);
+            assert!((other - wider).abs() < 5.0, "{v:?}: {other} vs {wider}");
+        }
+    }
+
+    #[test]
+    fn the_sidebar_never_leaves_the_page_less_room_than_it_needs() {
+        let (mut app, mut h) = nav_app(View::Models);
+        app.state.settings.sidebar_width = 2000.0;
+        let size = vec2(900.0, 640.0);
+        for _ in 0..4 {
+            h.frame(size, vec![], |ui| app.show(ui));
+        }
+        let list = app.state.browse.probe.list.unwrap();
+        assert!(
+            list.width() <= crate::sidebar::max_width(900.0) + 1.0,
+            "{}",
+            list.width()
+        );
+        assert!(900.0 - list.width() >= crate::sidebar::MIN_CONTENT - 1.0);
     }
 
     #[test]
