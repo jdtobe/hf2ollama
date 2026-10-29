@@ -89,7 +89,7 @@ pub struct ChatProbe {
     /// The bubble of every message painted this frame.
     pub cards: Vec<egui::Rect>,
     pub edit_icon: Option<egui::Rect>,
-    /// The Allow / Allow for this chat / Deny buttons of an approval card.
+    /// The Allow / Allow for this session / Deny buttons of an approval card.
     pub approval_buttons: Vec<egui::Rect>,
     /// The Off / Ask / Auto buttons of the Files · Read permission.
     pub permission_buttons: Vec<egui::Rect>,
@@ -858,7 +858,7 @@ fn approval_card(
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let allow = primary_button(ui, "Allow", true);
-                let always = secondary(ui, "Allow for this chat", true);
+                let always = secondary(ui, "Allow for this session", true);
                 let deny = secondary(ui, "Deny", true);
                 #[cfg(test)]
                 {
@@ -867,7 +867,7 @@ fn approval_card(
                 if allow.clicked() {
                     answer = Some(ApprovalDecision::Allow);
                 } else if always.clicked() {
-                    answer = Some(ApprovalDecision::AllowForChat);
+                    answer = Some(ApprovalDecision::AllowForSession);
                 } else if deny.clicked() {
                     answer = Some(ApprovalDecision::Deny);
                 }

@@ -1822,7 +1822,7 @@ fn a_pending_approval_shows_what_the_agent_wants_and_three_ways_to_answer() {
     for size in SIZES {
         for (pick, want) in [
             (0usize, ApprovalDecision::Allow),
-            (1, ApprovalDecision::AllowForChat),
+            (1, ApprovalDecision::AllowForSession),
             (2, ApprovalDecision::Deny),
         ] {
             let (mut app, sent, s) = agent_fixture();

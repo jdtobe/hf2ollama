@@ -497,7 +497,7 @@ impl Manager {
         };
         match decision {
             ApprovalDecision::Allow => self.start_tool_call(id, call, true),
-            ApprovalDecision::AllowForChat => {
+            ApprovalDecision::AllowForSession => {
                 if let (Some(key), Some(live)) = (
                     registry::capability_of(&call.name),
                     self.sessions.get_mut(&id),

@@ -257,8 +257,8 @@ pub enum ChatEvent {
 pub enum ApprovalDecision {
     /// Run this call.
     Allow,
-    /// Run this call and stop asking for this kind of tool in this chat.
-    AllowForChat,
+    /// Run this call and stop asking for this kind of tool for the rest of the session.
+    AllowForSession,
     /// Do not run it; the model is told.
     Deny,
 }

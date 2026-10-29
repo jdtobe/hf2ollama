@@ -2193,7 +2193,7 @@ async fn a_declined_tool_call_is_reported_to_the_model_and_the_run_goes_on() {
 }
 
 #[tokio::test]
-async fn allow_for_this_chat_stops_further_questions() {
+async fn allow_for_this_session_stops_further_questions() {
     let (_srv, h, id, _ws) = asking_agent(vec![
         chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
         chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
@@ -2206,7 +2206,7 @@ async fn allow_for_this_chat_stops_further_questions() {
     h.cmd(ChatCommand::ResolveApproval {
         session: id,
         call_id,
-        decision: ApprovalDecision::AllowForChat,
+        decision: ApprovalDecision::AllowForSession,
     });
     h.wait_run_ended(1).await;
     let events = h.events();
