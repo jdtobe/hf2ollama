@@ -1003,6 +1003,11 @@ fn the_rail_search_filters_the_list_and_stays_inside_the_rail() {
         .expect("search field");
     let rail = f.app.state_mut().chat_ui.probe.rail.unwrap();
     assert!(inside(search, rail), "{search:?} {rail:?}");
+    let new = f.app.state_mut().chat_ui.probe.new_button.unwrap();
+    assert!(
+        search.bottom() <= new.top(),
+        "search is above + New: {search:?} {new:?}"
+    );
     f.app.state_mut().chat_ui.rail_query = "no-such-session-anywhere".into();
     run(&mut f.app, &mut h, size, 3);
     let texts = texts_of(&mut f.app, &mut h, size);
