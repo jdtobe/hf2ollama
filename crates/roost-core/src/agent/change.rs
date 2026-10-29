@@ -187,7 +187,7 @@ fn target(ws: &Workspace, path: &str) -> Result<std::path::PathBuf, ToolError> {
     if is_sensitive(&rel) {
         return Err(ToolError::Denied(format!(
             "{} is protected and cannot be written",
-            rel.display()
+            super::tools::show(&rel)
         )));
     }
     Ok(rel)
@@ -210,7 +210,7 @@ pub fn plan(ws: &Workspace, name: &str, args: &Value) -> Result<Option<Change>, 
             let rel = target(ws, &path)?;
             let before = ws.read_text_for_edit(&rel)?;
             Ok(Some(Change {
-                path: rel.display().to_string(),
+                path: super::tools::show(&rel),
                 before,
                 after: content,
             }))
@@ -226,7 +226,7 @@ pub fn plan(ws: &Workspace, name: &str, args: &Value) -> Result<Option<Change>, 
             }
             let rel = target(ws, &path)?;
             let Some(before) = ws.read_text_for_edit(&rel)? else {
-                return Err(ToolError::NotFound(rel.display().to_string()));
+                return Err(ToolError::NotFound(super::tools::show(&rel)));
             };
             let found = before.matches(&old).count();
             if found != 1 {
@@ -246,7 +246,7 @@ pub fn plan(ws: &Workspace, name: &str, args: &Value) -> Result<Option<Change>, 
                 ));
             }
             Ok(Some(Change {
-                path: rel.display().to_string(),
+                path: super::tools::show(&rel),
                 before: Some(before),
                 after,
             }))
