@@ -310,6 +310,8 @@ fn rail(
 ) {
     let model = app.chat.default_model(installed);
     let field = crate::widgets::search_field(ui, &mut app.chat_ui.rail_query, "Search");
+    app.search_rect = Some(field.response.rect);
+    app.search_clear_rect = field.clear;
     #[cfg(test)]
     {
         app.chat_ui.probe.rail_search = Some(field.response.rect);

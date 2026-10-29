@@ -1138,6 +1138,66 @@ mod tests {
         }
     }
 
+    /// Every shape drawn last frame that is a line segment inside `rect`.
+    fn strokes_in(
+        app: &mut App,
+        h: &mut crate::browse::test_util::Harness,
+        rect: egui::Rect,
+    ) -> usize {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                vec2(1180.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let out = h.ctx().run_ui(input, |ui| app.show(ui));
+        let n = out
+            .shapes
+            .iter()
+            .filter(|s| {
+                matches!(&s.shape, egui::epaint::Shape::LineSegment { points, .. }
+                    if rect.contains(points[0]) && rect.contains(points[1])
+                        && s.clip_rect.contains_rect(rect))
+            })
+            .count();
+        out.drop_without_applying_deltas();
+        n
+    }
+
+    #[test]
+    fn the_search_box_is_in_the_same_place_on_every_tab_with_a_visible_clear_button() {
+        let (mut app, mut h) = nav_app(View::Models);
+        app.state.query = "llama".into();
+        app.state.chat_ui.rail_query = "llama".into();
+        let mut seen = Vec::new();
+        for view in [View::Models, View::Chat, View::Work] {
+            app.state.select(view);
+            for _ in 0..4 {
+                h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
+            }
+            let field = app.state.search_rect.expect("search field");
+            let clear = app.state.search_clear_rect.expect("clear button");
+            assert!(
+                field.contains_rect(clear),
+                "{view:?}: {clear:?} not in {field:?}"
+            );
+            assert_eq!(
+                strokes_in(&mut app, &mut h, clear),
+                2,
+                "{view:?}: no ✕ drawn"
+            );
+            seen.push((view, field));
+        }
+        let (_, first) = seen[0];
+        for (view, f) in &seen {
+            assert!(
+                (f.min - first.min).length() < 0.5 && (f.width() - first.width()).abs() < 0.5,
+                "{view:?} search {f:?} differs from Models {first:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_header_has_no_search_field() {
         let mut app = {

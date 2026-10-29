@@ -154,8 +154,17 @@ fn the_list_holds_the_chips_and_both_sections_inside_its_column() {
             let chip = p.filters_chip.expect("Filters chip");
             assert!(inside(chip, list), "{size:?}: chip {chip:?} list {list:?}");
             assert_eq!(p.installed_rows.len(), 3, "{size:?}");
+            // The column scrolls, so a row may run past the bottom; it must
+            // start inside and never stick out sideways.
             for (name, r) in &p.installed_rows {
-                assert!(inside(*r, list), "{size:?}: {name} {r:?} {list:?}");
+                assert!(
+                    r.min.x >= list.min.x && r.max.x <= list.max.x && r.min.y >= list.min.y,
+                    "{size:?}: {name} {r:?} {list:?}"
+                );
+                assert!(
+                    r.min.y < list.max.y,
+                    "{size:?}: {name} starts below the list"
+                );
             }
             let t = texts(&mut app, &mut h, size);
             assert!(t.to_uppercase().contains("INSTALLED"), "{t}");
