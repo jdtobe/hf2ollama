@@ -654,7 +654,7 @@ pub(super) enum PillBody<'a> {
 }
 
 /// Height of the pills under the input.
-const PILL_H: f32 = 26.0;
+pub(super) const PILL_H: f32 = 26.0;
 
 /// A small rounded button under the input. `selected` tints it (a popup is
 /// open). Returns its rectangle and response.

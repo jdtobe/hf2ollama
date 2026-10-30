@@ -3198,3 +3198,26 @@ fn the_send_button_is_the_same_distance_from_the_top_bottom_and_right_edges() {
         );
     }
 }
+
+#[test]
+fn the_composer_is_compact_below_the_bubble() {
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let (input, composer, chip) = (
+            p.input_rect.unwrap(),
+            p.composer.unwrap(),
+            p.model_chip.unwrap(),
+        );
+        assert!(
+            chip.height() <= 27.0,
+            "{size:?}: the model chip is as tall as a pill: {chip:?}"
+        );
+        assert!(
+            composer.bottom() - input.bottom() <= 42.0,
+            "{size:?}: pills and margin under the bubble: {input:?} in {composer:?}"
+        );
+    }
+}

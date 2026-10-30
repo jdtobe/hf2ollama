@@ -310,7 +310,7 @@ fn show_mode(
                     left: 20,
                     right: 20,
                     top: 4,
-                    bottom: 10,
+                    bottom: 6,
                 }),
             )
             .show(ui, |ui| {
@@ -2624,7 +2624,7 @@ fn composer(
         app.chat_ui.probe.input_rect = Some(box_rect);
         app.chat_ui.probe.send_button = Some((button, if running { "Stop" } else { "Send" }));
     }
-    ui.add_space(6.0);
+    ui.add_space(4.0);
     // The pills under the input: what can be added and the tools on the left,
     // what the agent may do and the model on the right.
     let compact = ui.available_width() < super::chrome::COMPACT_PILLS_W;
@@ -2636,7 +2636,12 @@ fn composer(
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let name_chars = if compact { 14 } else { 28 };
-            super::chrome::model_chip(ui, app, out, t, s, installed, name_chars);
+            // As tall as the pills beside it.
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding = vec2(8.0, 2.0);
+                ui.spacing_mut().interact_size.y = super::chrome::PILL_H;
+                super::chrome::model_chip(ui, app, out, t, s, installed, name_chars);
+            });
             if agent {
                 super::chrome::permission_pills(ui, app, out, t, s);
             }
