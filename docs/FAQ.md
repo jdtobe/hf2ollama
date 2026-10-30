@@ -31,9 +31,11 @@ Cancelling a job always deletes its partial files. A failed job keeps its downlo
 
 The download step retries a failed file up to 3 times (waits of 1, 2 and 4 seconds, longer if the server asks, at most 30 seconds). A retry continues from the partial file with an HTTP Range request, so progress is not lost. It retries network errors, stalls, server errors (5xx) and "too many requests" (429); it never retries a checksum mismatch, a gated repository, a client error such as 404, or a cancel. Each retry is written to the job log. This also covers a connection that went stale during a long Pause. If all retries fail, the job fails; start it again to download from the beginning.
 
-## What happens if I close the window while downloads are running?
+## What happens if I close the window while downloads or an agent are running?
 
 The app asks first: "Keep running" (the default) or "Quit and cancel". Quit and cancel cancels every queued and running job, which removes their files, waits up to 3 seconds for them to stop, and then closes. A model already being created in Ollama is not abandoned mid-request, so if that takes longer than 3 seconds the window closes anyway and the server finishes it.
+
+A chat reply or an agent run in progress also makes Roost ask. Quitting stops those runs; what they had written so far is kept in the chat.
 
 ## What if a model with the same name already exists in Ollama?
 
