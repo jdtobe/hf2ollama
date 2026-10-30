@@ -31,6 +31,11 @@ const COMPOSER_MAX_H: f32 = 160.0;
 /// Diameter of the send button inside the input.
 const SEND_SIZE: f32 = 30.0;
 
+/// Space between the send button and the bubble's edges. With the input's
+/// margins a one-line bubble is `SEND_SIZE + 2 * SEND_GAP` high, so the gap
+/// is the same above, below and to the right.
+const SEND_GAP: f32 = 5.0;
+
 /// Interaction state that is not part of the conversation data.
 #[derive(Default)]
 pub struct ChatUi {
@@ -297,11 +302,16 @@ fn show_mode(
     if let Some(s) = &open {
         egui::Panel::bottom("chat_composer")
             .resizable(false)
+            .show_separator_line(false)
             .frame(
-                egui::Frame::new()
-                    .fill(t.surface)
-                    .stroke(Stroke::new(1.0, t.line))
-                    .inner_margin(Margin::symmetric(20, 12)),
+                // No box of its own: the input bubble floats over the same
+                // background as the conversation.
+                egui::Frame::new().fill(t.bg).inner_margin(Margin {
+                    left: 20,
+                    right: 20,
+                    top: 4,
+                    bottom: 6,
+                }),
             )
             .show(ui, |ui| {
                 #[cfg(test)]
@@ -2556,8 +2566,8 @@ fn composer(
         .inner_margin(egui::Margin {
             left: 14,
             right: (SEND_SIZE + 14.0) as i8,
-            top: 7,
-            bottom: 7,
+            top: 9,
+            bottom: 9,
         })
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
@@ -2577,8 +2587,8 @@ fn composer(
     let box_rect = bubble.response.rect;
     let button = egui::Rect::from_min_size(
         egui::pos2(
-            box_rect.right() - SEND_SIZE - 6.0,
-            box_rect.bottom() - SEND_SIZE - 4.0,
+            box_rect.right() - SEND_SIZE - SEND_GAP,
+            box_rect.bottom() - SEND_SIZE - SEND_GAP,
         ),
         egui::vec2(SEND_SIZE, SEND_SIZE),
     );
@@ -2614,7 +2624,7 @@ fn composer(
         app.chat_ui.probe.input_rect = Some(box_rect);
         app.chat_ui.probe.send_button = Some((button, if running { "Stop" } else { "Send" }));
     }
-    ui.add_space(6.0);
+    ui.add_space(4.0);
     // The pills under the input: what can be added and the tools on the left,
     // what the agent may do and the model on the right.
     let compact = ui.available_width() < super::chrome::COMPACT_PILLS_W;
@@ -2626,7 +2636,12 @@ fn composer(
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let name_chars = if compact { 14 } else { 28 };
-            super::chrome::model_chip(ui, app, out, t, s, installed, name_chars);
+            // As tall as the pills beside it.
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding = vec2(8.0, 2.0);
+                ui.spacing_mut().interact_size.y = super::chrome::PILL_H;
+                super::chrome::model_chip(ui, app, out, t, s, installed, name_chars);
+            });
             if agent {
                 super::chrome::permission_pills(ui, app, out, t, s);
             }
