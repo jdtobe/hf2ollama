@@ -774,7 +774,7 @@ mod tests {
         let mut s = sample();
         let t0 = Instant::now();
         assert!(s.click_delete("alpha:1b", t0).is_none());
-        for ms in [0, 100, 599] {
+        for ms in [0, 50, 99] {
             let now = t0 + Duration::from_millis(ms);
             assert!(s.click_delete("alpha:1b", now).is_none(), "{ms} ms");
             assert!(s.confirm_delete("alpha:1b", now).is_none(), "{ms} ms");
@@ -811,7 +811,7 @@ mod tests {
         assert!(s.is_armed("alpha:1b", late));
         assert!(!s.confirm_ready("alpha:1b", late), "delay restarted");
         assert!(s
-            .click_delete("alpha:1b", late + Duration::from_millis(300))
+            .click_delete("alpha:1b", late + Duration::from_millis(50))
             .is_none());
         assert!(s.click_delete("alpha:1b", late + ARM_MIN_DELAY).is_some());
     }
@@ -823,7 +823,7 @@ mod tests {
         assert!(!s.confirm_ready("alpha:1b", t0), "not armed");
         s.arm_delete("alpha:1b", t0);
         assert!(!s.confirm_ready("alpha:1b", t0));
-        assert!(!s.confirm_ready("alpha:1b", t0 + Duration::from_millis(599)));
+        assert!(!s.confirm_ready("alpha:1b", t0 + Duration::from_millis(99)));
         assert!(s.confirm_ready("alpha:1b", t0 + ARM_MIN_DELAY));
         assert!(s.confirm_ready("alpha:1b", t0 + Duration::from_millis(3_999)));
         assert!(!s.confirm_ready("alpha:1b", t0 + ARM_WINDOW), "expired");

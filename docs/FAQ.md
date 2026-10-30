@@ -47,7 +47,7 @@ The model card (the repository README) is shown as a restricted subset of Markdo
 
 ## Why does Delete ask twice, and why is the second click sometimes ignored?
 
-Delete in Installed (and Clear in Settings) works in two steps: the first click arms the button, the second one confirms. The second click is ignored for the first 0.6 seconds after arming, so a quick double-click can never delete a model, and a held-down Enter or Space never confirms. The armed state expires after 4 seconds. Delete removes the model through the Ollama API.
+Delete in Installed (and Clear in Settings) works in two steps: the first click arms the button, the second one confirms. The second click is ignored for the first 0.1 seconds after arming, so a quick double-click can never delete a model, and a held-down Enter or Space never confirms. The armed state expires after 4 seconds. Delete removes the model through the Ollama API.
 
 ## I used hf2ollama before. What happens to my settings and token?
 

@@ -3423,3 +3423,28 @@ async fn a_small_context_window_shrinks_what_one_tool_call_may_return() {
         "{out}"
     );
 }
+
+#[tokio::test]
+async fn a_deleted_chat_comes_back_with_undelete_until_it_is_purged() {
+    let srv = fake(vec![]).await;
+    let h = start(&srv).await;
+    let id = h.create(SessionLifetime::Persisted).await;
+    h.wait("listed", |e| last_rows(e).iter().any(|r| r.id == id))
+        .await;
+    h.cmd(ChatCommand::Delete(id));
+    h.wait("gone", |e| !last_rows(e).iter().any(|r| r.id == id))
+        .await;
+    assert!(!h.file(id).exists());
+    h.cmd(ChatCommand::Undelete(id));
+    h.wait("back", |e| last_rows(e).iter().any(|r| r.id == id))
+        .await;
+    assert!(h.file(id).exists());
+    // Purged for good: the undo no longer works.
+    h.cmd(ChatCommand::Delete(id));
+    h.wait("gone again", |e| !last_rows(e).iter().any(|r| r.id == id))
+        .await;
+    h.cmd(ChatCommand::PurgeDeleted(id));
+    h.cmd(ChatCommand::Undelete(id));
+    h.handle.shutdown().await;
+    assert!(!h.file(id).exists());
+}

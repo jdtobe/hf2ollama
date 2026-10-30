@@ -12,6 +12,8 @@ use tokio::sync::oneshot;
 enum Job {
     Save(Box<Session>),
     Delete(SessionId),
+    Restore(SessionId, oneshot::Sender<bool>),
+    Purge(SessionId),
     Snapshot(oneshot::Sender<Vec<IndexRow>>),
     Load(SessionId, oneshot::Sender<Result<Session, LoadError>>),
     Flush(oneshot::Sender<()>),
@@ -63,6 +65,14 @@ impl Writer {
                                 }
                             }
                         }
+                        Job::Restore(id, reply) => {
+                            let ok = store.restore(id).is_ok();
+                            if ok {
+                                tombstones.remove(&id);
+                            }
+                            let _ = reply.send(ok);
+                        }
+                        Job::Purge(id) => store.purge(id),
                         Job::Snapshot(reply) => {
                             let _ = reply.send(store.rows());
                         }
@@ -86,8 +96,23 @@ impl Writer {
         let _ = self.tx.send(Job::Save(Box::new(s)));
     }
 
+    /// Moves the session to the trash; it stays recoverable until `purge`.
     pub fn delete(&self, id: SessionId) {
         let _ = self.tx.send(Job::Delete(id));
+    }
+
+    /// Brings a deleted session back. False when it is no longer in the trash.
+    pub async fn restore(&self, id: SessionId) -> bool {
+        let (tx, rx) = oneshot::channel();
+        if self.tx.send(Job::Restore(id, tx)).is_err() {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+
+    /// Removes a deleted session for good.
+    pub fn purge(&self, id: SessionId) {
+        let _ = self.tx.send(Job::Purge(id));
     }
 
     pub async fn snapshot(&self) -> Vec<IndexRow> {

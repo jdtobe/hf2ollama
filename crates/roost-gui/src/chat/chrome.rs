@@ -341,7 +341,8 @@ fn title_or_rename(
 }
 
 /// Pin and delete, as icons: a pin that fills when the session is pinned, and
-/// a red trash can that asks twice (the second time it says so).
+/// a red trash can that asks twice (the second time it says so; the chat can
+/// then still be undone for a few seconds).
 #[allow(clippy::too_many_arguments)]
 fn header_actions(
     ui: &mut egui::Ui,
@@ -356,6 +357,7 @@ fn header_actions(
     // Right to left: the trash can sits at the far edge, pin next to it.
     let key = s.id.to_string();
     let armed = app.chat_ui.confirm.is_armed(&key, now);
+    let ready = app.chat_ui.confirm.ready(&key, now);
     let del = if armed {
         let label = "Click again to delete";
         let galley = ui.painter().layout_no_wrap(
@@ -367,7 +369,11 @@ fn header_actions(
             egui::vec2(galley.size().x + 24.0, HEADER_BTN),
             egui::Sense::click(),
         );
-        ui.painter().rect_filled(rect, 8.0, t.bad);
+        // Dim until a click would confirm, so it never looks ready when a
+        // click would be ignored.
+        let dim = if ready { 1.0 } else { 0.5 };
+        ui.painter()
+            .rect_filled(rect, 8.0, t.bad.gamma_multiply(dim));
         ui.painter().galley(
             rect.center() - galley.size() / 2.0,
             galley,
@@ -406,7 +412,13 @@ fn header_actions(
         app.chat_ui.probe.delete_button = Some((del.rect, label.to_string()));
     }
     if del.clicked() && app.chat_ui.confirm.click(&key, now) {
-        out.push(BackendRequest::Chat(ChatCommand::Delete(s.id)));
+        let title = app
+            .chat
+            .rows()
+            .iter()
+            .find(|r| r.id == s.id)
+            .map_or_else(|| s.title.clone(), super::state::display_title);
+        super::view::delete_session(app, out, s.id, &title, !incognito, now);
     }
     if !incognito {
         let pin = icon_button(
