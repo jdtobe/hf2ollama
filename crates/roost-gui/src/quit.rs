@@ -98,12 +98,16 @@ pub fn process_close(
     now: Instant,
 ) -> Vec<egui::ViewportCommand> {
     let unsettled = st.jobs.unsettled_ids().len();
+    // Chat and agent runs also make quitting a decision. They do not hold up
+    // the close once chosen: the shutdown at exit ends them and saves what
+    // they have so far.
+    let pending = unsettled + running_chats(st);
     let mut cmds = Vec::new();
-    if close_requested && st.quit.on_close_requested(unsettled) == CloseDecision::Hold {
+    if close_requested && st.quit.on_close_requested(pending) == CloseDecision::Hold {
         cmds.push(egui::ViewportCommand::CancelClose);
     }
-    // Jobs that ended by themselves while the dialog was up: nothing to ask.
-    if st.quit == QuitState::Confirming && unsettled == 0 {
+    // Work that ended by itself while the dialog was up: nothing to ask.
+    if st.quit == QuitState::Confirming && pending == 0 {
         st.quit = QuitState::Idle;
     }
     if st.quit.tick(now, unsettled) {
@@ -112,15 +116,37 @@ pub fn process_close(
     cmds
 }
 
-fn running_text(n: usize) -> String {
-    let count = if n == 1 {
-        "1 download is".to_string()
-    } else {
-        format!("{n} downloads are")
-    };
-    format!(
-        "{count} still running. Quit anyway? Running downloads will be cancelled and their files removed."
-    )
+/// Chats and agents with a run in progress, shown or not.
+fn running_chats(st: &AppState) -> usize {
+    use roost_core::session::SessionMode;
+    st.chat.active_runs_for(SessionMode::Chat) + st.chat.active_runs_for(SessionMode::Agent)
+}
+
+fn running_text(downloads: usize, runs: usize) -> String {
+    let mut parts = Vec::new();
+    if downloads > 0 {
+        parts.push(match downloads {
+            1 => "1 download".to_string(),
+            n => format!("{n} downloads"),
+        });
+    }
+    if runs > 0 {
+        parts.push(match runs {
+            1 => "1 chat or agent run".to_string(),
+            n => format!("{n} chat or agent runs"),
+        });
+    }
+    let verb = if downloads + runs == 1 { "is" } else { "are" };
+    let mut text = format!("{} {verb} still running. Quit anyway?", parts.join(" and "));
+    if downloads > 0 {
+        text.push_str(" Running downloads will be cancelled and their files removed.");
+    }
+    if runs > 0 {
+        text.push_str(
+            " Running chats and agents will be stopped; what they have written so far is kept.",
+        );
+    }
+    text
 }
 
 /// Draws the confirmation while a quit is pending.
@@ -137,6 +163,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, tx: &Sender<BackendRequest>, n
     let dark = ui.visuals().dark_mode;
     let width = (ui.ctx().content_rect().width() - 64.0).clamp(200.0, 440.0);
     let unsettled = st.jobs.unsettled_ids();
+    let runs = running_chats(st);
     let frame = egui::Frame::new()
         .fill(t.surface)
         .stroke(Stroke::new(1.0, t.line))
@@ -155,9 +182,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, tx: &Sender<BackendRequest>, n
                     .color(t.fg),
             );
             let body = if cancelling {
-                "Cancelling downloads…".to_string()
+                if unsettled.is_empty() {
+                    "Stopping…".to_string()
+                } else {
+                    "Cancelling downloads…".to_string()
+                }
             } else {
-                running_text(unsettled.len())
+                running_text(unsettled.len(), runs)
             };
             ui.add(egui::Label::new(RichText::new(body).size(13.0).color(t.fg2)).wrap());
             ui.add_space(4.0);

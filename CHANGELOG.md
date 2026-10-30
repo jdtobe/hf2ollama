@@ -75,6 +75,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - In an agent's Individual tools list, each tool shows how much it can return (for example `list_dir  200 entries`). Clicking it shows all of that tool's limits, with a button that opens Settings, Tools, where they are changed.
 
+### Quitting with work in progress
+
+- Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
+
 ### One sidebar
 
 - Chat, Work and Models share one left column of the same width (340 by default, as wide as the Models list was). Drag its right edge to change it, between 280 and 520 points; a narrow window limits it so the page beside it keeps at least 540. The width you choose is remembered between runs and is the same on every tab. Saving it (and changing the theme or the auto-dismiss time) no longer restarts the download engine: only settings the engines use (the Ollama address, the staging folder, the delete/keep options, simultaneous downloads, the Hugging Face address and keep-alive) rebuild them. Before, any settings change did, which let a download started afterwards ignore the simultaneous-downloads limit.
