@@ -778,8 +778,10 @@ fn row_note(row: &RailRow) -> Option<(&'static str, bool)> {
         (RowStatus::Quarantined, _) => Some(("Damaged, set aside", true)),
         (RowStatus::NewerSchema, _) => Some(("Made by a newer Roost", true)),
         (RowStatus::Unreadable, _) => Some(("Could not be read", true)),
-        (_, RunBadge::Waiting) => Some(("Waiting for model", false)),
-        (_, RunBadge::Running) => Some(("Replying…", false)),
+        (_, RunBadge::Waiting) if row.mode == SessionMode::Chat => {
+            Some(("Waiting for model", false))
+        }
+        (_, RunBadge::Running) if row.mode == SessionMode::Chat => Some(("Replying…", false)),
         _ => None,
     }
 }
@@ -813,23 +815,119 @@ fn rail_row(
         (true, false) => 30.0,
         (true, true) => 76.0,
     };
-    let left = rect.left() + 10.0 + if row.pinned { 10.0 } else { 0.0 };
-    if row.pinned {
-        ui.painter().circle_filled(
-            egui::pos2(rect.left() + 10.0, rect.top() + 15.0),
-            3.0,
-            t.accent,
+    let incognito = row.lifetime == SessionLifetime::Incognito;
+    let agent = row.mode == SessionMode::Agent;
+    // A small icon marks a pinned or an incognito row.
+    let marked = row.pinned || incognito;
+    let left = rect.left() + 10.0 + if marked { 18.0 } else { 0.0 };
+    if marked {
+        let slot = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 17.0, rect.top() + 16.0),
+            vec2(14.0, 14.0),
+        );
+        if row.pinned {
+            crate::icons::paint(ui.painter(), slot, crate::icons::Icon::Pin, t.accent);
+        } else {
+            crate::icons::paint(ui.painter(), slot, crate::icons::Icon::Incognito, t.fg3);
+        }
+    }
+    if incognito {
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.left() + 1.0, rect.top() + 8.0),
+                egui::pos2(rect.left() + 1.0, rect.bottom() - 8.0),
+            ],
+            Stroke::new(2.0, t.line),
         );
     }
-    let width = rect.right() - left - 10.0 - reserved;
-    let title = truncated(ui, &row.title, FontId::proportional(13.5), t.fg, width);
+    // What is shown at the right of the title: a badge, or the time.
+    let right_edge = rect.right() - 10.0 - reserved;
+    let (side, side_is_badge) = if row.needs_you {
+        (Some(("Needs you", t.warn, t.warn_soft)), true)
+    } else if agent && row.badge != RunBadge::None {
+        (Some(("Working", t.accent, t.accent_soft)), true)
+    } else {
+        (None, false)
+    };
+    let time = if row.empty || row.updated_at_ms == 0 {
+        String::new()
+    } else {
+        super::state::row_time(row.updated_at_ms, now_ms())
+    };
+    let mut side_w = 0.0;
+    if let Some((text, ink, fill)) = side {
+        let g = ui
+            .painter()
+            .layout_no_wrap(text.to_string(), FontId::proportional(11.0), ink);
+        let pill = egui::Rect::from_min_size(
+            egui::pos2(right_edge - g.size().x - 14.0, rect.top() + 6.0),
+            vec2(g.size().x + 14.0, 18.0),
+        );
+        ui.painter().rect_filled(pill, 9.0, fill);
+        ui.painter().galley(
+            egui::pos2(pill.left() + 7.0, pill.center().y - g.size().y / 2.0),
+            g,
+            ink,
+        );
+        side_w = pill.width() + 6.0;
+    } else if !time.is_empty() {
+        let g = ui
+            .painter()
+            .layout_no_wrap(time, FontId::proportional(11.0), t.fg3);
+        let at = egui::pos2(right_edge - g.size().x, rect.top() + 9.0);
+        side_w = g.size().x + 8.0;
+        ui.painter().galley(at, g, t.fg3);
+    }
+    let _ = side_is_badge;
+    let width = rect.right() - left - 10.0 - reserved - side_w;
+    // A chat with nothing in it yet is a quiet "New chat" in italics.
+    let (title_text, title_color, italic) =
+        if row.empty && row.title == roost_core::session::UNTITLED {
+            (
+                if agent { "New agent" } else { "New chat" }.to_string(),
+                t.fg3,
+                true,
+            )
+        } else {
+            (row.title.clone(), t.fg, false)
+        };
+    let title = {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            title_text,
+            FontId::proportional(13.5),
+            title_color,
+        );
+        if italic {
+            for section in &mut job.sections {
+                section.format.italics = true;
+            }
+        }
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
+        ui.painter().layout_job(job)
+    };
     ui.painter()
-        .galley(egui::pos2(left, rect.top() + 7.0), title, t.fg);
+        .galley(egui::pos2(left, rect.top() + 7.0), title, title_color);
     let (sub, color) = match row_note(row) {
         Some((text, bad)) => (text.to_string(), if bad { t.bad } else { t.accent }),
-        None => (row.model.clone(), t.fg3),
+        None if row.empty => ("No messages yet".to_string(), t.fg3),
+        None if incognito => ("Incognito · not saved".to_string(), t.fg3),
+        None if agent => match &row.folder {
+            Some(path) => (
+                super::chrome::home_relative(std::path::Path::new(path)),
+                t.fg3,
+            ),
+            None => (row.last.clone(), t.fg3),
+        },
+        None if row.last.is_empty() => (row.model.clone(), t.fg3),
+        None => (row.last.clone(), t.fg3),
     };
     let sub_width = rect.right() - left - 10.0;
+    let sub =
+        if agent && row.folder.is_some() && row_note(row).is_none() && !row.empty && !incognito {
+            crate::widgets::ellipsize_middle(ui, &sub, FontId::proportional(11.5), sub_width)
+        } else {
+            sub
+        };
     let sub = truncated(ui, &sub, FontId::proportional(11.5), color, sub_width);
     ui.painter()
         .galley(egui::pos2(left, rect.top() + 26.0), sub, color);

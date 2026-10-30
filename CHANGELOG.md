@@ -97,6 +97,12 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Deleting a chat still takes a click and a confirming click (on the sidebar row's trash can and on the header's), and then a small "Deleted … Undo" notice stays for 10 seconds; Undo brings the chat back as it was. The sidebar's x is now a gray trash can (red on hover). A second click inside the first 0.1 seconds is ignored, so a quick double-click can never delete (this pause was 0.6 seconds, long enough to make the confirm look ready when it was not; it is now 0.1 s for chats, installed models and Clear cached files).
 - A deleted chat waits in a `trash` folder inside the history folder, and is removed for good when the notice goes away, when you delete another chat, or at the next start. Incognito chats have nothing on disk and cannot be brought back.
 
+### A richer history list
+
+- Each row in the sidebar now shows the start of the last message (yours or the reply) instead of the model name, which was the same on every row, and the time at the right: the clock for today, the date for earlier. A chat with nothing in it reads "New chat" in grey italics with "No messages yet". An incognito row has an eye icon, a thin edge on the left and "Incognito · not saved". A pinned row has a pin icon.
+- On the Work tab the second line is the agent's folder (with `~`, cut in the middle when it is long), and a badge at the right says **Working** while a run is going and **Needs you** (amber) when an approval or a question waits.
+- The saved list (`index-v1.json`) gains the last message and the folder; an older index is refreshed the first time it is opened.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
