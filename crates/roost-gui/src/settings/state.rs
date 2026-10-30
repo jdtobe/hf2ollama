@@ -9,7 +9,7 @@ use super::validate::{
 use crate::browse::results::format_size;
 use crate::confirm::Confirm;
 use crate::runtime::{BackendRequest, CachedRow, HfToken, HfTokenStatus};
-use roost_core::config::{AutoDismiss, KeepAlive, Settings, ThemeFamily, ThemeMode};
+use roost_core::config::{AutoDismiss, KeepAlive, Notifications, Settings, ThemeFamily, ThemeMode};
 use roost_core::fit::Machine;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -37,6 +37,7 @@ pub struct SettingsChange {
     pub keep_alive: bool,
     pub agents_can_write: bool,
     pub agents_can_run: bool,
+    pub notifications: bool,
     pub tools: bool,
 }
 
@@ -58,6 +59,7 @@ impl SettingsChange {
         self.keep_alive |= other.keep_alive;
         self.agents_can_write |= other.agents_can_write;
         self.agents_can_run |= other.agents_can_run;
+        self.notifications |= other.notifications;
         self.tools |= other.tools;
     }
 }
@@ -459,6 +461,13 @@ impl SettingsState {
         self.confirm_run = false;
     }
 
+    pub fn set_notifications(&mut self, s: &mut Settings, v: Notifications) -> SettingsChange {
+        SettingsChange {
+            notifications: Self::flag(&mut s.notifications, v),
+            ..Default::default()
+        }
+    }
+
     pub fn set_keep_alive(&mut self, s: &mut Settings, v: KeepAlive) -> SettingsChange {
         SettingsChange {
             keep_alive: Self::flag(&mut s.keep_alive, v),
@@ -756,6 +765,7 @@ mod tests {
             (c.keep_alive, "keep_alive"),
             (c.agents_can_write, "agents_can_write"),
             (c.agents_can_run, "agents_can_run"),
+            (c.notifications, "notifications"),
             (c.tools, "tools"),
         ] {
             if on {
@@ -878,6 +888,12 @@ mod tests {
             ["keep_alive"]
         );
         assert_eq!(s.keep_alive, KeepAlive::OneHour);
+        assert_eq!(
+            flags(st.set_notifications(&mut s, Notifications::Off)),
+            ["notifications"]
+        );
+        assert_eq!(s.notifications, Notifications::Off);
+        assert!(!st.set_notifications(&mut s, Notifications::Off).any());
         assert_eq!(flags(st.set_theme(&mut s, ThemeMode::Dark)), ["theme"]);
         assert_eq!(
             flags(st.set_theme_family(&mut s, ThemeFamily::Plum)),

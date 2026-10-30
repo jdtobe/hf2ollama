@@ -24,7 +24,7 @@ const CARD_NAMES: [&str; 7] = [
     "Tools",
     "Hardware and appearance",
 ];
-const CONTROLS: [&str; 29] = [
+const CONTROLS: [&str; 30] = [
     "ollama-url",
     "ollama-test",
     "select-keepalive",
@@ -41,6 +41,7 @@ const CONTROLS: [&str; 29] = [
     "hf-endpoint",
     "toggle-agent-write",
     "toggle-agent-run",
+    "select-notifications",
     "select-tools-list",
     "select-tools-find",
     "select-tools-search",

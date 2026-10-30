@@ -34,6 +34,13 @@ impl View {
 pub struct AppState {
     /// Reads replies aloud (a fake in tests).
     pub speaker: Box<dyn crate::speech::Speaker>,
+    /// Tells the user something needs them while the window is behind.
+    pub notifier: Box<dyn crate::notify::Notifier>,
+    pub attention: crate::notify::Attention,
+    /// Alerts seen since the last frame, waiting for the window's focus.
+    pub alerts: Vec<(roost_core::session::SessionId, crate::notify::Kind)>,
+    /// The window title last sent, so it is sent only when it changes.
+    pub window_title: String,
     pub view: View,
     pub query: String,
     /// `None` until the first poll answers; then the version if reachable.
@@ -134,6 +141,15 @@ impl AppState {
             jobs: JobsState::new(),
             running: Vec::new(),
             speaker: Box::new(crate::speech::SystemSpeaker::detect()),
+            // Tests must never run the operating system's notification tool.
+            notifier: if cfg!(test) {
+                Box::new(crate::notify::NullNotifier)
+            } else {
+                Box::new(crate::notify::SystemNotifier::detect())
+            },
+            attention: crate::notify::Attention::default(),
+            alerts: Vec::new(),
+            window_title: crate::identity::PRODUCT_NAME.to_string(),
             show_about: false,
             // Tests lay out the content alone; the bar is tested on its own.
             platform: if cfg!(test) {
@@ -305,6 +321,9 @@ impl AppState {
                 None
             }
             UiEvent::Chat(ev) => {
+                if let Some(alert) = crate::notify::kind_of(ev) {
+                    self.alerts.push(alert);
+                }
                 self.chat.fold(ev.clone());
                 None
             }
@@ -636,6 +655,16 @@ impl eframe::App for App {
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let _ = frame;
         self.pump_events();
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let frame_alerts = self.state.deliver_alerts(focused);
+        if frame_alerts.attention {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
+        if let Some(title) = frame_alerts.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
         self.pump_menu(ctx);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         for cmd in self.process_close(close_requested, Instant::now()) {

@@ -14,7 +14,7 @@ use crate::widgets::toggle;
 use eframe::egui::{
     self, vec2, Align, Align2, CornerRadius, Layout, Margin, Rect, RichText, Sense, Stroke,
 };
-use roost_core::config::{AutoDismiss, KeepAlive, Settings, ThemeFamily, ThemeMode};
+use roost_core::config::{AutoDismiss, KeepAlive, Notifications, Settings, ThemeFamily, ThemeMode};
 use roost_core::fit::Machine;
 use state::{
     cached_total, connection_message, detected_line, has_clearable, token_badge, BadgeKind,
@@ -868,6 +868,30 @@ fn agents_card(
                 cx.rec("toggle-agent-run", r.rect);
                 if r.changed() {
                     change.merge(state.set_agents_can_run(settings, on));
+                }
+            },
+        );
+        row(
+            ui,
+            cx,
+            "Tell me when an agent needs me",
+            "An approval is waiting, or a run finished or stopped. While Roost is in the background you get one nudge per visit, and the window title counts what is waiting. Nothing from your files or commands is ever shown in it.",
+            FIELD_H,
+            false,
+            |ui, cx, _| {
+                let options = [
+                    (Notifications::Background, "When Roost is in the background"),
+                    (Notifications::Always, "Always"),
+                    (Notifications::Off, "Off"),
+                ];
+                if let Some(v) = select(
+                    ui,
+                    cx,
+                    "select-notifications",
+                    settings.notifications,
+                    &options,
+                ) {
+                    change.merge(state.set_notifications(settings, v));
                 }
             },
         );
