@@ -5,6 +5,7 @@ pub mod ask;
 pub mod change;
 pub mod command;
 pub mod registry;
+pub mod text_call;
 pub mod tools;
 pub mod workspace;
 

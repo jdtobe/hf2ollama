@@ -420,7 +420,27 @@ impl Manager {
             if steering {
                 self.agent_next(id).await;
             } else {
-                self.end_run(id, RunOutcome::Completed, None).await;
+                // A reply that is only a tool call written as text did not
+                // finish anything: say so instead of calling it an answer.
+                let known: Vec<&str> = registry::specs().iter().map(|s| s.name).collect();
+                let written = self
+                    .sessions
+                    .get(&id)
+                    .and_then(|l| {
+                        l.s.messages.iter().rev().find_map(|m| match &m.content {
+                            crate::session::MessageContent::Assistant { text, .. } => Some(
+                                crate::agent::text_call::tool_calls_written_as_text(text, &known),
+                            ),
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or_default();
+                if written.is_empty() {
+                    self.end_run(id, RunOutcome::Completed, None).await;
+                } else {
+                    self.end_run(id, RunOutcome::TextToolCall, Some(written.join(", ")))
+                        .await;
+                }
             }
             return;
         }

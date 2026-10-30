@@ -3566,3 +3566,48 @@ async fn a_failed_agent_run_saves_the_reason_and_a_chat_saves_nothing() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(h.read(chat).last_run_end, None);
 }
+
+#[tokio::test]
+async fn a_reply_that_is_only_a_tool_call_written_as_text_is_reported_not_called_finished() {
+    use crate::session::RunEnd;
+    let ws = workspace();
+    let srv = fake_agent(vec![chat_route(reply(
+        r#"{"name": "list_dir", "arguments": {}}"#,
+    ))])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "what is in here?").await;
+    h.wait_run_ended(1).await;
+    let (outcome, message) = run_ends(&h.events())[0].clone();
+    assert_eq!(outcome, super::types::RunOutcome::TextToolCall);
+    assert_eq!(message.as_deref(), Some("list_dir"));
+    assert_eq!(
+        chat_bodies(&srv).len(),
+        1,
+        "nothing was run, no second request"
+    );
+    assert_eq!(
+        saved_end(&h, id).await.unwrap().end,
+        RunEnd::TextToolCall {
+            tool: "list_dir".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_ordinary_answer_that_mentions_json_still_finishes_normally() {
+    let ws = workspace();
+    let srv = fake_agent(vec![chat_route(reply(
+        r#"The call would look like {"name": "list_dir", "arguments": {}}, but I did not run it."#,
+    ))])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "show me an example call").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events())[0].0,
+        super::types::RunOutcome::Completed
+    );
+}

@@ -305,6 +305,9 @@ pub enum RunEnd {
     Failed { message: String },
     /// Roost was closed (or crashed) while the run was going.
     Interrupted,
+    /// The reply was a tool call written out as text, so nothing ran. `tool`
+    /// names the tool or tools (separated by commas).
+    TextToolCall { tool: String },
 }
 
 /// A `RunEnd` and where in the conversation it happened.
@@ -1010,6 +1013,9 @@ mod tests {
                 message: "Ollama stopped responding.".into(),
             },
             RunEnd::Interrupted,
+            RunEnd::TextToolCall {
+                tool: "list_dir, read_file".into(),
+            },
         ] {
             s.last_run_end = Some(RunEndNote {
                 end: end.clone(),
