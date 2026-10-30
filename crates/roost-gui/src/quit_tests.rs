@@ -246,3 +246,108 @@ fn held_enter_key_never_confirms_quit_and_cancel() {
     h.frame(vec2(w, hh), vec![key(false, false)], |ui| app.show(ui));
     assert_eq!(cancels(&rx), vec![2, 3]);
 }
+
+// ---- running chats and agents
+
+fn app_with_a_run() -> (App, Receiver<BackendRequest>) {
+    use roost_core::chat::ChatEvent;
+    use roost_core::session::{SessionId, TurnId};
+    let (mut app, rx) = new_app();
+    app.state_mut().chat.fold(ChatEvent::TurnStarted {
+        session: SessionId::new(),
+        turn: TurnId::new(),
+    });
+    (app, rx)
+}
+
+#[test]
+fn closing_with_a_run_in_progress_asks_first_and_says_what_is_running() {
+    for size in SIZES {
+        let (mut app, rx) = app_with_a_run();
+        let mut h = Harness::new(false);
+        let cmds = app.process_close(true, Instant::now());
+        assert!(
+            matches!(cmds.as_slice(), [ViewportCommand::CancelClose]),
+            "{size:?}: {cmds:?}"
+        );
+        assert_eq!(app.state_mut().quit, QuitState::Confirming);
+        run(&mut app, &mut h, size, 4);
+        assert!(app.state_mut().quit_probe.dialog.is_some(), "{size:?}");
+        let texts = h
+            .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+            .join("\n");
+        assert!(
+            texts.contains("1 chat or agent run is still running"),
+            "{size:?}: {texts}"
+        );
+        assert!(!texts.contains("Running downloads"), "{size:?}: {texts}");
+        assert!(cancels(&rx).is_empty());
+    }
+}
+
+#[test]
+fn keeping_a_run_going_dismisses_the_dialog() {
+    let (mut app, _rx) = app_with_a_run();
+    let mut h = Harness::new(false);
+    let size = SIZES[0];
+    app.process_close(true, Instant::now());
+    run(&mut app, &mut h, size, 4);
+    let at = app
+        .state_mut()
+        .quit_probe
+        .keep
+        .expect("Keep running")
+        .center();
+    click(&mut app, &mut h, size, at);
+    assert_eq!(app.state_mut().quit, QuitState::Idle);
+    assert_eq!(
+        app.state_mut().chat.active_runs(),
+        1,
+        "the run was left alone"
+    );
+}
+
+#[test]
+fn quitting_with_a_run_in_progress_closes_without_waiting_for_downloads() {
+    let (mut app, _rx) = app_with_a_run();
+    let mut h = Harness::new(false);
+    let size = SIZES[0];
+    app.process_close(true, Instant::now());
+    run(&mut app, &mut h, size, 4);
+    let at = app
+        .state_mut()
+        .quit_probe
+        .quit
+        .expect("Quit and cancel")
+        .center();
+    click(&mut app, &mut h, size, at);
+    // No download to settle: the window closes on the next frame. The chat
+    // runs are ended by the shutdown that happens when the app exits.
+    let cmds = app.process_close(false, Instant::now());
+    assert!(
+        matches!(cmds.as_slice(), [ViewportCommand::Close]),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn downloads_and_runs_are_named_together() {
+    let (mut app, _rx) = app_with_jobs();
+    app.state_mut()
+        .chat
+        .fold(roost_core::chat::ChatEvent::TurnStarted {
+            session: roost_core::session::SessionId::new(),
+            turn: roost_core::session::TurnId::new(),
+        });
+    let mut h = Harness::new(false);
+    let size = SIZES[0];
+    app.process_close(true, Instant::now());
+    run(&mut app, &mut h, size, 4);
+    let texts = h
+        .frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+        .join("\n");
+    assert!(
+        texts.contains("2 downloads and 1 chat or agent run are still running"),
+        "{texts}"
+    );
+}
