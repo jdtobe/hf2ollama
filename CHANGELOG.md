@@ -94,7 +94,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### Deleting a chat can be undone
 
-- The trash can on a sidebar row (gray, red on hover; it replaces the x) and the trash can in the header delete a chat at once. A small "Deleted … Undo" notice stays for 10 seconds; Undo brings the chat back as it was. The two-click confirmation (which could take three clicks, because a click inside the first 0.6 seconds was ignored) is gone for chats.
+- Deleting a chat still takes a click and a confirming click (on the sidebar row's trash can and on the header's), and then a small "Deleted … Undo" notice stays for 10 seconds; Undo brings the chat back as it was. The sidebar's x is now a gray trash can (red on hover). The confirm button is dimmed for the first 0.6 seconds, which is when a second click is ignored (a quick double-click can never delete), so it no longer looks ready when it is not.
 - A deleted chat waits in a `trash` folder inside the history folder, and is removed for good when the notice goes away, when you delete another chat, or at the next start. Incognito chats have nothing on disk and cannot be brought back.
 
 ### Quitting with work in progress

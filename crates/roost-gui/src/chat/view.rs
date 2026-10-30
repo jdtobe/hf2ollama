@@ -785,8 +785,8 @@ fn row_note(row: &RailRow) -> Option<(&'static str, bool)> {
 }
 
 /// One rail row. Clicking it opens the session; the trash can at its right
-/// (shown on hover and on the selected row) deletes it, with an Undo for a few
-/// seconds.
+/// (shown on hover and on the selected row) takes a click and a confirming
+/// second click, then the chat can still be undone for a few seconds.
 fn rail_row(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -799,13 +799,20 @@ fn rail_row(
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     #[cfg(test)]
     app.chat_ui.probe.rows.push((row.id, rect));
-    let show_delete = selected || ui.rect_contains_pointer(rect);
+    let key = row.id.to_string();
+    let armed = app.chat_ui.confirm.is_armed(&key, now);
+    let ready = app.chat_ui.confirm.ready(&key, now);
+    let show_delete = selected || armed || ui.rect_contains_pointer(rect);
     if selected {
         ui.painter().rect_filled(rect, 8.0, t.accent_soft);
     } else if show_delete {
         ui.painter().rect_filled(rect, 8.0, t.surface2);
     }
-    let reserved = if show_delete { 30.0 } else { 0.0 };
+    let reserved = match (show_delete, armed) {
+        (false, _) => 0.0,
+        (true, false) => 30.0,
+        (true, true) => 76.0,
+    };
     let left = rect.left() + 10.0 + if row.pinned { 10.0 } else { 0.0 };
     if row.pinned {
         ui.painter().circle_filled(
@@ -829,43 +836,70 @@ fn rail_row(
 
     let mut delete_clicked = false;
     if show_delete {
-        let del_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.right() - 17.0, rect.top() + 17.0),
-            vec2(22.0, 22.0),
-        );
+        let del_rect = if armed {
+            egui::Rect::from_min_max(
+                egui::pos2(rect.right() - 8.0 - 62.0, rect.top() + 6.0),
+                egui::pos2(rect.right() - 8.0, rect.top() + 28.0),
+            )
+        } else {
+            egui::Rect::from_center_size(
+                egui::pos2(rect.right() - 17.0, rect.top() + 17.0),
+                vec2(22.0, 22.0),
+            )
+        };
         #[cfg(test)]
         app.chat_ui
             .probe
             .rail_delete
-            .push((row.id, del_rect, false));
+            .push((row.id, del_rect, armed));
         let hit = ui
             .interact(del_rect, resp.id.with("delete"), Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(if row.lifetime == SessionLifetime::Incognito {
-                "Delete chat"
+            .on_hover_text(if armed {
+                "Click again to delete this chat (you can undo it for a few seconds)"
             } else {
-                "Delete chat (you can undo it for a few seconds)"
+                "Delete chat"
             });
-        if hit.hovered() {
+        if armed {
+            // Dim until a click would confirm (the pause that stops a
+            // double-click from deleting), so the button never looks ready
+            // when it is not.
+            let dim = if ready { 1.0 } else { 0.45 };
             ui.painter()
-                .circle_filled(del_rect.center(), 11.0, t.surface);
+                .rect_filled(del_rect, 6.0, t.bad_soft.gamma_multiply(dim));
+            ui.painter().text(
+                del_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Delete?",
+                semibold(12.0),
+                t.bad.gamma_multiply(dim),
+            );
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        } else {
+            if hit.hovered() {
+                ui.painter()
+                    .circle_filled(del_rect.center(), 11.0, t.surface);
+            }
+            crate::icons::paint(
+                ui.painter(),
+                del_rect,
+                crate::icons::Icon::Trash,
+                if hit.hovered() { t.bad } else { t.fg3 },
+            );
         }
-        crate::icons::paint(
-            ui.painter(),
-            del_rect,
-            crate::icons::Icon::Trash,
-            if hit.hovered() { t.bad } else { t.fg3 },
-        );
         if hit.clicked() {
             delete_clicked = true;
-            delete_session(
-                app,
-                out,
-                row.id,
-                &row.title,
-                row.lifetime == SessionLifetime::Persisted,
-                now,
-            );
+            if app.chat_ui.confirm.click(&key, now) {
+                delete_session(
+                    app,
+                    out,
+                    row.id,
+                    &row.title,
+                    row.lifetime == SessionLifetime::Persisted,
+                    now,
+                );
+            }
         }
     }
     resp.clicked() && !delete_clicked

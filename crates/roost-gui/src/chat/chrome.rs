@@ -341,7 +341,8 @@ fn title_or_rename(
 }
 
 /// Pin and delete, as icons: a pin that fills when the session is pinned, and
-/// a red trash can that deletes at once (with an Undo for a few seconds).
+/// a red trash can that asks twice (the second time it says so; the chat can
+/// then still be undone for a few seconds).
 #[allow(clippy::too_many_arguments)]
 fn header_actions(
     ui: &mut egui::Ui,
@@ -354,28 +355,63 @@ fn header_actions(
     now: Instant,
 ) {
     // Right to left: the trash can sits at the far edge, pin next to it.
-    let (rect, del) =
-        ui.allocate_exact_size(egui::vec2(HEADER_BTN, HEADER_BTN), egui::Sense::click());
-    let del = del
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if incognito {
-            "Delete this session"
-        } else {
-            "Delete this session (you can undo it for a few seconds)"
-        });
-    ui.painter().rect(
-        rect,
-        8.0,
-        if del.hovered() { t.bad_soft } else { t.surface },
-        egui::Stroke::new(1.0, t.bad.gamma_multiply(0.6)),
-        egui::StrokeKind::Inside,
-    );
-    crate::icons::paint(ui.painter(), rect, Icon::Trash, t.bad);
+    let key = s.id.to_string();
+    let armed = app.chat_ui.confirm.is_armed(&key, now);
+    let ready = app.chat_ui.confirm.ready(&key, now);
+    let del = if armed {
+        let label = "Click again to delete";
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(),
+            egui::FontId::proportional(12.5),
+            egui::Color32::WHITE,
+        );
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(galley.size().x + 24.0, HEADER_BTN),
+            egui::Sense::click(),
+        );
+        // Dim until a click would confirm, so it never looks ready when a
+        // click would be ignored.
+        let dim = if ready { 1.0 } else { 0.5 };
+        ui.painter()
+            .rect_filled(rect, 8.0, t.bad.gamma_multiply(dim));
+        ui.painter().galley(
+            rect.center() - galley.size() / 2.0,
+            galley,
+            egui::Color32::WHITE,
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+        resp
+    } else {
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(HEADER_BTN, HEADER_BTN), egui::Sense::click());
+        let resp = resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Delete this session…");
+        ui.painter().rect(
+            rect,
+            8.0,
+            if resp.hovered() {
+                t.bad_soft
+            } else {
+                t.surface
+            },
+            egui::Stroke::new(1.0, t.bad.gamma_multiply(0.6)),
+            egui::StrokeKind::Inside,
+        );
+        crate::icons::paint(ui.painter(), rect, Icon::Trash, t.bad);
+        resp
+    };
     #[cfg(test)]
     {
-        app.chat_ui.probe.delete_button = Some((del.rect, "Delete".to_string()));
+        let label = if armed {
+            "Click again to delete"
+        } else {
+            "Delete…"
+        };
+        app.chat_ui.probe.delete_button = Some((del.rect, label.to_string()));
     }
-    if del.clicked() {
+    if del.clicked() && app.chat_ui.confirm.click(&key, now) {
         let title = app
             .chat
             .rows()
