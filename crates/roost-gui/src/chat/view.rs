@@ -1202,6 +1202,12 @@ fn run_end_words(end: &roost_core::session::RunEnd) -> (String, Option<String>) 
             "Roost was closed during this run".into(),
             Some("Continue picks up from where it stopped.".into()),
         ),
+        RunEnd::TextToolCall { tool } => (
+            "The reply is a tool call written as text".into(),
+            Some(format!(
+                "Nothing ran ({tool}). This model may not handle tools well here; try another model."
+            )),
+        ),
     }
 }
 
@@ -1248,12 +1254,15 @@ fn run_end_banner(
     let (fill, edge) = match note.end {
         RunEnd::Failed { .. } => (t.bad_soft, t.bad),
         RunEnd::Stopped => (t.surface, t.line),
-        RunEnd::StepLimit { .. } | RunEnd::Interrupted => (t.warn_soft, t.warn),
+        RunEnd::StepLimit { .. } | RunEnd::Interrupted | RunEnd::TextToolCall { .. } => {
+            (t.warn_soft, t.warn)
+        }
     };
-    let button = if matches!(note.end, RunEnd::Failed { .. }) {
-        "Try again"
-    } else {
-        "Continue"
+    // Going on does not help when the model cannot make tool calls.
+    let button = match note.end {
+        RunEnd::Failed { .. } => Some("Try again"),
+        RunEnd::TextToolCall { .. } => None,
+        _ => Some("Continue"),
     };
     let mut go = false;
     let mut steps = match note.end {
@@ -1276,6 +1285,9 @@ fn run_end_banner(
             if let Some(sub) = &sub {
                 ui.add(egui::Label::new(RichText::new(sub).size(12.0).color(t.fg2)).wrap());
             }
+            let Some(button) = button else {
+                return;
+            };
             ui.add_space(6.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let r = primary_button(ui, button, true);
