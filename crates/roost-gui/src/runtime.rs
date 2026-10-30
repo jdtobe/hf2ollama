@@ -892,7 +892,11 @@ mod tests {
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    const WAIT: Duration = Duration::from_secs(5);
+    /// How long a test waits for an event before it fails. Every wait returns
+    /// as soon as its event arrives, so this only matters when something is
+    /// wrong; it is long because a loaded CI runner (Windows) took more than
+    /// five seconds for an end-to-end agent run.
+    const WAIT: Duration = Duration::from_secs(30);
 
     struct Harness {
         tx: Sender<BackendRequest>,
