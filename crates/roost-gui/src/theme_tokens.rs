@@ -28,6 +28,23 @@ pub struct Tokens {
     pub bad_soft: Color32,
 }
 
+impl Tokens {
+    /// The sidebar's list: half way from the surface to the theme's light tint.
+    pub fn side_list(&self) -> Color32 {
+        self.surface.lerp_to_gamma(self.accent_soft, 0.5)
+    }
+
+    /// The band behind the sidebar's search field and buttons: the full tint.
+    pub fn side_band(&self) -> Color32 {
+        self.accent_soft
+    }
+
+    /// The sidebar's divider on its right edge: a darker tint.
+    pub fn side_edge(&self) -> Color32 {
+        self.accent_soft.lerp_to_gamma(self.accent, 0.3)
+    }
+}
+
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }

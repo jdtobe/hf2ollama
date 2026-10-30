@@ -304,10 +304,10 @@ fn show_mode(
     // its right edge. A border on all four sides doubled up with the bars
     // above and below it.
     let frame = egui::Frame::new()
-        .fill(t.surface)
+        .fill(t.side_list())
         .inner_margin(Margin::same(12));
     let wanted = app.settings.sidebar_width;
-    let ((), width) = crate::sidebar::show(ui, wanted, frame, |ui| {
+    let ((), width) = crate::sidebar::show(ui, wanted, frame, t.side_edge(), |ui| {
         #[cfg(test)]
         {
             app.chat_ui.probe.rail = Some(ui.max_rect());
@@ -381,6 +381,12 @@ fn rail(
     mode: SessionMode,
 ) {
     let model = app.chat.default_model(installed);
+    // The search field and the two new buttons sit on a band of the theme's
+    // light tint that runs to the edges of the sidebar.
+    let band = ui.painter().add(egui::Shape::Noop);
+    let band_left = ui.max_rect().left() - 12.0;
+    let band_right = ui.max_rect().right() + 12.0;
+    let band_top = ui.max_rect().top() - 12.0;
     let mut start = None;
     let ready = model.is_some();
     let hint = "Install a model first (Models), then start one.";
@@ -452,6 +458,18 @@ fn rail(
             }));
         }
     }
+    ui.add_space(10.0);
+    ui.painter().set(
+        band,
+        egui::Shape::rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(band_left, band_top),
+                egui::pos2(band_right, ui.cursor().min.y),
+            ),
+            0.0,
+            t.side_band(),
+        ),
+    );
     ui.add_space(8.0);
     rail_list(ui, app, out, t, mode);
 }
@@ -814,9 +832,20 @@ fn rail_row(
     let ready = app.chat_ui.confirm.ready(&key, now);
     let show_delete = selected || armed || ui.rect_contains_pointer(rect);
     if selected {
-        ui.painter().rect_filled(rect, 8.0, t.accent_soft);
+        // A white row with a dark edge on its left, on the tinted list.
+        ui.painter().rect_filled(rect, 8.0, t.surface);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(rect.min, vec2(3.0, rect.height())),
+            egui::CornerRadius {
+                nw: 8,
+                sw: 8,
+                ne: 0,
+                se: 0,
+            },
+            t.accent,
+        );
     } else if show_delete {
-        ui.painter().rect_filled(rect, 8.0, t.surface2);
+        ui.painter().rect_filled(rect, 8.0, t.side_band());
     }
     let reserved = match (show_delete, armed) {
         (false, _) => 0.0,

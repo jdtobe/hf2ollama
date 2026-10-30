@@ -13,11 +13,13 @@ const ROW_H: f32 = 82.0;
 
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
-    // Flat, like the Chat and Work sidebar: no border of its own.
-    let frame = egui::Frame::new().fill(t.surface);
+    // Flat, like the Chat and Work sidebar: the list in the half tint, the
+    // search and filters on a band of the full tint, one divider on the right.
+    let frame = egui::Frame::new().fill(t.side_list());
     let wanted = app.settings.sidebar_width;
-    let (rect, width) = crate::sidebar::show(ui, wanted, frame, |ui| {
+    let (rect, width) = crate::sidebar::show(ui, wanted, frame, t.side_edge(), |ui| {
         egui::Frame::new()
+            .fill(t.side_band())
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -138,14 +140,14 @@ fn installed_section(
 pub fn paint_row(ui: &egui::Ui, t: &Tokens, rect: Rect, hovered: bool, selected: bool) {
     let p = ui.painter();
     if selected {
-        p.rect_filled(rect, 0.0, t.accent_soft);
+        p.rect_filled(rect, 0.0, t.surface);
         p.rect_filled(
             Rect::from_min_size(rect.min, vec2(3.0, rect.height())),
             0.0,
             t.accent,
         );
     } else if hovered {
-        p.rect_filled(rect, 0.0, t.surface2);
+        p.rect_filled(rect, 0.0, t.side_band());
     }
     p.hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, t.line));
 }

@@ -122,6 +122,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - The top bar has a 4 px strip of the theme colour along its top edge, and the tabs are flat: no grey track and no pill; the active tab is bold in the theme colour with an underline of it, and the others are grey. Settings (the gear) is not a tab, so nothing is underlined there.
 
+### A tinted sidebar
+
+- The sidebar (Chat, Work and Models) takes colour from the theme: the list is a half-strength tint of the theme's light colour, the search field and buttons (and, on Models, the filters) sit on a band of the full tint, the selected row is white with a dark 3 px edge on its left, and the divider on the sidebar's right is a darker tint. The tints are worked out from each theme's own colours, so all four families and both modes get a matching sidebar.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
