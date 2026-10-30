@@ -149,6 +149,26 @@ pub enum TurnOutcome {
     Interrupted,
 }
 
+/// What to remember of how a run ended, if it did not finish normally.
+/// `after` is the number of messages the chat had then.
+pub fn run_end_note(
+    outcome: RunOutcome,
+    message: Option<&str>,
+    step_budget: u32,
+    after: usize,
+) -> Option<crate::session::RunEndNote> {
+    use crate::session::{RunEnd, RunEndNote};
+    let end = match outcome {
+        RunOutcome::Completed => return None,
+        RunOutcome::BudgetExhausted => RunEnd::StepLimit { steps: step_budget },
+        RunOutcome::Cancelled => RunEnd::Stopped,
+        RunOutcome::Failed => RunEnd::Failed {
+            message: message.unwrap_or_default().to_string(),
+        },
+    };
+    Some(RunEndNote { end, after })
+}
+
 /// How a whole run (one chat reply, or an agent's loop of steps) ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {

@@ -430,6 +430,17 @@ impl ChatState {
                 outcome,
                 message,
             } => {
+                // An agent keeps how its run ended; the core saves the same.
+                if let Some(open) = self.open.as_mut().filter(|o| {
+                    o.id == session && o.mode == roost_core::session::SessionMode::Agent
+                }) {
+                    open.last_run_end = roost_core::chat::run_end_note(
+                        outcome,
+                        message.as_deref(),
+                        open.step_budget,
+                        open.messages.len(),
+                    );
+                }
                 self.active.remove(&session);
                 self.approvals.remove(&session);
                 self.questions.remove(&session);
@@ -649,6 +660,19 @@ impl ChatState {
         }
         self.sending.insert(id);
         SendAttempt::Sent(ChatCommand::Send { session: id, text })
+    }
+
+    /// Sends "Continue" for an agent whose run ended early, without touching
+    /// what is typed in the input.
+    pub fn try_continue(&mut self, id: SessionId) -> SendAttempt {
+        if self.is_running(id) || self.sending.contains(&id) {
+            return SendAttempt::Busy;
+        }
+        self.sending.insert(id);
+        SendAttempt::Sent(ChatCommand::Send {
+            session: id,
+            text: "Continue".into(),
+        })
     }
 
     /// Marks a retry as in flight so a second press does nothing.
@@ -900,6 +924,70 @@ mod tests {
         let mut r = roost_core_row(&s);
         r.title = title.into();
         r
+    }
+
+    #[test]
+    fn an_agent_whose_run_ends_early_keeps_the_reason_in_the_open_chat() {
+        use roost_core::session::{RunEnd, SessionMode};
+        let dir = std::env::temp_dir().join("a-project");
+        let mut agent = Session::new_agent("m", SessionLifetime::Persisted, dir, 1_000).unwrap();
+        agent.push_user("go", 1_100);
+        let mut st = ChatState::default();
+        st.fold(ChatEvent::Opened(Box::new(agent.clone())));
+        st.fold(ChatEvent::RunEnded {
+            session: agent.id,
+            outcome: RunOutcome::BudgetExhausted,
+            message: Some("Stopped after using all 20 steps.".into()),
+        });
+        let note = st.open.as_ref().unwrap().last_run_end.clone().unwrap();
+        assert_eq!(note.end, RunEnd::StepLimit { steps: 20 });
+        assert_eq!(note.after, 1);
+        // A normal finish clears it, and a chat never gets one.
+        st.fold(ChatEvent::RunEnded {
+            session: agent.id,
+            outcome: RunOutcome::Completed,
+            message: None,
+        });
+        assert!(st.open.as_ref().unwrap().last_run_end.is_none());
+        let chat = Session::new_chat("m", SessionLifetime::Persisted, 1_000);
+        st.fold(ChatEvent::Opened(Box::new(chat.clone())));
+        st.fold(ChatEvent::RunEnded {
+            session: chat.id,
+            outcome: RunOutcome::Cancelled,
+            message: None,
+        });
+        assert!(st.open.as_ref().unwrap().last_run_end.is_none());
+        assert_eq!(st.open.as_ref().unwrap().mode, SessionMode::Chat);
+    }
+
+    #[test]
+    fn the_step_count_follows_every_model_turn_of_a_run_through_tool_calls_and_steering() {
+        let (mut st, s, turn) = started();
+        assert_eq!(st.step_of(s.id), 1);
+        let mut last = turn;
+        for n in 2..=8 {
+            st.fold(ChatEvent::TurnEnded {
+                session: s.id,
+                turn: last,
+                outcome: TurnOutcome::Completed,
+                message: None,
+                prompt_eval_count: None,
+            });
+            // Between turns a tool runs: the run is still going.
+            assert!(st.is_running(s.id), "step {n}: still busy between turns");
+            last = TurnId::new();
+            st.fold(ChatEvent::TurnStarted {
+                session: s.id,
+                turn: last,
+            });
+            assert_eq!(st.step_of(s.id), n, "step {n}");
+        }
+        st.fold(ChatEvent::RunEnded {
+            session: s.id,
+            outcome: RunOutcome::Completed,
+            message: None,
+        });
+        assert_eq!(st.step_of(s.id), 0, "the next run starts again at 1");
     }
 
     #[test]

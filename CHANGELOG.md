@@ -103,6 +103,12 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - On the Work tab the second line is the agent's folder (with `~`, cut in the middle when it is long), and a badge at the right says **Working** while a run is going and **Needs you** (amber) when an approval or a question waits.
 - The saved list (`index-v1.json`) gains the last message and the folder; an older index is refreshed the first time it is opened.
 
+### Why an agent's run stopped
+
+- When an agent's run ends early, the chat now says why at the end of the transcript, and the reason is saved with the chat, so it is still there after you leave the chat or restart Roost. The four endings: it used all its steps (with a Steps box, filled with 30 more than before, and **Continue**), you stopped it (**Continue**), a model turn failed with the reason (**Try again**), and Roost was closed while it was working (**Continue**). The text takes the width; the controls sit below it, at the bottom right. Continue sends a plain "Continue" message, so the chat shows what happened.
+- Once the conversation moves on, the banner becomes a quiet one-line note where the run ended and its buttons go. A run that finishes normally clears the note. Chats do not get one (their failed replies already have Retry).
+- Saved sessions gain an optional `last_run_end` field; older files load as before.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

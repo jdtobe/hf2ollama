@@ -3497,3 +3497,154 @@ fn an_agent_row_shows_its_folder_and_a_working_or_needs_you_badge() {
         assert!(texts.contains("Needs you"), "{size:?}\n{texts}");
     }
 }
+
+// ------------------------------------------------------ how a run ended
+
+fn end_the_run_with(app: &mut App, end: roost_core::session::RunEnd, behind: usize) {
+    let open = app.state_mut().chat.open.as_mut().unwrap();
+    let after = open.messages.len().saturating_sub(behind);
+    open.last_run_end = Some(roost_core::session::RunEndNote { end, after });
+}
+
+#[test]
+fn a_run_that_hit_its_step_limit_says_so_and_offers_a_bigger_budget() {
+    use roost_core::session::RunEnd;
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        end_the_run_with(&mut app, RunEnd::StepLimit { steps: 20 }, 0);
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        for want in [
+            "Stopped after using all 20 steps",
+            "It was still working",
+            "Steps",
+            "Continue",
+        ] {
+            assert!(texts.contains(want), "{size:?}: {want}\n{texts}");
+        }
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (banner, go, steps) = (
+            p.run_banner.expect("banner"),
+            p.run_continue.expect("continue"),
+            p.run_steps.expect("steps box"),
+        );
+        assert!(inside(banner, p.pane.unwrap()), "{size:?}: {banner:?}");
+        // The text has the width; the controls sit below it at the bottom right.
+        assert!(banner.width() > 300.0, "{size:?}: {banner:?}");
+        assert!(go.top() > banner.top() + 30.0, "{size:?}: below the text");
+        assert!(go.right() <= banner.right() && go.bottom() <= banner.bottom());
+        assert!(
+            steps.right() <= go.left(),
+            "{size:?}: steps beside Continue"
+        );
+        // Continue sets the budget (20 + 30 = 50) and then sends "Continue".
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, go.center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(),
+                [ChatCommand::SetStepBudget(a, 50), ChatCommand::Send { session, text }]
+                    if *a == s.id && *session == s.id && text == "Continue"),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn stopped_failed_and_interrupted_runs_each_have_their_words_and_a_button() {
+    use roost_core::session::RunEnd;
+    let size = (1180.0, 820.0);
+    let cases = [
+        (RunEnd::Stopped, "You stopped this run", "Continue", false),
+        (
+            RunEnd::Failed {
+                message: "Ollama stopped responding.".into(),
+            },
+            "The run failed",
+            "Try again",
+            false,
+        ),
+        (
+            RunEnd::Interrupted,
+            "Roost was closed during this run",
+            "Continue",
+            false,
+        ),
+    ];
+    for (end, headline, button, has_steps) in cases {
+        let (mut app, sent, s) = agent_fixture();
+        let failed = matches!(end, RunEnd::Failed { .. });
+        end_the_run_with(&mut app, end, 0);
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(texts.contains(headline), "{headline}\n{texts}");
+        assert!(texts.contains(button), "{button}\n{texts}");
+        if failed {
+            assert!(texts.contains("Ollama stopped responding."), "{texts}");
+        }
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert_eq!(p.run_steps.is_some(), has_steps, "{headline}");
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.run_continue.unwrap().center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::Send { session, text }]
+                if *session == s.id && text == "Continue"),
+            "{headline}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn once_the_conversation_moves_on_the_banner_is_a_quiet_line_without_buttons() {
+    use roost_core::session::RunEnd;
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    // The run ended before the last message of the chat.
+    end_the_run_with(&mut app, RunEnd::StepLimit { steps: 20 }, 1);
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(
+        texts.contains("Stopped after using all 20 steps."),
+        "{texts}"
+    );
+    let p = app.state_mut().chat_ui.probe.clone();
+    assert!(p.run_marker.is_some(), "the marker");
+    assert!(
+        p.run_banner.is_none() && p.run_continue.is_none(),
+        "no buttons"
+    );
+    assert!(
+        !texts.contains("Continue gives it a fresh budget"),
+        "{texts}"
+    );
+}
+
+#[test]
+fn no_banner_while_a_run_is_going_and_none_in_a_chat() {
+    use roost_core::session::RunEnd;
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, s) = agent_fixture();
+    end_the_run_with(&mut app, RunEnd::Stopped, 0);
+    app.state_mut().chat.fold(ChatEvent::TurnStarted {
+        session: s.id,
+        turn: TurnId::new(),
+    });
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    assert!(app.state_mut().chat_ui.probe.run_banner.is_none());
+    // A plain chat never shows one, even if the field were set.
+    let mut f = fixture();
+    f.app.state_mut().chat.open.as_mut().unwrap().last_run_end =
+        Some(roost_core::session::RunEndNote {
+            end: RunEnd::Stopped,
+            after: 0,
+        });
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 4);
+    let p = f.app.state_mut().chat_ui.probe.clone();
+    assert!(p.run_banner.is_none() && p.run_marker.is_none());
+}

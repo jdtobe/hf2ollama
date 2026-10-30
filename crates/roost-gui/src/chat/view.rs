@@ -68,6 +68,8 @@ pub struct ChatUi {
     pub confirm: Confirm,
     /// The chat that was just deleted and can still be brought back.
     pub undo: Option<UndoToast>,
+    /// The step budget typed beside Continue, per agent chat.
+    pub continue_steps: std::collections::HashMap<SessionId, u32>,
     /// A rail row that cannot be opened (damaged, newer, unreadable).
     pub inspect: Option<SessionId>,
     /// Put the cursor in the composer on the next frame.
@@ -191,6 +193,10 @@ pub struct ChatProbe {
     pub pin_button: Option<egui::Rect>,
     pub rename_button: Option<egui::Rect>,
     pub new_button: Option<egui::Rect>,
+    pub run_banner: Option<egui::Rect>,
+    pub run_continue: Option<egui::Rect>,
+    pub run_steps: Option<egui::Rect>,
+    pub run_marker: Option<egui::Rect>,
     pub undo_toast: Option<egui::Rect>,
     pub undo_button: Option<egui::Rect>,
     pub incognito_button: Option<egui::Rect>,
@@ -1112,8 +1118,32 @@ fn pane(
         .stick_to_bottom(true)
         .show(ui, |ui| {
             let last = s.messages.len().saturating_sub(1);
+            let marker_at = s
+                .last_run_end
+                .as_ref()
+                .filter(|n| s.mode == SessionMode::Agent && n.after < s.messages.len())
+                .map(|n| n.after);
+            let mut marker_done = false;
             let mut i = 0;
             while i < s.messages.len() {
+                // The marker goes above the first item that starts at or after
+                // the point where the run ended (a folded group of tool calls
+                // counts as one item).
+                let item_end = if matches!(s.messages[i].content, MessageContent::Tool { .. }) {
+                    let mut end = i;
+                    while end < s.messages.len()
+                        && matches!(s.messages[end].content, MessageContent::Tool { .. })
+                    {
+                        end += 1;
+                    }
+                    end
+                } else {
+                    i + 1
+                };
+                if !marker_done && marker_at.is_some_and(|at| at < item_end) {
+                    marker_done = true;
+                    run_end_marker(ui, t, app, s);
+                }
                 let m = &s.messages[i];
                 if matches!(m.content, MessageContent::Tool { .. }) {
                     let mut end = i;
@@ -1150,7 +1180,140 @@ fn pane(
                 }
                 i += 1;
             }
+            run_end_banner(ui, t, app, out, s);
         });
+}
+
+/// What the banner and the marker say about how a run ended: a headline and
+/// an optional second line.
+fn run_end_words(end: &roost_core::session::RunEnd) -> (String, Option<String>) {
+    use roost_core::session::RunEnd;
+    match end {
+        RunEnd::StepLimit { steps } => (
+            format!("Stopped after using all {steps} steps"),
+            Some("It was still working. Continue gives it a fresh budget.".into()),
+        ),
+        RunEnd::Stopped => ("You stopped this run".into(), None),
+        RunEnd::Failed { message } => (
+            "The run failed".into(),
+            (!message.is_empty()).then(|| message.clone()),
+        ),
+        RunEnd::Interrupted => (
+            "Roost was closed during this run".into(),
+            Some("Continue picks up from where it stopped.".into()),
+        ),
+    }
+}
+
+/// One quiet line where a run ended, once the conversation has moved on.
+fn run_end_marker(ui: &mut egui::Ui, t: &Tokens, app: &mut AppState, s: &Session) {
+    let Some(note) = &s.last_run_end else {
+        return;
+    };
+    let (title, _) = run_end_words(&note.end);
+    let r =
+        ui.add(egui::Label::new(RichText::new(format!("{title}.")).size(12.0).color(t.fg3)).wrap());
+    ui.add_space(6.0);
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.run_marker = Some(r.rect);
+    }
+    let _ = (r, app);
+}
+
+/// At the end of an agent chat whose last run stopped early: why, and a way
+/// to go on. The text takes the width; the controls sit below it, at the
+/// bottom right.
+fn run_end_banner(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+) {
+    use roost_core::session::RunEnd;
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.run_banner = None;
+        app.chat_ui.probe.run_continue = None;
+        app.chat_ui.probe.run_steps = None;
+    }
+    let Some(note) = &s.last_run_end else {
+        return;
+    };
+    if s.mode != SessionMode::Agent || app.chat.is_running(s.id) || note.after != s.messages.len() {
+        return;
+    }
+    let (title, sub) = run_end_words(&note.end);
+    let (fill, edge) = match note.end {
+        RunEnd::Failed { .. } => (t.bad_soft, t.bad),
+        RunEnd::Stopped => (t.surface, t.line),
+        RunEnd::StepLimit { .. } | RunEnd::Interrupted => (t.warn_soft, t.warn),
+    };
+    let button = if matches!(note.end, RunEnd::Failed { .. }) {
+        "Try again"
+    } else {
+        "Continue"
+    };
+    let mut go = false;
+    let mut steps = match note.end {
+        RunEnd::StepLimit { steps } => *app
+            .chat_ui
+            .continue_steps
+            .entry(s.id)
+            .or_insert((steps + 30).min(100)),
+        _ => s.step_budget,
+    };
+    ui.add_space(8.0);
+    let frame = egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, edge.gamma_multiply(0.6)))
+        .corner_radius(10.0)
+        .inner_margin(Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(RichText::new(&title).font(semibold(13.5)).color(t.fg)).wrap());
+            if let Some(sub) = &sub {
+                ui.add(egui::Label::new(RichText::new(sub).size(12.0).color(t.fg2)).wrap());
+            }
+            ui.add_space(6.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let r = primary_button(ui, button, true);
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.run_continue = Some(r.rect);
+                }
+                go = r.clicked();
+                if matches!(note.end, RunEnd::StepLimit { .. }) {
+                    let d = ui.add(egui::DragValue::new(&mut steps).range(1..=100));
+                    #[cfg(test)]
+                    {
+                        app.chat_ui.probe.run_steps = Some(d.rect);
+                    }
+                    let _ = d;
+                    ui.label(RichText::new("Steps").size(12.5).color(t.fg2));
+                }
+            });
+        });
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.run_banner = Some(frame.response.rect);
+    }
+    let _ = frame;
+    ui.add_space(8.0);
+    if matches!(note.end, RunEnd::StepLimit { .. }) {
+        app.chat_ui.continue_steps.insert(s.id, steps);
+    }
+    if go {
+        if matches!(note.end, RunEnd::StepLimit { .. }) && steps != s.step_budget {
+            out.push(BackendRequest::Chat(ChatCommand::SetStepBudget(
+                s.id, steps,
+            )));
+        }
+        if let SendAttempt::Sent(cmd) = app.chat.try_continue(s.id) {
+            out.push(BackendRequest::Chat(cmd));
+        }
+    }
 }
 
 /// The top of a write's approval card: what it does to which file, how many
