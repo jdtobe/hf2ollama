@@ -3,7 +3,7 @@
 
 use super::model::{ActionItem, Item, Menu, MenuAction, MenuModel, Platform};
 use crate::theme::tokens;
-use eframe::egui::{self, vec2, KeyboardShortcut, Margin, Modifiers, RichText, Stroke};
+use eframe::egui::{self, vec2, KeyboardShortcut, Margin, Modifiers, RichText};
 
 /// Room the in-window bar needs (measured: 27 px), so the window can grow by it.
 pub const BAR_H: f32 = 28.0;
@@ -26,7 +26,6 @@ pub fn show(ui: &mut egui::Ui, model: &MenuModel, platform: Platform) -> BarOutp
         .frame(
             egui::Frame::new()
                 .fill(t.surface)
-                .stroke(Stroke::new(1.0, t.line))
                 .inner_margin(Margin::symmetric(8, 2)),
         )
         .show(ui, |ui| {

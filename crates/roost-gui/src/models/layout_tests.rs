@@ -561,3 +561,35 @@ fn the_usage_card_names_its_segments_with_a_legend() {
         }
     }
 }
+
+#[test]
+fn the_models_list_has_no_outline_of_its_own_either() {
+    for size in SIZES {
+        let (mut app, _sent) = models_app();
+        let mut h = crate::browse::test_util::Harness::new(false);
+        for _ in 0..4 {
+            h.frame(vec2(size.0, size.1), vec![], |ui| app.show(ui));
+        }
+        let list = app.state_mut().browse.probe.list.unwrap();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1))),
+            ..Default::default()
+        };
+        let out = h.ctx().run_ui(input, |ui| app.show(ui));
+        fn outlined(shape: &egui::epaint::Shape, list: Rect) -> bool {
+            match shape {
+                egui::epaint::Shape::Vec(items) => items.iter().any(|s| outlined(s, list)),
+                egui::epaint::Shape::Rect(r) => {
+                    r.stroke.width > 0.0
+                        && r.stroke.color.a() > 0
+                        && (r.rect.min - list.min).length() < 3.0
+                        && r.rect.height() > list.height() * 0.8
+                }
+                _ => false,
+            }
+        }
+        let any = out.shapes.iter().any(|s| outlined(&s.shape, list));
+        out.drop_without_applying_deltas();
+        assert!(!any, "{size:?}: the list draws its own outline");
+    }
+}

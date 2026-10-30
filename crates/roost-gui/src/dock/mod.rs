@@ -120,7 +120,6 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
     let resp = egui::Panel::bottom("dock")
         .frame(crate::app::panel_frame(
             t.surface2,
-            t.line,
             Margin::symmetric(16, FRAME_V as i8),
         ))
         .resizable(false)

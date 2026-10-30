@@ -300,9 +300,11 @@ fn show_mode(
         .map(|r| r.name().to_string())
         .collect();
 
+    // Flat: the fill sets the sidebar apart, and the panel draws one divider on
+    // its right edge. A border on all four sides doubled up with the bars
+    // above and below it.
     let frame = egui::Frame::new()
         .fill(t.surface)
-        .stroke(Stroke::new(1.0, t.line))
         .inner_margin(Margin::same(12));
     let wanted = app.settings.sidebar_width;
     let ((), width) = crate::sidebar::show(ui, wanted, frame, |ui| {

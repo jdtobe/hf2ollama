@@ -13,9 +13,8 @@ const ROW_H: f32 = 82.0;
 
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
-    let frame = egui::Frame::new()
-        .fill(t.surface)
-        .stroke(Stroke::new(1.0, t.line));
+    // Flat, like the Chat and Work sidebar: no border of its own.
+    let frame = egui::Frame::new().fill(t.surface);
     let wanted = app.settings.sidebar_width;
     let (rect, width) = crate::sidebar::show(ui, wanted, frame, |ui| {
         egui::Frame::new()
