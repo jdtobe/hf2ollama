@@ -1011,7 +1011,7 @@ fn count_text(n: u64) -> String {
     n.to_string()
 }
 
-fn size_text(bytes: u64) -> String {
+pub(crate) fn size_text(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
     if bytes >= MB && bytes.is_multiple_of(MB) {
         format!("{} MB", bytes / MB)
@@ -1022,7 +1022,7 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
-fn time_text(secs: u64) -> String {
+pub(crate) fn time_text(secs: u64) -> String {
     if secs >= 60 && secs.is_multiple_of(60) {
         let m = secs / 60;
         format!("{m} minute{}", if m == 1 { "" } else { "s" })

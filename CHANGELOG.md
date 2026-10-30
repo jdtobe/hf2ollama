@@ -71,6 +71,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - The "Used N tools" line of an agent run also says when the first call started; its tooltip has the full date and time. Each tool card shows its own start time.
 - Notifications for agents: when an approval is waiting or a run finished or stopped, Roost bounces the Dock icon (flashes the taskbar) and sends a system notification while its window is not in front. Settings, Agents: when Roost is in the background (default), always, or off. Only the first alert of a visit notifies; the window title counts the rest, for example `(3) Roost`. The text is a fixed sentence and never includes file contents, commands or model output. A run you cancel does not notify.
 
+### Tool limits in the Work header
+
+- In an agent's Individual tools list, each tool shows how much it can return (for example `list_dir  200 entries`). Clicking it shows all of that tool's limits, with a button that opens Settings, Tools, where they are changed.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

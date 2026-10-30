@@ -36,6 +36,8 @@ pub struct ChatUi {
     pub run_allow_pending: Option<SessionId>,
     /// Families whose list of individual tools is open, per session (0 Files, 1 Shell).
     pub tools_open: std::collections::HashSet<(SessionId, u8)>,
+    /// The tool whose limits are shown under its row in the Individual tools list.
+    pub limits_open: Option<String>,
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
@@ -109,6 +111,11 @@ pub struct ChatProbe {
     pub run_buttons: Vec<egui::Rect>,
     /// The "Individual tools" heading of each family card.
     pub tools_heads: Vec<egui::Rect>,
+    /// The limit summary beside each listed tool, and the popover it opens
+    /// with its "Change in Settings" button.
+    pub tool_limit_chips: Vec<egui::Rect>,
+    pub tool_limit_popover: Option<egui::Rect>,
+    pub tool_limit_settings: Option<egui::Rect>,
     /// The Confirm and Cancel buttons shown after choosing Allow for Run.
     pub run_confirm: Option<(egui::Rect, egui::Rect)>,
     /// Per change (by id): its row under the tool, its Undo and Show diff buttons.

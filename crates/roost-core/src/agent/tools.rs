@@ -532,7 +532,7 @@ fn byte_arg(args: &Value, name: &str) -> Result<Option<u64>, ToolError> {
 }
 
 /// Most bytes one `read_binary` call returns.
-const BINARY_MAX_BYTES: u64 = 4096;
+pub const BINARY_MAX_BYTES: u64 = 4096;
 const BINARY_DEFAULT_BYTES: u64 = 256;
 
 /// Shows bytes of any file as a hex dump: offset, 16 bytes in hex, then the

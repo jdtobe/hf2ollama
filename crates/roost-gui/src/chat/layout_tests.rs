@@ -2636,6 +2636,54 @@ fn a_family_list_of_tools_opens_and_closes_from_its_heading() {
 }
 
 #[test]
+fn each_listed_tool_shows_its_limit_and_a_click_explains_it() {
+    use super::tool_limits;
+    let lim = roost_core::agent::tools::Limits::default();
+    // The chips fit at both sizes.
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        open_agent_settings(&mut app, &mut h, size);
+        let head = app.state_mut().chat_ui.probe.tools_heads[0];
+        click(&mut app, &mut h, size, head.center());
+        run(&mut app, &mut h, size, 2);
+        let chips = app.state_mut().chat_ui.probe.tool_limit_chips.clone();
+        assert_eq!(chips.len(), 8, "{size:?}: one per Files tool");
+        for c in &chips {
+            assert!(c.left() >= 0.0 && c.right() <= size.0, "{size:?}: {c:?}");
+        }
+    }
+    // Clicking one opens its limits; the button goes to Settings.
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    open_agent_settings(&mut app, &mut h, size);
+    let head = app.state_mut().chat_ui.probe.tools_heads[0];
+    click(&mut app, &mut h, size, head.center());
+    run(&mut app, &mut h, size, 2);
+    let texts = texts_of(&mut app, &mut h, size);
+    let first = tool_limits::summary("list_dir", &lim).unwrap();
+    assert!(texts.contains(&first), "{first}: {texts}");
+    assert!(!texts.contains("Entries per call"), "closed until clicked");
+    let chip = app.state_mut().chat_ui.probe.tool_limit_chips[0];
+    click(&mut app, &mut h, size, chip.center());
+    run(&mut app, &mut h, size, 2);
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("Entries per call"), "{texts}");
+    assert!(texts.contains("Change in Settings"), "{texts}");
+    let p = app.state_mut().chat_ui.probe.clone();
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+    assert!(inside(p.tool_limit_popover.expect("popover"), window));
+    click(
+        &mut app,
+        &mut h,
+        size,
+        p.tool_limit_settings.expect("button").center(),
+    );
+    assert_eq!(app.state_mut().view, View::Settings);
+}
+
+#[test]
 fn the_shell_family_lists_run_command_when_commands_are_on() {
     let size = (1180.0, 820.0);
     let (mut app, _sent, _s) = agent_fixture();

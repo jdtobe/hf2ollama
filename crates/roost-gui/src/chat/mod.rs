@@ -3,6 +3,7 @@
 
 mod chrome;
 pub mod state;
+mod tool_limits;
 pub mod view;
 
 #[cfg(test)]
