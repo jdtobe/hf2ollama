@@ -233,7 +233,8 @@ pub fn small_button_response(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(egui::Button::new(RichText::new(text).size(12.0).color(t.fg2)).min_size(vec2(0.0, 24.0)))
 }
 
-/// Like `segmented_nav`, also returning the rectangle it occupies.
+/// The top bar's tabs (flat, with an underline under the active one), also
+/// returning the rectangle they occupy.
 pub fn segmented_nav_rect(
     ui: &mut egui::Ui,
     labels: &[&str],
@@ -242,69 +243,67 @@ pub fn segmented_nav_rect(
 ) -> (Option<usize>, egui::Rect) {
     let t = tokens(ui);
     let mut clicked = None;
-    let frame = egui::Frame::new()
-        .fill(t.surface2)
-        .stroke(Stroke::new(1.0, t.line))
-        .corner_radius(8.0)
-        .inner_margin(2.0)
-        .show(ui, |ui| {
-            // Always one row, whatever layout the caller is in.
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for (i, name) in labels.iter().enumerate() {
-                    let on = i == selected;
-                    let font = if on {
-                        semibold(14.0)
-                    } else {
-                        FontId::proportional(14.0)
-                    };
-                    let color = if on { t.fg } else { t.fg2 };
-                    let galley = ui.painter().layout_no_wrap((*name).into(), font, color);
-                    // Size by the bolder face so selecting a segment never resizes it.
-                    let widest = ui
-                        .painter()
-                        .layout_no_wrap((*name).into(), semibold(14.0), color)
-                        .size()
-                        .x
-                        .max(galley.size().x);
-                    let badge = badges
-                        .get(i)
-                        .and_then(|b| b.as_deref())
-                        .map(|b| ui.painter().layout_no_wrap(b.into(), mono(11.0), t.fg2));
-                    let badge_w = badge.as_ref().map_or(0.0, |g| g.size().x + 14.0);
-                    let (rect, resp) =
-                        ui.allocate_exact_size(vec2(widest + 26.0 + badge_w, 28.0), Sense::click());
-                    if on {
-                        ui.painter().rect_filled(rect, 6.0, t.surface);
-                        ui.painter().rect_stroke(
-                            rect,
-                            6.0,
-                            Stroke::new(1.0, t.line),
-                            StrokeKind::Inside,
-                        );
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(rect, 6.0, t.surface);
-                    }
-                    let text_pos = egui::pos2(
-                        rect.min.x + 13.0 + (widest - galley.size().x) / 2.0,
-                        rect.center().y - galley.size().y / 2.0,
+    // Flat tabs: no track and no pill. The active tab is bold in the theme
+    // colour with a short underline of it.
+    let frame = egui::Frame::new().inner_margin(2.0).show(ui, |ui| {
+        // Always one row, whatever layout the caller is in.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (i, name) in labels.iter().enumerate() {
+                let on = i == selected;
+                let font = if on {
+                    semibold(14.0)
+                } else {
+                    FontId::proportional(14.0)
+                };
+                let color = if on { t.accent } else { t.fg2 };
+                let galley = ui.painter().layout_no_wrap((*name).into(), font, color);
+                // Size by the bolder face so selecting a segment never resizes it.
+                let widest = ui
+                    .painter()
+                    .layout_no_wrap((*name).into(), semibold(14.0), color)
+                    .size()
+                    .x
+                    .max(galley.size().x);
+                let badge = badges
+                    .get(i)
+                    .and_then(|b| b.as_deref())
+                    .map(|b| ui.painter().layout_no_wrap(b.into(), mono(11.0), t.fg2));
+                let badge_w = badge.as_ref().map_or(0.0, |g| g.size().x + 14.0);
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(widest + 26.0 + badge_w, 28.0), Sense::click());
+                if on {
+                    let y = rect.bottom() - 1.0;
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(rect.left() + 10.0, y),
+                            egui::pos2(rect.right() - 10.0, y),
+                        ],
+                        Stroke::new(2.0, t.accent),
                     );
-                    let text_right = text_pos.x + galley.size().x;
-                    ui.painter().galley(text_pos, galley, color);
-                    if let Some(g) = badge {
-                        let r = egui::Rect::from_min_size(
-                            egui::pos2(text_right + 6.0, rect.center().y - 9.0),
-                            vec2(g.size().x + 10.0, 18.0),
-                        );
-                        ui.painter().rect_filled(r, CornerRadius::same(9), t.line);
-                        ui.painter().galley(r.center() - g.size() / 2.0, g, t.fg2);
-                    }
-                    if resp.clicked() {
-                        clicked = Some(i);
-                    }
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(rect, 6.0, t.surface2);
                 }
-            });
+                let text_pos = egui::pos2(
+                    rect.min.x + 13.0 + (widest - galley.size().x) / 2.0,
+                    rect.center().y - galley.size().y / 2.0,
+                );
+                let text_right = text_pos.x + galley.size().x;
+                ui.painter().galley(text_pos, galley, color);
+                if let Some(g) = badge {
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(text_right + 6.0, rect.center().y - 9.0),
+                        vec2(g.size().x + 10.0, 18.0),
+                    );
+                    ui.painter().rect_filled(r, CornerRadius::same(9), t.line);
+                    ui.painter().galley(r.center() - g.size() / 2.0, g, t.fg2);
+                }
+                if resp.clicked() {
+                    clicked = Some(i);
+                }
+            }
         });
+    });
     (clicked, frame.response.rect)
 }
 

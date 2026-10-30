@@ -118,6 +118,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - The sidebar (Chat, Work and Models) no longer has a border on all four sides, and the top bar, the status bar, the downloads dock and the menu bar no longer outline themselves. Each bar keeps the single line the panel draws along the edge that faces the content, and the sidebar keeps one divider on its right, so the top and bottom edges no longer double up with the bars above and below.
 
+### A top bar with a little colour
+
+- The top bar has a 4 px strip of the theme colour along its top edge, and the tabs are flat: no grey track and no pill; the active tab is bold in the theme colour with an underline of it, and the others are grey. Settings (the gear) is not a tab, so nothing is underlined there.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
