@@ -2178,6 +2178,85 @@ async fn a_tool_set_to_ask_waits_for_the_user_and_runs_once_allowed() {
     );
 }
 
+// ---- leaving an agent chat does not end its run
+
+#[tokio::test]
+async fn leaving_an_agent_that_waits_for_approval_keeps_the_run_and_the_question() {
+    let (_srv, h, id, _ws) = asking_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("It says hello.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    // The user opens another chat: the window lets this one go.
+    h.cmd(ChatCommand::Close(id));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(run_ends(&h.events()).is_empty(), "the run is still waiting");
+    // Coming back, the question is asked again and the run goes on.
+    h.cmd(ChatCommand::Open(id));
+    h.wait("asked again", |e| count_approvals(e) >= 2).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+}
+
+#[tokio::test]
+async fn an_approval_can_be_answered_after_the_window_let_the_chat_go() {
+    let (_srv, h, id, _ws) = asking_agent(vec![
+        chat_route(calls("read_file", serde_json::json!({"path": "a.txt"}))),
+        chat_route(reply("It says hello.")),
+    ])
+    .await;
+    h.send(id, "what is in a.txt?").await;
+    h.wait("asked", |e| approval_for(e).is_some()).await;
+    let (call_id, _) = approval_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::Close(id));
+    h.cmd(ChatCommand::ResolveApproval {
+        session: id,
+        call_id,
+        decision: ApprovalDecision::Allow,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+}
+
+#[tokio::test]
+async fn leaving_a_streaming_agent_lets_the_whole_run_finish() {
+    let (hold, release) = oneshot::channel::<()>();
+    let mut first = vec![Step::WaitFor(release)];
+    first.extend(calls("read_file", serde_json::json!({"path": "a.txt"})));
+    let ws = workspace();
+    let srv = fake_agent(vec![chat_route(first), chat_route(reply("It says hello."))]).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "what is in a.txt?").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.cmd(ChatCommand::Close(id));
+    hold.send(()).unwrap();
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+    h.wait("the finished run is saved", |_| {
+        h.try_read(id)
+            .is_some_and(|s| texts(&s).iter().any(|m| m.1 == "It says hello."))
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_declined_tool_call_is_reported_to_the_model_and_the_run_goes_on() {
     let (srv, h, id, _ws) = asking_agent(vec![
