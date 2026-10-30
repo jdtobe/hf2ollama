@@ -109,6 +109,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Once the conversation moves on, the banner becomes a quiet one-line note where the run ended and its buttons go. A run that finishes normally clears the note. Chats do not get one (their failed replies already have Retry).
 - Saved sessions gain an optional `last_run_end` field; older files load as before.
 
+### A clearer warning for running commands
+
+- In the "Let agents run commands?" warning, the "Keep it off" button was filled with the theme colour, which is also the colour of an ON switch, so it read like "on". It is now a neutral button (still the default one, so Enter never turns commands on), and "Turn on" keeps its red outline.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
