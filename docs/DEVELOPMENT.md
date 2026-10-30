@@ -67,6 +67,17 @@ ROOST_E2E_OLLAMA_URL=http://127.0.0.1:11555 \
 
 They create and delete models named `hf2o-e2e-*` only.
 
+### A hand-run agent session against a real model
+
+`crates/roost-core/tests/hand_run_agent.rs` (`#[ignore]`d) runs eight small tasks (overview, search, binary, count, a big file, a question, a write and an edit) through the real agent code against an Ollama and prints every tool call, its result, the final answer and the time. It only chats: it never creates, copies or deletes a model, and its files live in a temporary folder, so your everyday Ollama is fine:
+
+```sh
+ROOST_HAND_MODEL=qwen2.5-coder:7b \
+  cargo test -p roost-core --test hand_run_agent -- --ignored --nocapture
+```
+
+`ROOST_HAND_URL`, `ROOST_HAND_ONLY` (comma-separated task ids) and `ROOST_HAND_STEPS` are optional. Rerun it after changing a tool description (they are prompts) or the tool set.
+
 ## Running the app
 
 ```sh
