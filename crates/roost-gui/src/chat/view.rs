@@ -302,6 +302,7 @@ fn show_mode(
     if let Some(s) = &open {
         egui::Panel::bottom("chat_composer")
             .resizable(false)
+            .show_separator_line(false)
             .frame(
                 // No box of its own: the input bubble floats over the same
                 // background as the conversation.
