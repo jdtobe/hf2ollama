@@ -3448,3 +3448,121 @@ async fn a_deleted_chat_comes_back_with_undelete_until_it_is_purged() {
     h.handle.shutdown().await;
     assert!(!h.file(id).exists());
 }
+
+#[tokio::test]
+async fn every_model_request_of_an_agent_run_announces_one_turn_start() {
+    let ws = workspace();
+    let srv = fake_agent(vec![
+        chat_route(calls("list_dir", serde_json::json!({}))),
+        chat_route(calls("list_dir", serde_json::json!({}))),
+        chat_route(calls("list_dir", serde_json::json!({}))),
+        chat_route(reply("done")),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "list a few times").await;
+    h.wait_run_ended(1).await;
+    let starts = h
+        .events()
+        .iter()
+        .filter(|e| matches!(e, ChatEvent::TurnStarted { session, .. } if *session == id))
+        .count();
+    assert_eq!(
+        starts,
+        chat_bodies(&srv).len(),
+        "one turn start per request"
+    );
+    assert_eq!(starts, 4);
+}
+
+// ------------------------------------------------- how an agent run ended
+
+async fn saved_end(h: &H, id: SessionId) -> Option<crate::session::RunEndNote> {
+    // The note is written with the session, a moment after the run ends.
+    let mut last = None;
+    for _ in 0..40 {
+        last = h.try_read(id).and_then(|s| s.last_run_end);
+        if last.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    last
+}
+
+#[tokio::test]
+async fn an_agent_that_runs_out_of_steps_saves_why_and_a_later_finish_clears_it() {
+    use crate::session::RunEnd;
+    let ws = workspace();
+    let srv = fake_agent(vec![
+        chat_route(calls("list_dir", serde_json::json!({}))),
+        chat_route(calls("list_dir", serde_json::json!({}))),
+        chat_route(reply("all done")),
+    ])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.cmd(ChatCommand::SetStepBudget(id, 2));
+    h.send(id, "list forever").await;
+    h.wait_run_ended(1).await;
+    let note = saved_end(&h, id).await.expect("a saved ending");
+    assert_eq!(note.end, RunEnd::StepLimit { steps: 2 });
+    assert_eq!(
+        note.after,
+        h.read(id).messages.len(),
+        "at the end of the chat"
+    );
+    // Continue with a normal finish: the note goes.
+    h.send(id, "Continue").await;
+    h.wait_run_ended(2).await;
+    h.wait("cleared", |_| {
+        h.try_read(id).is_some_and(|s| s.last_run_end.is_none())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn stopping_an_agent_saves_that_you_stopped_it() {
+    use crate::session::RunEnd;
+    let ws = workspace();
+    let (_keep, hold) = oneshot::channel::<()>();
+    let srv = fake_agent(vec![chat_route(vec![
+        Step::Write(line("thinking")),
+        Step::WaitFor(hold),
+    ])])
+    .await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait("streaming", |_| h.deltas(id) == "thinking").await;
+    h.cmd(ChatCommand::Stop(id));
+    h.wait_run_ended(1).await;
+    assert_eq!(saved_end(&h, id).await.unwrap().end, RunEnd::Stopped);
+}
+
+#[tokio::test]
+async fn a_failed_agent_run_saves_the_reason_and_a_chat_saves_nothing() {
+    use crate::session::RunEnd;
+    let ws = workspace();
+    let srv = fake_agent(vec![chat_route(vec![
+        Step::Write(line("x")),
+        Step::Pause(Duration::from_secs(5)),
+    ])])
+    .await;
+    let c = client(&srv).with_stall_timeout(Duration::from_millis(150));
+    let h = start_in(TempDir::new().unwrap(), c, |_| {}).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    h.send(id, "go").await;
+    h.wait_run_ended(1).await;
+    match saved_end(&h, id).await.expect("a saved ending").end {
+        RunEnd::Failed { message } => assert!(message.contains("stopped responding"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    // The same stall in a plain chat leaves no note (the reply itself says so).
+    let chat = h.create(SessionLifetime::Persisted).await;
+    h.send(chat, "go").await;
+    h.wait_ended(1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(h.read(chat).last_run_end, None);
+}

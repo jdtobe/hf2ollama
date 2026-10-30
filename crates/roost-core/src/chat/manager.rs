@@ -1344,6 +1344,19 @@ impl Manager {
         live.slot = Slot::Idle;
         live.agent = None;
         let close = live.close_when_idle;
+        // An agent keeps how its run ended, so the reason outlives the window.
+        let kept = (live.s.mode == SessionMode::Agent).then(|| {
+            live.s.last_run_end = super::types::run_end_note(
+                outcome,
+                message.as_deref(),
+                live.s.step_budget,
+                live.s.messages.len(),
+            );
+            live.s.clone()
+        });
+        if let Some(s) = kept {
+            self.save(&s);
+        }
         self.emit(ChatEvent::RunEnded {
             session: id,
             outcome,

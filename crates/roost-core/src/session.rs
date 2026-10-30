@@ -293,6 +293,29 @@ pub struct Message {
     pub content: MessageContent,
 }
 
+/// Why an agent's last run stopped before it finished its answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunEnd {
+    /// It used all of its step budget (`steps`) and was still working.
+    StepLimit { steps: u32 },
+    /// The user pressed Stop.
+    Stopped,
+    /// A model turn failed; `message` says why.
+    Failed { message: String },
+    /// Roost was closed (or crashed) while the run was going.
+    Interrupted,
+}
+
+/// A `RunEnd` and where in the conversation it happened.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEndNote {
+    pub end: RunEnd,
+    /// How many messages the chat had when the run ended. A note whose
+    /// `after` is the current message count is the last thing in the chat.
+    pub after: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
@@ -326,6 +349,10 @@ pub struct Session {
     /// Files an agent changed, oldest first, each with what it takes to undo.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<ChangeRecord>,
+    /// How the last agent run ended when it did not finish normally, so the
+    /// reason is still there after the chat is closed or Roost is restarted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_end: Option<RunEndNote>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub messages: Vec<Message>,
@@ -396,6 +423,7 @@ impl Session {
             btw: Vec::new(),
             forks: Vec::new(),
             changes: Vec::new(),
+            last_run_end: None,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             messages: Vec::new(),
@@ -615,7 +643,8 @@ impl Session {
     /// back to `Idle`, partial replies `Interrupted`, unfinished tool calls
     /// `Cancelled`. Returns whether anything changed.
     pub fn normalize_after_crash(&mut self) -> bool {
-        let mut changed = self.run_state != RunState::Idle;
+        let was_active = self.run_state != RunState::Idle;
+        let mut changed = was_active;
         self.run_state = RunState::Idle;
         for m in &mut self.messages {
             match &mut m.content {
@@ -633,6 +662,13 @@ impl Session {
                 }
                 _ => {}
             }
+        }
+        // An agent that was working when Roost went away says so.
+        if was_active && self.mode == SessionMode::Agent {
+            self.last_run_end = Some(RunEndNote {
+                end: RunEnd::Interrupted,
+                after: self.messages.len(),
+            });
         }
         changed
     }
@@ -937,6 +973,62 @@ impl SessionDocument {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_agent_that_was_working_when_roost_went_away_notes_the_interruption() {
+        let dir = std::env::temp_dir().join("a-project");
+        let mut agent = Session::new_agent("m", SessionLifetime::Persisted, dir, 1_000).unwrap();
+        agent.push_user("go", 1_100);
+        agent.run_state = RunState::Running {
+            run_id: RunId::new(),
+            turn_id: TurnId::new(),
+        };
+        assert!(agent.normalize_after_crash());
+        assert_eq!(
+            agent.last_run_end,
+            Some(RunEndNote {
+                end: RunEnd::Interrupted,
+                after: 1
+            })
+        );
+        // A chat that was replying keeps no such note, and an idle agent none.
+        let mut chat = Session::new_chat("m", SessionLifetime::Persisted, 1_000);
+        chat.run_state = RunState::Stopping {
+            run_id: RunId::new(),
+        };
+        chat.normalize_after_crash();
+        assert_eq!(chat.last_run_end, None);
+    }
+
+    #[test]
+    fn the_run_end_is_saved_and_a_session_without_it_still_loads() {
+        let dir = std::env::temp_dir().join("a-project");
+        let mut s = Session::new_agent("m", SessionLifetime::Persisted, dir, 1_000).unwrap();
+        for end in [
+            RunEnd::StepLimit { steps: 20 },
+            RunEnd::Stopped,
+            RunEnd::Failed {
+                message: "Ollama stopped responding.".into(),
+            },
+            RunEnd::Interrupted,
+        ] {
+            s.last_run_end = Some(RunEndNote {
+                end: end.clone(),
+                after: 3,
+            });
+            let json = serde_json::to_string(&s).unwrap();
+            let back: Session = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.last_run_end.unwrap().end, end);
+        }
+        s.last_run_end = None;
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            !json.contains("last_run_end"),
+            "nothing is written when empty"
+        );
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.last_run_end, None);
+    }
+
     use super::*;
     use std::path::PathBuf;
 
