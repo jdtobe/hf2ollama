@@ -91,6 +91,13 @@ pub struct PendingApproval {
     pub run: Option<roost_core::agent::command::RunPreview>,
 }
 
+/// A question the agent is waiting for the user to answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingQuestion {
+    pub call_id: String,
+    pub question: roost_core::agent::ask::Question,
+}
+
 /// Where a check of a branch's original stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BranchView {
@@ -146,6 +153,8 @@ pub struct ChatState {
     btw_error: HashMap<SessionId, String>,
     /// The tool call each agent is waiting for an answer about.
     approvals: HashMap<SessionId, PendingApproval>,
+    /// The question each agent is waiting for an answer to.
+    questions: HashMap<SessionId, PendingQuestion>,
     /// What is known about each opened branch's original.
     branch_views: HashMap<SessionId, BranchView>,
     runs: HashMap<SessionId, (TurnId, RunBadge)>,
@@ -360,6 +369,14 @@ impl ChatState {
                     },
                 );
             }
+            ChatEvent::QuestionAsked {
+                session,
+                call_id,
+                question,
+            } => {
+                self.questions
+                    .insert(session, PendingQuestion { call_id, question });
+            }
             ChatEvent::ToolStarted {
                 session, call_id, ..
             } => {
@@ -373,6 +390,7 @@ impl ChatState {
                 output,
             } => {
                 self.approvals.remove(&session);
+                self.questions.remove(&session);
                 let status = if ok {
                     ToolStatus::Complete
                 } else {
@@ -392,6 +410,7 @@ impl ChatState {
             } => {
                 self.active.remove(&session);
                 self.approvals.remove(&session);
+                self.questions.remove(&session);
                 self.runs.remove(&session);
                 self.steps.remove(&session);
                 self.sending.remove(&session);
@@ -748,7 +767,17 @@ impl ChatState {
         self.approvals.get(&id)
     }
 
+    /// The question this chat's agent is waiting to have answered.
+    pub fn question(&self, id: SessionId) -> Option<&PendingQuestion> {
+        self.questions.get(&id)
+    }
+
     /// Forgets the question once it has been answered.
+    pub fn question_answered(&mut self, id: SessionId) {
+        self.questions.remove(&id);
+    }
+
+    /// Forgets the approval once it has been answered.
     pub fn approval_answered(&mut self, id: SessionId) {
         self.approvals.remove(&id);
     }

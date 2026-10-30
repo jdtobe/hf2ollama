@@ -30,6 +30,8 @@ const COMPOSER_ROWS: usize = 3;
 /// Interaction state that is not part of the conversation data.
 #[derive(Default)]
 pub struct ChatUi {
+    /// What the user has picked or typed for each question being asked.
+    pub question_drafts: std::collections::HashMap<SessionId, QuestionDraft>,
     /// Changes whose diff is shown under their tool.
     pub diffs_open: std::collections::HashSet<(SessionId, u32)>,
     /// Allow for Run was chosen for this session and awaits the confirmation.
@@ -103,6 +105,12 @@ pub struct ChatProbe {
     pub edit_icon: Option<egui::Rect>,
     /// The Allow / Allow for this session / Deny buttons of an approval card.
     pub approval_buttons: Vec<egui::Rect>,
+    /// The question card, its options (and the typed-answer field last, when
+    /// there is one), and its Send and Skip buttons.
+    pub question_card: Option<egui::Rect>,
+    pub question_options: Vec<egui::Rect>,
+    pub question_other: Option<egui::Rect>,
+    pub question_buttons: Vec<egui::Rect>,
     /// The Off / Ask / Auto buttons of the Files · Read permission.
     pub permission_buttons: Vec<egui::Rect>,
     /// The Off / Ask buttons of the Write row in the tools menu.
@@ -989,6 +997,145 @@ fn command_summary(ui: &mut egui::Ui, t: &Tokens, r: &roost_core::agent::command
 }
 
 /// What the agent wants to do and three ways to answer. The run waits.
+/// What the user has picked or typed for one question.
+#[derive(Debug, Default, Clone)]
+pub struct QuestionDraft {
+    pub call_id: String,
+    /// Indexes of the options picked.
+    pub picked: std::collections::BTreeSet<usize>,
+    /// The typed answer: the whole answer for a text question, an answer of
+    /// their own for the others.
+    pub other: String,
+}
+
+impl QuestionDraft {
+    fn answer(&self, q: &roost_core::agent::ask::Question) -> roost_core::agent::ask::Answer {
+        let other = self.other.trim();
+        roost_core::agent::ask::Answer {
+            picked: self
+                .picked
+                .iter()
+                .filter_map(|i| q.options.get(*i).cloned())
+                .collect(),
+            other: (!other.is_empty()).then(|| other.to_string()),
+        }
+    }
+}
+
+/// The agent's question, above the input like an approval. Send is off until
+/// the answer is one the core would accept.
+fn question_card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    s: &Session,
+    pending: &super::state::PendingQuestion,
+) {
+    use roost_core::agent::ask::{self, QuestionKind};
+    let (id, q) = (s.id, &pending.question);
+    let mut draft = app
+        .chat_ui
+        .question_drafts
+        .remove(&id)
+        .filter(|d| d.call_id == pending.call_id)
+        .unwrap_or_else(|| QuestionDraft {
+            call_id: pending.call_id.clone(),
+            ..Default::default()
+        });
+    let (mut send, mut skip) = (false, false);
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.question_options.clear();
+        app.chat_ui.probe.question_other = None;
+    }
+    let card = egui::Frame::new()
+        .fill(t.accent_soft)
+        .stroke(Stroke::new(1.0, t.accent))
+        .corner_radius(10.0)
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.add(
+                egui::Label::new(RichText::new(&q.text).font(semibold(13.5)).color(t.fg)).wrap(),
+            );
+            if q.kind != QuestionKind::Text {
+                for (i, option) in q.options.iter().enumerate() {
+                    let on = draft.picked.contains(&i);
+                    let r = if q.kind == QuestionKind::One {
+                        ui.radio(on, option)
+                    } else {
+                        let mut checked = on;
+                        let r = ui.checkbox(&mut checked, option);
+                        if r.changed() {
+                            if checked {
+                                draft.picked.insert(i);
+                            } else {
+                                draft.picked.remove(&i);
+                            }
+                        }
+                        r
+                    };
+                    #[cfg(test)]
+                    app.chat_ui.probe.question_options.push(r.rect);
+                    if q.kind == QuestionKind::One && r.clicked() {
+                        // One answer: an option or the typed one, not both.
+                        draft.picked.clear();
+                        draft.picked.insert(i);
+                        draft.other.clear();
+                    }
+                }
+            }
+            if q.kind == QuestionKind::Text || q.allow_other {
+                let edit = if q.kind == QuestionKind::Text {
+                    egui::TextEdit::multiline(&mut draft.other)
+                        .hint_text("Type your answer")
+                        .desired_rows(3)
+                } else {
+                    egui::TextEdit::singleline(&mut draft.other).hint_text("Something else…")
+                };
+                let r = ui.add(edit.desired_width(f32::INFINITY));
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.question_other = Some(r.rect);
+                }
+                if q.kind == QuestionKind::One && r.changed() && !draft.other.trim().is_empty() {
+                    draft.picked.clear();
+                }
+            }
+            let valid = ask::check_answer(q, &draft.answer(q)).is_ok();
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let send_r = primary_button(ui, "Send", valid);
+                let skip_r = secondary(ui, "Skip", true);
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.question_buttons = vec![send_r.rect, skip_r.rect];
+                }
+                send = send_r.clicked() && valid;
+                skip = skip_r.clicked();
+            });
+        });
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.question_card = Some(card.response.rect);
+    }
+    #[cfg(not(test))]
+    let _ = card;
+    if send || skip {
+        let answer = send.then(|| draft.answer(q));
+        out.push(BackendRequest::Chat(ChatCommand::AnswerQuestion {
+            session: id,
+            call_id: pending.call_id.clone(),
+            answer,
+        }));
+        app.chat.question_answered(id);
+    } else {
+        app.chat_ui.question_drafts.insert(id, draft);
+    }
+}
+
 fn approval_card(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -1235,9 +1382,10 @@ pub(super) fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut Ap
         return;
     };
     let _ = &app;
-    let args = {
-        let s = arguments.to_string();
-        truncate_chars(&s, 90)
+    let asked = (name == roost_core::agent::ask::TOOL).then(|| ask_view(arguments, output));
+    let args = match &asked {
+        Some((question, _)) => question.clone(),
+        None => truncate_chars(&arguments.to_string(), 90),
     };
     #[cfg(test)]
     let top = ui.cursor().min.y;
@@ -1276,7 +1424,16 @@ pub(super) fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut Ap
                 )
                 .truncate(),
             );
-            if let Some(result) = output.as_deref().filter(|o| !o.is_empty()) {
+            if let Some((_, Some(answer))) = &asked {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("You answered: {answer}"))
+                            .size(12.5)
+                            .color(t.fg2),
+                    )
+                    .wrap(),
+                );
+            } else if let Some(result) = output.as_deref().filter(|o| !o.is_empty()) {
                 egui::CollapsingHeader::new(RichText::new("Result").size(12.0).color(t.fg2))
                     .id_salt(("tool-result", m.id))
                     .show(ui, |ui| {
@@ -1298,6 +1455,41 @@ pub(super) fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut Ap
         egui::pos2(ui.min_rect().right(), ui.cursor().min.y),
     ));
     ui.add_space(8.0);
+}
+
+/// A question the agent asked and, once there is one, the answer in words.
+pub(super) fn ask_view(
+    arguments: &serde_json::Value,
+    output: &Option<String>,
+) -> (String, Option<String>) {
+    let question = arguments
+        .get("question")
+        .and_then(|q| q.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let answer = output.as_deref().filter(|o| !o.is_empty()).map(|o| {
+        if o == roost_core::agent::ask::SKIPPED {
+            return "skipped".to_string();
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(o) else {
+            return o.to_string();
+        };
+        if let Some(a) = v.get("answer").and_then(|a| a.as_str()) {
+            return a.to_string();
+        }
+        match v.get("answers").and_then(|a| a.as_array()) {
+            Some(list) => {
+                let mut parts: Vec<String> = list
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect();
+                parts.extend(v.get("other").and_then(|x| x.as_str()).map(str::to_string));
+                parts.join(", ")
+            }
+            None => o.to_string(),
+        }
+    });
+    (question, answer)
 }
 
 /// The model shown for a session: the rail row is the live source.
@@ -2311,6 +2503,10 @@ fn composer(
     // The question sits right above the input, where it cannot scroll away.
     if let Some(ask) = app.chat.approval(id).cloned() {
         approval_card(ui, t, app, out, s, &ask);
+        ui.add_space(8.0);
+    }
+    if let Some(ask) = app.chat.question(id).cloned() {
+        question_card(ui, t, app, out, s, &ask);
         ui.add_space(8.0);
     }
     super::chrome::status_line(ui, app, t, s);

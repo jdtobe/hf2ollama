@@ -16,10 +16,10 @@ pub const TOOL: &str = "ask_user";
 pub const MAX_PER_RUN: u32 = 5;
 
 const MAX_QUESTION_CHARS: usize = 500;
-const MIN_OPTIONS: usize = 2;
-const MAX_OPTIONS: usize = 8;
+pub const MIN_OPTIONS: usize = 2;
+pub const MAX_OPTIONS: usize = 8;
 const MAX_OPTION_CHARS: usize = 80;
-const MAX_ANSWER_CHARS: usize = 2000;
+pub const MAX_ANSWER_CHARS: usize = 2000;
 
 /// What the model gets when the user skips.
 pub const SKIPPED: &str =

@@ -17,6 +17,8 @@ use std::process::{Child, Command, Stdio};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Approval,
+    /// The agent asked a question.
+    Question,
     Finished,
     Stopped,
 }
@@ -25,6 +27,7 @@ impl Kind {
     pub fn body(self) -> &'static str {
         match self {
             Kind::Approval => "Needs your approval",
+            Kind::Question => "Has a question for you",
             Kind::Finished => "Run finished",
             Kind::Stopped => "Run stopped",
         }
@@ -35,6 +38,7 @@ impl Kind {
 pub fn kind_of(ev: &ChatEvent) -> Option<(SessionId, Kind)> {
     match ev {
         ChatEvent::ApprovalRequested { session, .. } => Some((*session, Kind::Approval)),
+        ChatEvent::QuestionAsked { session, .. } => Some((*session, Kind::Question)),
         ChatEvent::RunEnded {
             session, outcome, ..
         } => match outcome {
@@ -318,6 +322,15 @@ mod tests {
             run: None,
         };
         assert_eq!(kind_of(&approval).map(|k| k.1), Some(Kind::Approval));
+        let asked = ChatEvent::QuestionAsked {
+            session: SessionId::new(),
+            call_id: "c".into(),
+            question: roost_core::agent::ask::parse(
+                &serde_json::json!({"question": "Q?", "kind": "text"}),
+            )
+            .unwrap(),
+        };
+        assert_eq!(kind_of(&asked).map(|k| k.1), Some(Kind::Question));
         assert_eq!(
             kind_of(&ended(RunOutcome::Completed)).map(|k| k.1),
             Some(Kind::Finished)
@@ -387,7 +400,12 @@ mod tests {
 
     #[test]
     fn the_bodies_are_fixed_sentences() {
-        for k in [Kind::Approval, Kind::Finished, Kind::Stopped] {
+        for k in [
+            Kind::Approval,
+            Kind::Question,
+            Kind::Finished,
+            Kind::Stopped,
+        ] {
             assert!(!k.body().is_empty() && k.body().len() < 40);
         }
     }

@@ -4,6 +4,7 @@
 //! window gets smaller results than these (see `Limits::for_window`).
 
 use crate::settings::{size_text, time_text};
+use roost_core::agent::ask;
 use roost_core::agent::tools::{Limits, BINARY_MAX_BYTES};
 
 fn bytes(n: usize) -> String {
@@ -22,6 +23,7 @@ pub fn summary(name: &str, l: &Limits) -> Option<String> {
         "write_file" => format!("{} per write", bytes(l.write_bytes)),
         "edit_file" => format!("{} per file", bytes(l.edit_file_bytes)),
         "run_command" => time_text(l.run_timeout.as_secs()),
+        "ask_user" => format!("{} per run", ask::MAX_PER_RUN),
         _ => return None,
     })
 }
@@ -76,6 +78,17 @@ pub fn facts(name: &str, l: &Limits) -> Vec<(&'static str, String)> {
         "run_command" => vec![
             ("Stopped after", time_text(l.run_timeout.as_secs())),
             ("Output kept", bytes(l.run_output_bytes)),
+        ],
+        "ask_user" => vec![
+            ("Questions per run", ask::MAX_PER_RUN.to_string()),
+            (
+                "Options per question",
+                format!("{} to {}", ask::MIN_OPTIONS, ask::MAX_OPTIONS),
+            ),
+            (
+                "Typed answer",
+                format!("{} characters", ask::MAX_ANSWER_CHARS),
+            ),
         ],
         _ => Vec::new(),
     }
