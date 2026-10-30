@@ -940,3 +940,50 @@ fn a_limit_set_by_hand_is_shown_and_reset_goes_back_to_the_built_in_ones() {
         .try_iter()
         .any(|r| matches!(r, BackendRequest::ApplySettings(s) if s.tools == Default::default())));
 }
+
+/// The fills of every rectangle painted under `at` in a frame, topmost last.
+fn fills_under(app: &mut App, h: &mut Harness, size: (f32, f32), at: Pos2) -> Vec<egui::Color32> {
+    let input = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1))),
+        ..Default::default()
+    };
+    let out = h.ctx().run_ui(input, |ui| app.show(ui));
+    let fills = out
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::epaint::Shape::Rect(r) if r.rect.contains(at) => Some(r.fill),
+            _ => None,
+        })
+        .collect();
+    out.drop_without_applying_deltas();
+    fills
+}
+
+#[test]
+fn neither_button_in_the_commands_warning_is_the_themes_on_colour() {
+    // The theme colour fills an ON switch, so a button that keeps something
+    // off must not wear it. "Keep it off" is neutral, "Turn on" is a warning.
+    for size in SIZES {
+        let (mut app, _sent) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let (keep, on) = open_run_warning(&mut app, &mut h, size);
+        let accent =
+            crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false).accent;
+        for (name, button) in [("Keep it off", keep), ("Turn on", on)] {
+            let fills = fills_under(&mut app, &mut h, size, button.center());
+            // The warning fades in, so allow a little difference in each channel.
+            let near = |c: egui::Color32| {
+                c.a() > 200
+                    && (c.r() as i32 - accent.r() as i32).abs() < 8
+                    && (c.g() as i32 - accent.g() as i32).abs() < 8
+                    && (c.b() as i32 - accent.b() as i32).abs() < 8
+            };
+            assert!(
+                !fills.iter().any(|c| near(*c)),
+                "{size:?}: {name} is filled with the theme colour: {fills:?}"
+            );
+        }
+    }
+}
