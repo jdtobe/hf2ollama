@@ -179,6 +179,14 @@ impl ChatState {
         &self.rows
     }
 
+    /// The listed title of a session, if the list has it.
+    pub fn title_of(&self, id: SessionId) -> Option<&str> {
+        self.rows
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.title.as_str())
+    }
+
     pub fn fold(&mut self, ev: ChatEvent) {
         match ev {
             ChatEvent::Rows(rows) => {

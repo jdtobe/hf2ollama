@@ -63,6 +63,18 @@ pub enum KeepAlive {
     UntilQuit,
 }
 
+/// When Roost tells you something needs you (an approval, a run that ended).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Notifications {
+    Off,
+    /// Only while the Roost window is not the one in front.
+    #[default]
+    Background,
+    /// Also while it is in front.
+    Always,
+}
+
 impl KeepAlive {
     /// The `keep_alive` value for a request, or `None` to leave it out.
     pub fn wire(self) -> Option<serde_json::Value> {
@@ -92,6 +104,8 @@ pub struct Settings {
     pub theme_mode: ThemeMode,
     pub theme_family: ThemeFamily,
     pub keep_alive: KeepAlive,
+    /// When to nudge you about approvals and finished runs.
+    pub notifications: Notifications,
     /// Width in points of the sidebar shared by the Chat, Work and Models tabs.
     pub sidebar_width: f32,
     /// May agents write files at all. Off makes every agent read-only.
@@ -120,6 +134,7 @@ impl Default for Settings {
             theme_mode: ThemeMode::System,
             theme_family: ThemeFamily::Meadow,
             keep_alive: KeepAlive::OllamaDefault,
+            notifications: Notifications::Background,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             agents_can_write: true,
             agents_can_run: false,
@@ -260,6 +275,30 @@ mod tests {
     }
 
     #[test]
+    fn notifications_default_to_background_and_round_trip_in_kebab_case() {
+        assert_eq!(Settings::default().notifications, Notifications::Background);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roost.toml");
+        std::fs::write(&path, "max_parallel = 3\n").unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().notifications,
+            Notifications::Background,
+            "an older file gets the default"
+        );
+        let s = Settings {
+            notifications: Notifications::Always,
+            ..Settings::default()
+        };
+        s.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("notifications = \"always\""), "{text}");
+        assert_eq!(
+            Settings::load(&path).unwrap().notifications,
+            Notifications::Always
+        );
+    }
+
+    #[test]
     fn keep_alive_maps_to_what_ollama_expects() {
         assert_eq!(KeepAlive::OllamaDefault.wire(), None);
         assert_eq!(
@@ -309,6 +348,7 @@ mod tests {
             theme_mode: ThemeMode::Dark,
             theme_family: ThemeFamily::Tide,
             keep_alive: KeepAlive::FifteenMinutes,
+            notifications: Notifications::Off,
             sidebar_width: 377.0,
             agents_can_write: false,
             agents_can_run: true,

@@ -8,6 +8,7 @@ mod identity;
 mod installed;
 mod menu;
 mod models;
+mod notify;
 mod quit;
 #[cfg(test)]
 mod quit_tests;
