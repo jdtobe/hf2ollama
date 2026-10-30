@@ -1246,7 +1246,7 @@ async fn an_agent_reads_a_file_and_answers() {
     // What the model saw.
     let bodies = chat_bodies(&srv);
     assert_eq!(bodies.len(), 2);
-    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(bodies[0]["tools"].as_array().unwrap().len(), 9);
     let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
     assert!(
         system.contains("an agent inside the attached workspace"),
@@ -1539,7 +1539,8 @@ async fn switched_off_tools_are_not_offered_to_the_model() {
             "find_files",
             "search_bytes",
             "write_file",
-            "edit_file"
+            "edit_file",
+            "ask_user"
         ]
     );
 }
@@ -2152,7 +2153,7 @@ async fn a_tool_set_to_ask_waits_for_the_user_and_runs_once_allowed() {
     h.send(id, "what is in a.txt?").await;
     h.wait("asked", |e| approval_for(e).is_some()).await;
     // The model was offered the tools even though they need approval.
-    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(chat_bodies(&srv)[0]["tools"].as_array().unwrap().len(), 9);
     let (call_id, name) = approval_for(&h.events()).unwrap();
     assert_eq!(name, "read_file");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2255,6 +2256,277 @@ async fn leaving_a_streaming_agent_lets_the_whole_run_finish() {
             .is_some_and(|s| texts(&s).iter().any(|m| m.1 == "It says hello."))
     })
     .await;
+}
+
+// ---- the agent asks the user a question
+
+use crate::agent::ask::{Answer, Question};
+
+fn question_for(e: &[ChatEvent]) -> Option<(String, Question)> {
+    e.iter().rev().find_map(|e| match e {
+        ChatEvent::QuestionAsked {
+            call_id, question, ..
+        } => Some((call_id.clone(), question.clone())),
+        _ => None,
+    })
+}
+
+fn count_questions(e: &[ChatEvent]) -> usize {
+    e.iter()
+        .filter(|e| matches!(e, ChatEvent::QuestionAsked { .. }))
+        .count()
+}
+
+fn one_of(options: &[&str]) -> serde_json::Value {
+    serde_json::json!({"question": "Which one?", "kind": "one", "options": options})
+}
+
+fn picked(p: &[&str]) -> Option<Answer> {
+    Some(Answer {
+        picked: p.iter().map(|s| s.to_string()).collect(),
+        other: None,
+    })
+}
+
+fn typed(t: &str) -> Option<Answer> {
+    Some(Answer {
+        picked: Vec::new(),
+        other: Some(t.into()),
+    })
+}
+
+/// An agent in a plain folder whose model asks `ask` first, then answers.
+async fn asking_user_agent(asks: Vec<serde_json::Value>) -> (TcpScript, H, SessionId, TempDir) {
+    let ws = workspace();
+    let mut routes: Vec<Route> = asks
+        .into_iter()
+        .map(|a| chat_route(calls("ask_user", a)))
+        .collect();
+    routes.push(chat_route(reply("Thanks, noted.")));
+    let srv = fake_agent(routes).await;
+    let h = start(&srv).await;
+    let id = h.create_agent(&ws, SessionLifetime::Persisted).await;
+    (srv, h, id, ws)
+}
+
+/// What the model was told after the user answered the question.
+fn tool_reply(srv: &TcpScript, n: usize) -> String {
+    let m = chat_bodies(srv)[n]["messages"].clone();
+    let last = m.as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["role"], "tool", "{last}");
+    last["content"].as_str().unwrap().to_string()
+}
+
+async fn ask_and_answer(args: serde_json::Value, answer: Option<Answer>) -> String {
+    let (srv, h, id, _ws) = asking_user_agent(vec![args]).await;
+    h.send(id, "help me choose").await;
+    h.wait("asked", |e| question_for(e).is_some()).await;
+    let (call_id, _) = question_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::AnswerQuestion {
+        session: id,
+        call_id,
+        answer,
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Completed, None)]
+    );
+    tool_reply(&srv, 1)
+}
+
+#[tokio::test]
+async fn the_agent_asks_and_waits_and_the_answer_reaches_the_model() {
+    let (srv, h, id, _ws) = asking_user_agent(vec![one_of(&["A", "B"])]).await;
+    h.send(id, "help me choose").await;
+    h.wait("asked", |e| question_for(e).is_some()).await;
+    let (call_id, q) = question_for(&h.events()).unwrap();
+    assert_eq!(q.text, "Which one?");
+    assert_eq!(q.options, ["A", "B"]);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(run_ends(&h.events()).is_empty(), "the run waits");
+    assert_eq!(started_tools(&h.events()), 0, "nothing ran");
+    assert_eq!(
+        count_approvals(&h.events()),
+        0,
+        "a question is not an approval"
+    );
+    h.cmd(ChatCommand::AnswerQuestion {
+        session: id,
+        call_id,
+        answer: picked(&["B"]),
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(tool_reply(&srv, 1), r#"{"answer":"B"}"#);
+}
+
+#[tokio::test]
+async fn each_kind_of_answer_is_passed_on() {
+    assert_eq!(
+        ask_and_answer(one_of(&["A", "B"]), typed("Neither, use C")).await,
+        r#"{"answer":"Neither, use C","other":true}"#
+    );
+    let many =
+        serde_json::json!({"question": "Which?", "kind": "many", "options": ["A", "B", "C"]});
+    assert_eq!(
+        ask_and_answer(many, picked(&["A", "C"])).await,
+        r#"{"answers":["A","C"]}"#
+    );
+    let text = serde_json::json!({"question": "Name?", "kind": "text"});
+    assert_eq!(
+        ask_and_answer(text, typed("Ada")).await,
+        r#"{"answer":"Ada"}"#
+    );
+}
+
+#[tokio::test]
+async fn skipping_tells_the_model_and_the_run_goes_on() {
+    let r = ask_and_answer(one_of(&["A", "B"]), None).await;
+    assert!(r.contains("chose not to answer"), "{r}");
+}
+
+#[tokio::test]
+async fn a_malformed_question_goes_back_to_the_model_and_does_not_bother_the_user() {
+    let (srv, h, id, _ws) = asking_user_agent(vec![
+        serde_json::json!({"question": "Which?", "kind": "one"}),
+    ])
+    .await;
+    h.send(id, "help me choose").await;
+    h.wait_run_ended(1).await;
+    assert_eq!(count_questions(&h.events()), 0);
+    let r = tool_reply(&srv, 1);
+    assert!(
+        r.contains("invalid arguments") && r.contains("2 to 8"),
+        "{r}"
+    );
+}
+
+#[tokio::test]
+async fn an_answer_that_is_not_one_of_the_options_is_asked_again() {
+    let (srv, h, id, _ws) = asking_user_agent(vec![one_of(&["A", "B"])]).await;
+    h.send(id, "help me choose").await;
+    h.wait("asked", |e| question_for(e).is_some()).await;
+    let (call_id, _) = question_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::AnswerQuestion {
+        session: id,
+        call_id: call_id.clone(),
+        answer: picked(&["Z"]),
+    });
+    h.wait("asked again", |e| count_questions(e) >= 2).await;
+    assert!(run_ends(&h.events()).is_empty(), "still waiting");
+    h.cmd(ChatCommand::AnswerQuestion {
+        session: id,
+        call_id,
+        answer: picked(&["A"]),
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(tool_reply(&srv, 1), r#"{"answer":"A"}"#);
+}
+
+#[tokio::test]
+async fn leaving_the_chat_keeps_the_question_and_coming_back_asks_it_again() {
+    let (srv, h, id, _ws) = asking_user_agent(vec![one_of(&["A", "B"])]).await;
+    h.send(id, "help me choose").await;
+    h.wait("asked", |e| question_for(e).is_some()).await;
+    h.cmd(ChatCommand::Close(id));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(run_ends(&h.events()).is_empty(), "the run is still waiting");
+    h.cmd(ChatCommand::Open(id));
+    h.wait("asked again", |e| count_questions(e) >= 2).await;
+    assert_eq!(count_approvals(&h.events()), 0);
+    let (call_id, _) = question_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::AnswerQuestion {
+        session: id,
+        call_id,
+        answer: picked(&["B"]),
+    });
+    h.wait_run_ended(1).await;
+    assert_eq!(tool_reply(&srv, 1), r#"{"answer":"B"}"#);
+}
+
+#[tokio::test]
+async fn stop_ends_a_run_that_is_waiting_for_an_answer() {
+    let (_srv, h, id, _ws) = asking_user_agent(vec![one_of(&["A", "B"])]).await;
+    h.send(id, "help me choose").await;
+    h.wait("asked", |e| question_for(e).is_some()).await;
+    h.cmd(ChatCommand::Stop(id));
+    h.wait_run_ended(1).await;
+    assert_eq!(
+        run_ends(&h.events()),
+        vec![(super::types::RunOutcome::Cancelled, None)]
+    );
+}
+
+#[tokio::test]
+async fn the_question_and_the_answer_are_kept_in_the_chat() {
+    let (_srv, h, id, _ws) = asking_user_agent(vec![one_of(&["A", "B"])]).await;
+    h.send(id, "help me choose").await;
+    h.wait("asked", |e| question_for(e).is_some()).await;
+    let (call_id, _) = question_for(&h.events()).unwrap();
+    h.cmd(ChatCommand::AnswerQuestion {
+        session: id,
+        call_id,
+        answer: picked(&["B"]),
+    });
+    h.wait_run_ended(1).await;
+    h.wait("saved", |_| {
+        h.try_read(id).is_some_and(|s| {
+            s.messages.iter().any(|m| {
+                matches!(&m.content, crate::session::MessageContent::Tool { name, output, status, .. }
+                    if name == "ask_user"
+                        && output.as_deref() == Some(r#"{"answer":"B"}"#)
+                        && *status == crate::session::ToolStatus::Complete)
+            })
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_run_may_ask_only_so_many_questions() {
+    let asks: Vec<_> = (0..6).map(|_| one_of(&["A", "B"])).collect();
+    let (srv, h, id, _ws) = asking_user_agent(asks).await;
+    h.send(id, "ask a lot").await;
+    for n in 1..=5 {
+        h.wait("asked", |e| count_questions(e) >= n).await;
+        let (call_id, _) = question_for(&h.events()).unwrap();
+        h.cmd(ChatCommand::AnswerQuestion {
+            session: id,
+            call_id,
+            answer: None,
+        });
+    }
+    h.wait_run_ended(1).await;
+    assert_eq!(count_questions(&h.events()), 5, "the sixth is not asked");
+    let r = tool_reply(&srv, 6);
+    assert!(r.contains("5 questions"), "{r}");
+}
+
+#[tokio::test]
+async fn the_model_is_offered_the_tool_unless_it_is_switched_off() {
+    let names = |srv: &TcpScript| -> Vec<String> {
+        chat_bodies(srv)[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (srv, h, id, _ws) = asking_user_agent(vec![]).await;
+    h.send(id, "hello").await;
+    h.wait_run_ended(1).await;
+    assert!(names(&srv).contains(&"ask_user".to_string()));
+
+    let (srv, h, id, _ws) = asking_user_agent(vec![]).await;
+    h.cmd(ChatCommand::SetToolEnabled(id, "ask_user".into(), false));
+    h.wait("off", |_| {
+        h.try_read(id)
+            .is_some_and(|s| s.effective_tools.tools.get("ask_user") == Some(&false))
+    })
+    .await;
+    h.send(id, "hello").await;
+    h.wait_run_ended(1).await;
+    assert!(!names(&srv).contains(&"ask_user".to_string()));
 }
 
 #[tokio::test]
@@ -2383,7 +2655,8 @@ async fn with_writing_switched_off_in_settings_no_agent_is_offered_or_can_use_a_
             "read_binary",
             "find_files",
             "search_text",
-            "search_bytes"
+            "search_bytes",
+            "ask_user"
         ]
     );
 }

@@ -100,6 +100,12 @@ pub enum ChatCommand {
         call_id: String,
         decision: ApprovalDecision,
     },
+    /// The answer to a `QuestionAsked` event. `None` is "skip".
+    AnswerQuestion {
+        session: SessionId,
+        call_id: String,
+        answer: Option<crate::agent::ask::Answer>,
+    },
     /// Show another version of a fork (`after` is the message before it).
     SwitchVersion {
         session: SessionId,
@@ -238,6 +244,12 @@ pub enum ChatEvent {
         preview: Option<crate::agent::change::ChangePreview>,
         /// For a command, exactly what will run and where.
         run: Option<crate::agent::command::RunPreview>,
+    },
+    /// The agent asks a question and waits for `AnswerQuestion`.
+    QuestionAsked {
+        session: SessionId,
+        call_id: String,
+        question: crate::agent::ask::Question,
     },
     /// The files an agent has changed in this chat, after any change.
     Changes {

@@ -346,6 +346,11 @@ impl Manager {
                 call_id,
                 decision,
             } => self.resolve_approval(session, call_id, decision).await,
+            ChatCommand::AnswerQuestion {
+                session,
+                call_id,
+                answer,
+            } => self.answer_question(session, call_id, answer).await,
             ChatCommand::Btw {
                 session,
                 message,
@@ -490,6 +495,16 @@ impl Manager {
             }
         }
         if let Some((call_id, name, arguments, preview, run)) = waiting {
+            if name == crate::agent::ask::TOOL {
+                if let Ok(question) = crate::agent::ask::parse(&arguments) {
+                    self.emit(ChatEvent::QuestionAsked {
+                        session: id,
+                        call_id,
+                        question,
+                    });
+                }
+                return;
+            }
             self.emit(ChatEvent::ApprovalRequested {
                 session: id,
                 call_id,

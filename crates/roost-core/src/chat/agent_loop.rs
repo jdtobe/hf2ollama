@@ -9,6 +9,7 @@ use super::context::{build_agent_request, window};
 use super::manager::{now_ms, Intent, Manager, ModelInfo, Run, Slot, CHAT_SYSTEM_PROMPT};
 use super::run::{drive, RunMsg};
 use super::types::{ApprovalDecision, ChatEvent, RunOutcome, SendRejection, TurnOutcome};
+use crate::agent::ask;
 use crate::agent::change::{self, ChangePreview};
 use crate::agent::command::{self, RunPreview};
 use crate::agent::registry;
@@ -48,6 +49,8 @@ pub(super) struct AgentRun {
     inbox: VecDeque<String>,
     workspace: Arc<Workspace>,
     next_call: u32,
+    /// Questions this run has asked the user.
+    asked: u32,
 }
 
 impl AgentRun {
@@ -291,6 +294,7 @@ impl Manager {
             inbox: VecDeque::new(),
             workspace: opened,
             next_call: 0,
+            asked: 0,
         });
         let s = live.s.clone();
         self.save(&s);
@@ -471,6 +475,10 @@ impl Manager {
             self.agent_next(id).await;
             return;
         };
+        if call.name == ask::TOOL {
+            self.ask_question(id, call);
+            return;
+        }
         let config = gated(&live.s.effective_tools, writes, runs);
         let mut ask = registry::needs_approval(&config, &call.name);
         let preview = agent.preview(&call.name, &call.arguments, &lim);
@@ -607,7 +615,13 @@ impl Manager {
             return;
         };
         let call = match &mut live.slot {
-            Slot::Tools(t) if t.call_id == call_id && t.waiting.is_some() => t.waiting.take(),
+            // A question is answered with `AnswerQuestion`, not an approval.
+            Slot::Tools(t)
+                if t.call_id == call_id
+                    && t.waiting.as_ref().is_some_and(|c| c.name != ask::TOOL) =>
+            {
+                t.waiting.take()
+            }
             _ => None,
         };
         let Some(call) = call else {
@@ -668,6 +682,105 @@ impl Manager {
                 .await;
             }
         }
+    }
+
+    /// The model asks the user a question: the run waits in this slot until
+    /// `AnswerQuestion`. A question that cannot be asked (switched off, too
+    /// many, malformed) goes back to the model as a failed call instead.
+    fn ask_question(&mut self, id: SessionId, call: PendingCall) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let Some(agent) = live.agent.as_mut() else {
+            return;
+        };
+        let run = agent.run;
+        let on = registry::specs()
+            .iter()
+            .find(|sp| sp.name == ask::TOOL)
+            .is_some_and(|sp| registry::check(&live.s.effective_tools, sp).is_ok());
+        let asked = if !on {
+            Err(ToolError::Off(ask::TOOL.to_string()))
+        } else if agent.asked >= ask::MAX_PER_RUN {
+            Err(ToolError::InvalidArguments(format!(
+                "you have already asked {} questions in this run; carry on without asking more",
+                ask::MAX_PER_RUN
+            )))
+        } else {
+            ask::parse(&call.arguments).map_err(ToolError::InvalidArguments)
+        };
+        let waiting = asked.is_ok().then(|| call.clone());
+        live.slot = Slot::Tools(Box::new(ToolRun {
+            join: None,
+            call_id: call.call_id.clone(),
+            msg: call.msg,
+            waiting,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }));
+        match asked {
+            Ok(question) => {
+                agent.asked += 1;
+                self.emit(ChatEvent::QuestionAsked {
+                    session: id,
+                    call_id: call.call_id,
+                    question,
+                });
+            }
+            // Finished by the manager loop, like a call that ran elsewhere.
+            Err(e) => {
+                let _ = self.run_tx.send(RunMsg::ToolDone {
+                    session: id,
+                    run,
+                    call_id: call.call_id,
+                    result: Err(e),
+                    change: None,
+                });
+            }
+        }
+    }
+
+    /// The user answered a question (`None` is skip).
+    pub(super) async fn answer_question(
+        &mut self,
+        id: SessionId,
+        call_id: String,
+        answer: Option<ask::Answer>,
+    ) {
+        let Some(live) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let call = match &live.slot {
+            Slot::Tools(t) if t.call_id == call_id => {
+                t.waiting.clone().filter(|c| c.name == ask::TOOL)
+            }
+            _ => None,
+        };
+        let Some(call) = call else {
+            return;
+        };
+        let Ok(question) = ask::parse(&call.arguments) else {
+            return;
+        };
+        let text = match answer {
+            None => ask::SKIPPED.to_string(),
+            Some(a) => match ask::check_answer(&question, &a) {
+                Ok(()) => ask::result_text(&question, &a),
+                Err(_) => {
+                    // Not a valid answer: the window still has the question.
+                    self.emit(ChatEvent::QuestionAsked {
+                        session: id,
+                        call_id,
+                        question,
+                    });
+                    return;
+                }
+            },
+        };
+        if let Some(Slot::Tools(t)) = self.sessions.get_mut(&id).map(|l| &mut l.slot) {
+            t.waiting = None;
+        }
+        self.tool_done(id, self.current_run(id), call.call_id, Ok(text), None)
+            .await;
     }
 
     fn current_run(&self, id: SessionId) -> RunId {
