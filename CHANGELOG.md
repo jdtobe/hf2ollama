@@ -85,6 +85,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - The input at the bottom is one rounded bubble that starts a line high and grows with the text (up to a limit, then it scrolls). The send button is a round arrow inside it, at the bottom right; while a run is going it becomes a red Stop.
 - Small pills sit under it. On the left: **+** (an agent's menu offers the working folder; files and images are not supported yet), a hammer for the tools and settings popover (it opens above the button), and the agent's folder. On the right: the **R**, **W** and **X** pills and the model.
 - The R, W and X pills moved from the header and are now buttons. A click steps Off, Ask, Allow; running commands steps only Off and Ask, and **holding the X pill** asks (once, above the input) before allowing commands without asking. The pills are locked while a run is active.
+- Nothing sits behind the input: no lighter panel or border, only the bubble, on the same background as the conversation.
 - In a narrow window the folder shrinks to its icon and the model name is shortened. The header keeps the title, the folder path, the status, the pin and the trash can; the "Agent settings" button is gone from it.
 
 ### Quitting with work in progress

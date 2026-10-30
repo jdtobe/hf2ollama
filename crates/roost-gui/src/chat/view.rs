@@ -298,10 +298,14 @@ fn show_mode(
         egui::Panel::bottom("chat_composer")
             .resizable(false)
             .frame(
-                egui::Frame::new()
-                    .fill(t.surface)
-                    .stroke(Stroke::new(1.0, t.line))
-                    .inner_margin(Margin::symmetric(20, 12)),
+                // No box of its own: the input bubble floats over the same
+                // background as the conversation.
+                egui::Frame::new().fill(t.bg).inner_margin(Margin {
+                    left: 20,
+                    right: 20,
+                    top: 4,
+                    bottom: 10,
+                }),
             )
             .show(ui, |ui| {
                 #[cfg(test)]
