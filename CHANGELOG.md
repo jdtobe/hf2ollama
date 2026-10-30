@@ -80,6 +80,13 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - A new tool, `ask_user`, lets an agent stop and ask: pick one of 2 to 8 options, pick several, or type an answer. Pick questions also take an answer of your own, and you can skip. The question appears above the input, the run waits (also while you look at another chat), and your answer goes back to the model. The question and your answer stay in the chat.
 - It is on by default and can be switched off in the Individual tools list ("Ask you"). An agent may ask up to 5 questions per run. A question counts as an alert while the window is in the background ("Has a question for you").
 
+### A compact input
+
+- The input at the bottom is one rounded bubble that starts a line high and grows with the text (up to a limit, then it scrolls). The send button is a round arrow inside it, at the bottom right; while a run is going it becomes a red Stop.
+- Small pills sit under it. On the left: **+** (an agent's menu offers the working folder; files and images are not supported yet), a hammer for the tools and settings popover (it opens above the button), and the agent's folder. On the right: the **R**, **W** and **X** pills and the model.
+- The R, W and X pills moved from the header and are now buttons. A click steps Off, Ask, Allow; running commands steps only Off and Ask, and **holding the X pill** asks (once, above the input) before allowing commands without asking. The pills are locked while a run is active.
+- In a narrow window the folder shrinks to its icon and the model name is shortened. The header keeps the title, the folder path, the status, the pin and the trash can; the "Agent settings" button is gone from it.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

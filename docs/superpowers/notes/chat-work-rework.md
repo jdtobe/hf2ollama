@@ -71,3 +71,33 @@ first, and shows the exact command on the approval card.
 ## Timestamps (2026-10-29)
 
 - Messages should show when they were sent, quietly: on hover (the icon row under a bubble, and a tooltip with the full date and time). `Message.created_at_ms` already holds it. Details and where to put it are in `handoff-2026-10-29.md`, next step 3.
+
+## Direction and review (2026-10-30, with the user, from screenshots)
+
+**Direction agreed: B + C.** One list of sessions with "agent" as a mode (a chat gains a folder and tools when you want it; folder-less agents fall out of this), plus a running/waiting badge in the list and later a dashboard-style view for concurrent runs. The user's longer view: many chats at once, eventually agents that cooperate (to be planned separately). The user's own use: Work is "just chat with access to files and tools". Nothing here is urgent; it is all backlog.
+
+**From the screenshots (backlog, roughly in the order proposed):**
+
+1. **Models-tab footer on Chat and Work.** "Downloads & imports / Nothing running. Pick a model above to start." and "Staging folder ... (files deleted after each import)" take about 120 px on every tab, and the first line is wrong on Chat (a model is picked). Move them to Models or into the status area.
+2. **Sidebar rows blend together** (six empty "Untitled" rows, all with the same model line). Ideas: use the second line for something that differs (folder for an agent, status running / waiting / failed, a first-message preview); time on the right; a hairline or card edge between rows; an italic grey "New chat" instead of "Untitled" (as the header notes already say). The model name is the same on every row and need not be repeated. Check whether "New chat" should reuse an existing empty chat instead of creating another one (not looked at yet).
+3. **A failed run has no action.** The Work screenshot shows "Failed" and "Ollama stopped responding. Retry when it is ready." with no Retry. This is handoff 4b (banner C); the comps are agreed there.
+4. **The model name repeats** on every assistant message, in the composer chip and in the sidebar. Show it once per run or when it changes.
+5. **Work header is crowded**: title truncates next to the Idle dot, the R and W chips, Agent settings, pin, trash. The chips are cryptic. The path is a subtitle line; the notes suggested a muted suffix.
+6. Smaller: large gaps between messages (~70 px); the "x" on the selected sidebar row next to the header trash can (unclear which deletes); tool-group lines read as plain text; "Pinned / Earlier" (Chat) and "Yesterday / Earlier" (Work) group differently; the timestamps are in a monospace face that matches nothing else.
+
+**Keep:** the tinted header band with the icon tile, collapsed tool groups, the accent bar on the user's message, the icon row under replies, the steering placeholder.
+
+## Composer redesign (comped 2026-10-30, not built)
+
+The input at the bottom wastes space. Agreed design (two rounds of comps with the user):
+
+- **Input:** a one-line bubble that grows with the text up to a cap, then scrolls. The send button is inside it, at the bottom right (an up arrow; a right arrow is a cosmetic swap). While an agent works, Stop replaces Send and Enter steers; a queued steering message shows above the input.
+- **Floating pills under the input, left:** `+` (menu: working folder, attach file, attach image; dictation later), a tools icon (icon only, the name in the tooltip; opens the Tools popover), and the folder as a pill with the path cut in the middle when the chat has one.
+- **Right:** the R, W and X permission pills, then the model selector (name truncated, full name on hover).
+- **Folder and tools are available in every chat** ("abilities added to a chat"); in a plain chat the folder is only a `+` menu item, no pill. This is the B + C direction in the section above.
+- **Pills as toggles:** R and W cycle Off / Ask / Allow by click. **X cycles only Off / Ask; Allow is a right-click**, and the tooltip says so. The Tools popover always shows all three states for every tool. X appears only when running commands is enabled in Settings.
+- **Narrow window:** the folder pill shrinks to an icon, the model name shortens.
+- **"Step n of N"** moves from the old status line to the header, beside the Idle / Working dot (to confirm).
+- Replaces the current composer (the large padded box, the model chip and the Send button under it). Layout tests at both sizes must cover the pills, wrapping, and the Stop state.
+
+**Order agreed:** composer PR, then the run-end banner (handoff 4b), then the hand-run agent session (which also feeds the tool-consolidation question in 4d), then a pass over the tool run displays using what that session shows.

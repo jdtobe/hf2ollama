@@ -76,9 +76,6 @@ const PENCIL_W: f32 = 24.0;
 /// quiet and fits more of the path.
 const PATH_FONT: f32 = 11.0;
 
-/// Below this pane width the Agent settings button is the gear alone.
-const COMPACT_PANE_W: f32 = 600.0;
-
 /// Height of the square icon buttons in the header.
 const HEADER_BTN: f32 = 32.0;
 
@@ -128,10 +125,6 @@ pub(super) fn header(
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             header_actions(ui, app, out, t, s, pinned, incognito, now);
-            if s.mode == SessionMode::Agent {
-                agent_settings(ui, app, out, t, s);
-                capability_chips(ui, app, t, s);
-            }
             if incognito {
                 tag(ui, "Incognito", t.accent, t.accent_soft);
             }
@@ -598,11 +591,242 @@ fn cap_permission(cfg: &roost_core::session::EffectiveToolConfig, cap: Capabilit
         .map_or(Permission::Off, |sp| registry::permission_of(cfg, sp))
 }
 
-/// The R and W chips beside the Agent settings button: what the agent may do,
-/// at a glance. Read is accent when allowed, write is amber when it asks;
-/// anything off is dimmed. No W when writing is off in Settings.
-fn capability_chips(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, s: &Session) {
+/// How long a press counts as a long one.
+const LONG_PRESS_SECS: f64 = 0.5;
+
+/// Whether a press that began at `press_start` has been held long enough.
+pub(super) fn held_long(press_start: Option<f64>, now: f64) -> bool {
+    press_start.is_some_and(|start| now - start >= LONG_PRESS_SECS)
+}
+
+/// What a press on a pill was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Press {
+    Nothing,
+    Click,
+    Long,
+}
+
+/// Tells a click from a long press on `resp`. A long press fires once while
+/// the button is still down, and the click that ends it is dropped.
+fn press_of(ui: &egui::Ui, resp: &egui::Response) -> Press {
+    let flag = resp.id.with("long-press");
+    let fired = ui
+        .memory(|m| m.data.get_temp::<bool>(flag))
+        .unwrap_or(false);
+    let down = resp.is_pointer_button_down_on();
+    let press = if down && !fired {
+        let (start, now) = ui.input(|i| (i.pointer.press_start_time(), i.time));
+        if held_long(start, now) {
+            ui.memory_mut(|m| m.data.insert_temp(flag, true));
+            Press::Long
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+            Press::Nothing
+        }
+    } else if resp.clicked() && !fired {
+        Press::Click
+    } else {
+        Press::Nothing
+    };
+    if !down && fired {
+        ui.memory_mut(|m| m.data.remove::<bool>(flag));
+    }
+    press
+}
+
+/// The next permission when a pill is clicked: Off, Ask, then Allow, and back
+/// to Off. Running commands never cycles to Allow; that takes a long press.
+pub(super) fn next_permission(cap: Capability, current: Permission) -> Permission {
+    match (current, cap) {
+        (Permission::Off, _) => Permission::Ask,
+        (Permission::Ask, Capability::Run) => Permission::Off,
+        (Permission::Ask, _) => Permission::Auto,
+        (Permission::Auto, _) => Permission::Off,
+    }
+}
+
+/// What a small pill under the input shows.
+pub(super) enum PillBody<'a> {
+    Icon(Icon),
+    IconText(Icon, &'a str),
+}
+
+/// Height of the pills under the input.
+const PILL_H: f32 = 26.0;
+
+/// A small rounded button under the input. `selected` tints it (a popup is
+/// open). Returns its rectangle and response.
+pub(super) fn pill(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    body: PillBody<'_>,
+    enabled: bool,
+    selected: bool,
+) -> (egui::Rect, egui::Response) {
+    let galley = match &body {
+        PillBody::Icon(_) => None,
+        PillBody::IconText(_, text) => Some(ui.painter().layout_no_wrap(
+            (*text).to_string(),
+            egui::FontId::proportional(12.0),
+            t.fg2,
+        )),
+    };
+    let width = match &galley {
+        None => 30.0,
+        Some(g) => 12.0 + 16.0 + 5.0 + g.size().x + 10.0,
+    };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, PILL_H), sense);
+    let resp = if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    };
+    let fill = if selected {
+        t.accent_soft
+    } else if resp.hovered() && enabled {
+        t.surface
+    } else {
+        t.surface2
+    };
+    ui.painter().rect(
+        rect,
+        PILL_H / 2.0,
+        fill,
+        egui::Stroke::new(1.0, t.line),
+        egui::StrokeKind::Inside,
+    );
+    let colour = if enabled { t.fg2 } else { t.fg3 };
+    match (body, galley) {
+        (PillBody::Icon(icon), _) => {
+            crate::icons::paint(ui.painter(), rect, icon, colour);
+        }
+        (PillBody::IconText(icon, _), Some(g)) => {
+            let at = egui::pos2(rect.left() + 12.0 + 8.0, rect.center().y);
+            crate::icons::paint(
+                ui.painter(),
+                egui::Rect::from_center_size(at, egui::vec2(16.0, 16.0)),
+                icon,
+                colour,
+            );
+            ui.painter().galley(
+                egui::pos2(
+                    rect.left() + 12.0 + 16.0 + 5.0,
+                    rect.center().y - g.size().y / 2.0,
+                ),
+                g,
+                colour,
+            );
+        }
+        _ => {}
+    }
+    (rect, resp)
+}
+
+/// Asks for a folder and sends it as the agent's working folder.
+fn choose_folder(out: &mut Vec<BackendRequest>, id: roost_core::session::SessionId) {
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title("Choose the agent's folder")
+        .pick_folder()
+    {
+        out.push(BackendRequest::Chat(ChatCommand::SetWorkspace(id, path)));
+    }
+}
+
+/// The `+` under the input: what can be added to this chat.
+pub(super) fn plus_menu(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    s: &Session,
+) {
+    let running = app.chat.is_running(s.id);
+    let (_, resp) = pill(ui, t, PillBody::Icon(Icon::Plus), true, false);
+    let resp = resp.on_hover_text("Add to this chat");
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.plus_button = Some(resp.rect);
+    }
+    egui::Popup::from_toggle_button_response(&resp)
+        .align(egui::RectAlign::TOP_START)
+        .close_behavior(PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            if s.mode == SessionMode::Agent {
+                if ui
+                    .add_enabled(!running, egui::Button::new("Working folder…").frame(false))
+                    .clicked()
+                {
+                    choose_folder(out, s.id);
+                }
+                ui.label(
+                    RichText::new("Files and images: not yet")
+                        .size(11.5)
+                        .color(t.fg3),
+                );
+            } else {
+                ui.label(
+                    RichText::new("Nothing to add to a chat yet")
+                        .size(12.0)
+                        .color(t.fg3),
+                );
+            }
+        });
+}
+
+/// The agent's folder as a pill under the input; clicking it picks another.
+pub(super) fn folder_pill(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    s: &Session,
+    compact: bool,
+) {
+    let Some(path) = &s.workspace else {
+        return;
+    };
+    let running = app.chat.is_running(s.id);
+    let full = home_relative(path);
+    let shown =
+        crate::widgets::ellipsize_middle(ui, &full, egui::FontId::proportional(12.0), 220.0);
+    let body = if compact {
+        PillBody::Icon(Icon::Folder)
+    } else {
+        PillBody::IconText(Icon::Folder, &shown)
+    };
+    let (_, resp) = pill(ui, t, body, !running, false);
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.folder_pill = Some(resp.rect);
+    }
+    let resp = resp.on_hover_text(format!("{full}\nClick to choose another folder"));
+    if resp.clicked() && !running {
+        choose_folder(out, s.id);
+    }
+}
+
+/// The R, W and X pills under the input: what the agent may do, at a glance,
+/// and the quickest way to change it. A click steps Off, Ask, Allow (running
+/// commands steps Off and Ask only); a long press picks Allow. Read is accent
+/// when allowed, write is amber when it asks, anything off is dimmed. No W
+/// when writing is off in Settings, no X until commands are switched on.
+pub(super) fn permission_pills(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    s: &Session,
+) {
     let dark = ui.visuals().dark_mode;
+    let running = app.chat.is_running(s.id);
     #[cfg(test)]
     {
         app.chat_ui.probe.chips.clear();
@@ -610,13 +834,13 @@ fn capability_chips(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, s: &Sessi
     // Right-to-left: X is placed first, so W and then R end up on its left.
     let mut chips = Vec::new();
     if app.settings.agents_can_run {
-        chips.push((Capability::Run, 'X', "Running commands"));
+        chips.push((Capability::Run, Family::Shell, 'X', "Running commands"));
     }
     if app.settings.agents_can_write {
-        chips.push((Capability::Write, 'W', "Writing files"));
+        chips.push((Capability::Write, Family::Files, 'W', "Writing files"));
     }
-    chips.push((Capability::Read, 'R', "Reading files"));
-    for (cap, letter, what) in chips {
+    chips.push((Capability::Read, Family::Files, 'R', "Reading files"));
+    for (cap, family, letter, what) in chips {
         let perm = cap_permission(&s.effective_tools, cap);
         // Running commands is never drawn in the calm accent colour.
         let danger = cap == Capability::Run && perm == Permission::Auto;
@@ -628,10 +852,15 @@ fn capability_chips(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, s: &Sessi
             Permission::Ask => (t.warn, t.warn_soft, t.warn),
             Permission::Off => (t.fg3, t.surface2, t.line),
         };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 24.0), egui::Sense::hover());
+        let sense = if running {
+            egui::Sense::hover()
+        } else {
+            egui::Sense::click()
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, PILL_H), sense);
         ui.painter().rect(
             rect,
-            6.0,
+            PILL_H / 2.0,
             fill,
             egui::Stroke::new(1.0, stroke.gamma_multiply(0.6)),
             egui::StrokeKind::Inside,
@@ -648,10 +877,55 @@ fn capability_chips(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, s: &Sessi
             Permission::Ask => "asks first",
             Permission::Off => "off",
         };
-        resp.on_hover_text(format!("{what}: {state}"));
+        let how = if running {
+            "locked while a run is active"
+        } else if cap == Capability::Run {
+            "click to switch off or ask, hold to allow without asking"
+        } else {
+            "click to change, hold to allow without asking"
+        };
+        let resp = resp
+            .on_hover_cursor(if running {
+                egui::CursorIcon::Default
+            } else {
+                egui::CursorIcon::PointingHand
+            })
+            .on_hover_text(format!("{what}: {state} ({how})"));
         #[cfg(test)]
         {
             app.chat_ui.probe.chips.push((letter, rect, perm));
+        }
+        if running {
+            continue;
+        }
+        let key = registry::capability_key(family, cap);
+        match press_of(ui, &resp) {
+            Press::Nothing => {}
+            Press::Click => {
+                app.chat_ui.run_allow_pending = None;
+                app.chat_ui.run_allow_from_pill = false;
+                out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                    s.id,
+                    key,
+                    next_permission(cap, perm),
+                )));
+            }
+            Press::Long if cap == Capability::Run => {
+                // Running commands without asking is confirmed once.
+                if perm != Permission::Auto {
+                    app.chat_ui.run_allow_pending = Some(s.id);
+                    app.chat_ui.run_allow_from_pill = true;
+                }
+            }
+            Press::Long => {
+                if perm != Permission::Auto {
+                    out.push(BackendRequest::Chat(ChatCommand::SetCapability(
+                        s.id,
+                        key,
+                        Permission::Auto,
+                    )));
+                }
+            }
         }
     }
     #[cfg(test)]
@@ -660,6 +934,21 @@ fn capability_chips(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, s: &Sessi
             .probe
             .chips
             .sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+    }
+}
+
+/// The once-only confirmation for allowing commands without asking, above the
+/// input while it is pending.
+pub(super) fn run_allow_banner(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    id: roost_core::session::SessionId,
+) {
+    if app.chat_ui.run_allow_pending == Some(id) && app.chat_ui.run_allow_from_pill {
+        run_allow_confirm(ui, app, out, t, id, Family::Shell);
+        ui.add_space(8.0);
     }
 }
 
@@ -698,7 +987,7 @@ fn settings_card<R>(
 
 /// The agent's folder, step budget and tools, behind one button that says
 /// so.
-fn agent_settings(
+pub(super) fn agent_settings(
     ui: &mut egui::Ui,
     app: &mut AppState,
     out: &mut Vec<BackendRequest>,
@@ -707,63 +996,19 @@ fn agent_settings(
 ) {
     let running = app.chat.is_running(s.id);
     let id = s.id;
-    let label = "Agent settings";
-    // A narrow pane keeps the room for the title and the folder: the button
-    // is the gear alone, and its hover text says what it is.
-    let compact = ui.max_rect().width() < COMPACT_PANE_W;
-    let galley =
-        ui.painter()
-            .layout_no_wrap(label.to_string(), egui::FontId::proportional(13.0), t.fg);
-    let size = if compact {
-        egui::vec2(HEADER_BTN + 4.0, HEADER_BTN)
-    } else {
-        egui::vec2(galley.size().x + 44.0, HEADER_BTN)
-    };
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let resp = resp
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if compact {
-            "Agent settings: the folder this agent works in, its step budget and its tools"
-        } else {
-            "The folder this agent works in, its step budget and its tools"
-        });
-    ui.painter().rect(
-        rect,
-        8.0,
-        if resp.hovered() {
-            t.surface2
-        } else {
-            t.surface
-        },
-        egui::Stroke::new(1.0, t.line),
-        egui::StrokeKind::Inside,
+    let (rect, resp) = pill(ui, t, PillBody::Icon(Icon::Tools), true, false);
+    let resp = resp.on_hover_text(
+        "Tools and settings: the folder this agent works in, its step budget and its tools",
     );
-    let gear_at = if compact {
-        rect.center()
-    } else {
-        egui::pos2(rect.left() + 18.0, rect.center().y)
-    };
-    crate::icons::paint(
-        ui.painter(),
-        egui::Rect::from_center_size(gear_at, egui::vec2(20.0, 20.0)),
-        Icon::Gear,
-        t.fg2,
-    );
-    if !compact {
-        ui.painter().galley(
-            egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
-            galley,
-            t.fg,
-        );
-    }
     egui::Popup::from_toggle_button_response(&resp)
+        .align(egui::RectAlign::TOP_START)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_width(340.0);
             ui.spacing_mut().item_spacing.y = 10.0;
-            // The cards can be taller than the room below the button, so the
-            // popover scrolls instead of running off the bottom of the window.
-            let room = (ui.ctx().content_rect().bottom() - rect.bottom() - 24.0).max(200.0);
+            // The cards can be taller than the room above the button, so the
+            // popover scrolls instead of running off the top of the window.
+            let room = (rect.top() - ui.ctx().content_rect().top() - 24.0).max(200.0);
             ui.set_max_height(room);
             egui::ScrollArea::vertical()
                 .max_height(room)
@@ -927,6 +1172,7 @@ fn family_card(
                     if cap == Capability::Run && value == Permission::Auto {
                         // Running commands without asking is confirmed once.
                         app.chat_ui.run_allow_pending = Some(id);
+                        app.chat_ui.run_allow_from_pill = false;
                     } else {
                         if cap == Capability::Run {
                             app.chat_ui.run_allow_pending = None;
@@ -936,7 +1182,10 @@ fn family_card(
                         )));
                     }
                 }
-                if cap == Capability::Run && app.chat_ui.run_allow_pending == Some(id) {
+                if cap == Capability::Run
+                    && app.chat_ui.run_allow_pending == Some(id)
+                    && !app.chat_ui.run_allow_from_pill
+                {
                     run_allow_confirm(ui, app, out, t, id, family);
                 }
             }
@@ -1159,6 +1408,10 @@ pub(super) fn status_line(ui: &mut egui::Ui, app: &AppState, t: &Tokens, s: &Ses
     }
 }
 
+/// Below this width the pills under the input shrink: the folder to its icon
+/// and the model name to a few characters.
+pub(super) const COMPACT_PILLS_W: f32 = 700.0;
+
 /// The model in use, whether it is in memory, and a way to change it.
 pub(super) fn model_chip(
     ui: &mut egui::Ui,
@@ -1167,6 +1420,7 @@ pub(super) fn model_chip(
     t: &Tokens,
     s: &Session,
     installed: &[String],
+    max_chars: usize,
 ) {
     let running = app.chat.is_running(s.id);
     let model = app
@@ -1187,7 +1441,7 @@ pub(super) fn model_chip(
         })
         .flatten();
     let dot = if loaded.is_some() { "● " } else { "○ " };
-    let label = format!("{dot}{}", truncate_chars(&model, 28));
+    let label = format!("{dot}{}", truncate_chars(&model, max_chars));
     let (chip, _) = MenuButton::new(RichText::new(label).size(12.0))
         .config(sticky())
         .ui(ui, |ui| {

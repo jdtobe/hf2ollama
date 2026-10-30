@@ -25,7 +25,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub(super) const PANE_MARGIN_X: f32 = 20.0;
 pub(super) const PANE_MARGIN_Y: f32 = 16.0;
 const ROW_H: f32 = 46.0;
-const COMPOSER_ROWS: usize = 3;
+/// The tallest the input grows before it scrolls.
+const COMPOSER_MAX_H: f32 = 160.0;
+
+/// Diameter of the send button inside the input.
+const SEND_SIZE: f32 = 30.0;
 
 /// Interaction state that is not part of the conversation data.
 #[derive(Default)]
@@ -36,6 +40,9 @@ pub struct ChatUi {
     pub diffs_open: std::collections::HashSet<(SessionId, u32)>,
     /// Allow for Run was chosen for this session and awaits the confirmation.
     pub run_allow_pending: Option<SessionId>,
+    /// The confirmation was asked for by a long press on the X pill, so it
+    /// shows above the input; otherwise it shows in the tools menu.
+    pub run_allow_from_pill: bool,
     /// Families whose list of individual tools is open, per session (0 Files, 1 Shell).
     pub tools_open: std::collections::HashSet<(SessionId, u8)>,
     /// The tool whose limits are shown under its row in the Individual tools list.
@@ -167,6 +174,9 @@ pub struct ChatProbe {
     pub rename_button: Option<egui::Rect>,
     pub new_button: Option<egui::Rect>,
     pub agent_chip: Option<egui::Rect>,
+    pub plus_button: Option<egui::Rect>,
+    pub folder_pill: Option<egui::Rect>,
+    pub input_rect: Option<egui::Rect>,
     pub model_chip: Option<egui::Rect>,
     pub model_unload: Option<egui::Rect>,
     pub tool_groups: Vec<egui::Rect>,
@@ -2509,6 +2519,7 @@ fn composer(
         question_card(ui, t, app, out, s, &ask);
         ui.add_space(8.0);
     }
+    super::chrome::run_allow_banner(ui, app, out, t, id);
     super::chrome::status_line(ui, app, t, s);
     let eid = composer_id(id);
     if std::mem::take(&mut app.chat_ui.focus_composer) {
@@ -2529,37 +2540,95 @@ fn composer(
         });
     let mut send = enter;
     let mut stop = false;
-    let hint = if app.chat.is_agent(id) {
-        "Message the agent. While it works, Enter sends a steering message."
+    let agent = app.chat.is_agent(id);
+    let hint = if agent {
+        "Message the agent. While it works, Enter steers it."
     } else {
         "Message (Enter to send, Shift+Enter for a new line)"
     };
-    ui.add(
-        egui::TextEdit::multiline(app.chat.draft_mut(id))
-            .id(eid)
-            .desired_rows(COMPOSER_ROWS)
-            .desired_width(ui.available_width())
-            .hint_text(hint),
+    let has_text = !app.chat.draft(id).trim().is_empty();
+    // The input is a rounded bubble that starts one line high and grows with
+    // the text; the send button floats inside it, at the bottom right.
+    let bubble = egui::Frame::new()
+        .fill(t.surface)
+        .stroke(egui::Stroke::new(1.0, t.line))
+        .corner_radius(18.0)
+        .inner_margin(egui::Margin {
+            left: 14,
+            right: (SEND_SIZE + 14.0) as i8,
+            top: 7,
+            bottom: 7,
+        })
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(COMPOSER_MAX_H)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(app.chat.draft_mut(id))
+                            .id(eid)
+                            .desired_rows(1)
+                            .desired_width(ui.available_width())
+                            .frame(egui::Frame::NONE)
+                            .hint_text(hint),
+                    );
+                });
+        });
+    let box_rect = bubble.response.rect;
+    let button = egui::Rect::from_min_size(
+        egui::pos2(
+            box_rect.right() - SEND_SIZE - 6.0,
+            box_rect.bottom() - SEND_SIZE - 4.0,
+        ),
+        egui::vec2(SEND_SIZE, SEND_SIZE),
     );
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        super::chrome::model_chip(ui, app, out, t, s, installed);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let has_text = !app.chat.draft(id).trim().is_empty();
-            if running {
-                let r = secondary(ui, "Stop", true);
-                #[cfg(test)]
-                {
-                    app.chat_ui.probe.send_button = Some((r.rect, "Stop"));
-                }
-                stop = r.clicked();
+    let live = running || has_text;
+    let resp = ui
+        .interact(
+            button,
+            composer_id(id).with("send"),
+            if live {
+                egui::Sense::click()
             } else {
-                let r = primary_button(ui, "Send", has_text);
-                #[cfg(test)]
-                {
-                    app.chat_ui.probe.send_button = Some((r.rect, "Send"));
-                }
-                send |= r.clicked();
+                egui::Sense::hover()
+            },
+        )
+        .on_hover_text(if running { "Stop" } else { "Send" });
+    let (fill, glyph, icon) = if running {
+        (t.bad, egui::Color32::WHITE, crate::icons::Icon::Stop)
+    } else if has_text {
+        (t.accent, t.accent_fg, crate::icons::Icon::SendUp)
+    } else {
+        (t.line, t.fg3, crate::icons::Icon::SendUp)
+    };
+    ui.painter()
+        .circle_filled(button.center(), SEND_SIZE / 2.0, fill);
+    crate::icons::paint(ui.painter(), button, icon, glyph);
+    if running {
+        stop = resp.clicked();
+    } else if has_text {
+        send |= resp.clicked();
+    }
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.input_rect = Some(box_rect);
+        app.chat_ui.probe.send_button = Some((button, if running { "Stop" } else { "Send" }));
+    }
+    ui.add_space(6.0);
+    // The pills under the input: what can be added and the tools on the left,
+    // what the agent may do and the model on the right.
+    let compact = ui.available_width() < super::chrome::COMPACT_PILLS_W;
+    ui.horizontal(|ui| {
+        super::chrome::plus_menu(ui, app, out, t, s);
+        if agent {
+            super::chrome::agent_settings(ui, app, out, t, s);
+            super::chrome::folder_pill(ui, app, out, t, s, compact);
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let name_chars = if compact { 14 } else { 28 };
+            super::chrome::model_chip(ui, app, out, t, s, installed, name_chars);
+            if agent {
+                super::chrome::permission_pills(ui, app, out, t, s);
             }
         });
     });

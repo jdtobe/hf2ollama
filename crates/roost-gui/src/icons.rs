@@ -16,11 +16,14 @@ pub enum Icon {
     Filter,
     Chat,
     Agent,
-    Gear,
     Pin,
     Trash,
     Prev,
     Next,
+    Plus,
+    Tools,
+    SendUp,
+    Folder,
 }
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
@@ -190,21 +193,6 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 Stroke::new(1.2, color),
             ));
         }
-        Icon::Gear => {
-            painter.circle_stroke(p(8.0, 8.0), 2.3, stroke);
-            for (a, b) in [
-                ((8.0, 1.6), (8.0, 3.4)),
-                ((8.0, 12.6), (8.0, 14.4)),
-                ((1.6, 8.0), (3.4, 8.0)),
-                ((12.6, 8.0), (14.4, 8.0)),
-                ((3.5, 3.5), (4.7, 4.7)),
-                ((11.3, 11.3), (12.5, 12.5)),
-                ((3.5, 12.5), (4.7, 11.3)),
-                ((11.3, 4.7), (12.5, 3.5)),
-            ] {
-                painter.line_segment([p(a.0, a.1), p(b.0, b.1)], stroke);
-            }
-        }
         Icon::Pin => {
             painter.line_segment([p(5.0, 2.5), p(11.0, 2.5)], stroke);
             painter.add(egui::Shape::line(
@@ -252,6 +240,35 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Next => {
             painter.add(egui::Shape::line(
                 vec![p(6.0, 3.5), p(10.5, 8.0), p(6.0, 12.5)],
+                stroke,
+            ));
+        }
+        Icon::Plus => {
+            painter.line_segment([p(8.0, 3.0), p(8.0, 13.0)], stroke);
+            painter.line_segment([p(3.0, 8.0), p(13.0, 8.0)], stroke);
+        }
+        Icon::Tools => {
+            // A hammer: the handle, then a thick head across its top.
+            painter.line_segment([p(3.5, 13.0), p(9.0, 7.5)], Stroke::new(2.0, color));
+            painter.line_segment([p(7.0, 3.5), p(12.5, 9.0)], Stroke::new(4.0, color));
+        }
+        Icon::SendUp => {
+            painter.line_segment([p(8.0, 13.0), p(8.0, 3.5)], stroke);
+            painter.add(egui::Shape::line(
+                vec![p(4.0, 7.0), p(8.0, 3.0), p(12.0, 7.0)],
+                stroke,
+            ));
+        }
+        Icon::Folder => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(2.0, 4.5),
+                    p(6.0, 4.5),
+                    p(7.5, 6.0),
+                    p(14.0, 6.0),
+                    p(14.0, 12.5),
+                    p(2.0, 12.5),
+                ],
                 stroke,
             ));
         }
