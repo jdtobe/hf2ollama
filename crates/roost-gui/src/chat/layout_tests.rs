@@ -1045,12 +1045,8 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
                 let chip = p.agent_chip.expect("agent chip");
                 let more = p.delete_button.clone().expect("trash can").0;
                 assert!(
-                    inside(chip, header) && inside(more, header),
+                    inside(chip, composer) && inside(more, header),
                     "{tag}: {chip:?} {more:?} {header:?}"
-                );
-                assert!(
-                    chip.right() <= more.left() + 0.5,
-                    "{tag}: chip overlaps the menu button"
                 );
                 assert_eq!(
                     p.tool_groups.len(),
@@ -1096,9 +1092,6 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
                     texts.contains("1 message waiting for the next step"),
                     "{tag}: {texts}"
                 );
-                if size.0 >= 1000.0 {
-                    assert!(texts.contains("Agent settings"), "{tag}: {texts}");
-                }
             }
         }
     }
@@ -2069,9 +2062,6 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
             texts.contains("Config walkthrough") || texts.contains("Untitled"),
             "{texts}"
         );
-        if size.0 >= 1000.0 {
-            assert!(texts.contains("Agent settings"), "{texts}");
-        }
         assert!(texts.contains("Idle"), "{texts}");
         assert!(
             !texts
@@ -2083,7 +2073,10 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
         let header = p.header.unwrap();
         let settings = p.agent_chip.unwrap();
         let more = p.delete_button.clone().unwrap().0;
-        assert!(inside(settings, header) && inside(more, header), "{size:?}");
+        assert!(
+            inside(settings, p.composer.unwrap()) && inside(more, header),
+            "{size:?}"
+        );
         // The folder is its own line under the title, from the same left edge.
         let (title, path) = (p.title_rect.unwrap(), p.path_rect.expect("the folder"));
         assert!(
@@ -2095,10 +2088,6 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
             "{size:?}: same left edge"
         );
         assert!(inside(path, header), "{size:?}: {path:?} in {header:?}");
-        assert!(
-            settings.right() <= more.left(),
-            "{size:?}: settings left of the menu"
-        );
     }
 }
 
@@ -2152,7 +2141,7 @@ fn a_very_long_folder_is_cut_in_the_middle_and_the_header_still_fits() {
         .unwrap_or_else(|| panic!("the folder was not cut:\n{texts}"));
     assert!(!line.starts_with('('), "{line}");
     let p = app.state_mut().chat_ui.probe.clone();
-    assert!(inside(p.agent_chip.unwrap(), p.header.unwrap()));
+    assert!(inside(p.agent_chip.unwrap(), p.composer.unwrap()));
 }
 
 #[test]
@@ -2215,21 +2204,21 @@ fn the_header_has_a_chip_per_capability_and_the_write_chip_goes_with_the_switch(
         let mut h = Harness::new(false);
         run(&mut app, &mut h, size, 4);
         let p = app.state_mut().chat_ui.probe.clone();
-        let header = p.header.unwrap();
-        let settings = p.agent_chip.unwrap();
+        let composer = p.composer.unwrap();
+        let model = p.model_chip.unwrap();
         let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
         assert_eq!(letters, ['R', 'W'], "{size:?}: no X until commands exist");
         for (_, r, _) in &p.chips {
-            assert!(inside(*r, header), "{size:?}: chip {r:?}");
-            assert!(r.right() <= settings.left(), "{size:?}: left of the button");
+            assert!(inside(*r, composer), "{size:?}: chip {r:?}");
+            assert!(r.right() <= model.left(), "{size:?}: left of the model");
         }
         assert!(p.chips[0].1.right() <= p.chips[1].1.left());
         // Read allows, write asks, as a new agent is set.
         assert_eq!(p.chips[0].2, Permission::Auto);
         assert_eq!(p.chips[1].2, Permission::Ask);
-        // The title still ends before the first chip.
+        // The tools button sits on the left, the chips on the right.
         assert!(
-            p.title_rect.unwrap().right() <= p.chips[0].1.left(),
+            p.agent_chip.unwrap().right() <= p.chips[0].1.left(),
             "{size:?}"
         );
         // Switched off in Settings: no W at all.
@@ -2546,7 +2535,8 @@ fn commands_are_nowhere_in_the_chat_until_switched_on_in_settings() {
 #[test]
 fn with_commands_on_there_is_an_x_chip_and_a_run_row_that_starts_off() {
     use roost_core::session::Permission;
-    for size in SIZES {
+    // Tall windows: the tools menu opens above the button and scrolls.
+    for size in [(1180.0, 1400.0), (900.0, 1400.0)] {
         let (mut app, sent, s) = agent_fixture();
         app.state_mut().settings.agents_can_run = true;
         let mut h = Harness::new(false);
@@ -2559,7 +2549,7 @@ fn with_commands_on_there_is_an_x_chip_and_a_run_row_that_starts_off() {
             Permission::Off,
             "{size:?}: new agents start with Run off"
         );
-        assert!(inside(p.chips[2].1, p.header.unwrap()), "{size:?}");
+        assert!(inside(p.chips[2].1, p.composer.unwrap()), "{size:?}");
         assert_eq!(p.run_buttons.len(), 3, "{size:?}: Off, Ask, Allow");
         if size.1 < 800.0 {
             // In a short window the menu scrolls, so the row may be out of view.
@@ -2579,7 +2569,7 @@ fn with_commands_on_there_is_an_x_chip_and_a_run_row_that_starts_off() {
 #[test]
 fn allowing_commands_without_asking_needs_one_confirmation() {
     use roost_core::session::Permission;
-    let size = (1180.0, 820.0);
+    let size = (1180.0, 1400.0);
     let (mut app, sent, s) = agent_fixture();
     app.state_mut().settings.agents_can_run = true;
     let mut h = Harness::new(false);
@@ -3013,4 +3003,177 @@ fn an_answered_question_reads_as_words_in_the_transcript() {
         Some("skipped")
     );
     assert_eq!(view("Error: nope").as_deref(), Some("Error: nope"));
+}
+
+// ------------------------------------------------------------ the composer
+
+#[test]
+fn the_input_is_one_bubble_with_send_inside_and_the_pills_under_it() {
+    use roost_core::session::Permission;
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        app.state_mut().settings.agents_can_run = true;
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (composer, input) = (p.composer.unwrap(), p.input_rect.unwrap());
+        let (send, label) = p.send_button.unwrap();
+        assert_eq!(label, "Send", "{size:?}");
+        assert!(inside(send, input), "{size:?}: send {send:?} in {input:?}");
+        assert!(input.height() < 56.0, "{size:?}: one line high: {input:?}");
+        let (plus, tools) = (p.plus_button.unwrap(), p.agent_chip.unwrap());
+        let (folder, model) = (p.folder_pill.expect("folder"), p.model_chip.unwrap());
+        for r in [plus, tools, folder, model] {
+            assert!(
+                r.top() >= input.bottom() - 0.5,
+                "{size:?}: {r:?} under input"
+            );
+            assert!(inside(r, composer), "{size:?}: {r:?} in {composer:?}");
+        }
+        assert!(plus.right() <= tools.left(), "{size:?}");
+        assert!(tools.right() <= folder.left(), "{size:?}");
+        let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
+        assert_eq!(letters, ['R', 'W', 'X'], "{size:?}");
+        assert!(
+            p.chips[0].1.left() >= folder.right(),
+            "{size:?}: chips right of folder"
+        );
+        assert!(
+            p.chips[2].1.right() <= model.left(),
+            "{size:?}: model is last"
+        );
+        assert!(model.right() <= input.right() + 0.5, "{size:?}");
+        assert_eq!(p.chips[2].2, Permission::Off, "{size:?}");
+    }
+}
+
+#[test]
+fn the_input_grows_with_its_text_up_to_a_limit_and_send_stays_in_the_corner() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    let id = f.open.id;
+    run(&mut f.app, &mut h, size, 4);
+    let one = f.app.state_mut().chat_ui.probe.input_rect.unwrap();
+    *f.app.state_mut().chat.draft_mut(id) = "a\nb\nc\nd".into();
+    run(&mut f.app, &mut h, size, 4);
+    let four = f.app.state_mut().chat_ui.probe.input_rect.unwrap();
+    assert!(four.height() > one.height() + 30.0, "{one:?} then {four:?}");
+    *f.app.state_mut().chat.draft_mut(id) = "line\n".repeat(80);
+    run(&mut f.app, &mut h, size, 4);
+    let p = f.app.state_mut().chat_ui.probe.clone();
+    let many = p.input_rect.unwrap();
+    assert!(many.height() < 200.0, "capped, then it scrolls: {many:?}");
+    let (send, _) = p.send_button.unwrap();
+    assert!(inside(send, many), "{send:?} in {many:?}");
+    assert!(
+        many.bottom() - send.bottom() < 8.0,
+        "send stays at the bottom right"
+    );
+    assert!(p.composer.unwrap().bottom() <= size.1, "inside the window");
+}
+
+#[test]
+fn a_chat_has_no_agent_pills_under_its_input() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 4);
+    let p = f.app.state_mut().chat_ui.probe.clone();
+    assert!(p.plus_button.is_some() && p.model_chip.is_some());
+    assert!(p.agent_chip.is_none() && p.folder_pill.is_none() && p.chips.is_empty());
+}
+
+#[test]
+fn the_plus_menu_offers_the_folder_to_an_agent_and_nothing_yet_to_a_chat() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let plus = app.state_mut().chat_ui.probe.plus_button.unwrap();
+    click(&mut app, &mut h, size, plus.center());
+    let texts = texts_of(&mut app, &mut h, size);
+    assert!(texts.contains("Working folder…"), "{texts}");
+    let mut f = fixture();
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 4);
+    let plus = f.app.state_mut().chat_ui.probe.plus_button.unwrap();
+    click(&mut f.app, &mut h, size, plus.center());
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(texts.contains("Nothing to add to a chat yet"), "{texts}");
+}
+
+#[test]
+fn clicking_a_permission_pill_steps_it_and_running_commands_never_steps_to_allow() {
+    use roost_core::agent::registry::{self, Capability, Family};
+    use roost_core::session::Permission;
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    app.state_mut().settings.agents_can_run = true;
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let chips = app.state_mut().chat_ui.probe.chips.clone();
+    let _ = sent_chat_commands(&sent);
+    // R is allowed, W asks, X is off: a click steps each one on.
+    for (i, (cap, family, want)) in [
+        (Capability::Read, Family::Files, Permission::Off),
+        (Capability::Write, Family::Files, Permission::Auto),
+        (Capability::Run, Family::Shell, Permission::Ask),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        click(&mut app, &mut h, size, chips[i].1.center());
+        let cmds = sent_chat_commands(&sent);
+        let key = registry::capability_key(family, cap);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, k, p)]
+                if *id == s.id && *k == key && *p == want),
+            "{cap:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn the_permission_steps_are_off_ask_allow_and_commands_skip_allow() {
+    use super::chrome::{held_long, next_permission};
+    use roost_core::agent::registry::Capability;
+    use roost_core::session::Permission::{Ask, Auto, Off};
+    for cap in [Capability::Read, Capability::Write] {
+        assert_eq!(next_permission(cap, Off), Ask);
+        assert_eq!(next_permission(cap, Ask), Auto);
+        assert_eq!(next_permission(cap, Auto), Off);
+    }
+    assert_eq!(next_permission(Capability::Run, Off), Ask);
+    assert_eq!(next_permission(Capability::Run, Ask), Off);
+    assert_eq!(next_permission(Capability::Run, Auto), Off);
+    assert!(!held_long(None, 10.0));
+    assert!(!held_long(Some(9.8), 10.0));
+    assert!(held_long(Some(9.4), 10.0));
+}
+
+#[test]
+fn a_long_press_on_x_asks_once_above_the_input_and_the_menu_does_not_ask_again() {
+    use roost_core::session::Permission;
+    let size = (1180.0, 820.0);
+    let (mut app, sent, s) = agent_fixture();
+    app.state_mut().settings.agents_can_run = true;
+    let mut h = Harness::new(false);
+    app.state_mut().chat_ui.run_allow_pending = Some(s.id);
+    app.state_mut().chat_ui.run_allow_from_pill = true;
+    run(&mut app, &mut h, size, 4);
+    let p = app.state_mut().chat_ui.probe.clone();
+    let (confirm, _cancel) = p.run_confirm.expect("the confirmation above the input");
+    assert!(
+        confirm.bottom() <= p.input_rect.unwrap().top(),
+        "above the input"
+    );
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, confirm.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, key, Permission::Auto)]
+            if *id == s.id && key == "shell.run"),
+        "{cmds:?}"
+    );
 }
