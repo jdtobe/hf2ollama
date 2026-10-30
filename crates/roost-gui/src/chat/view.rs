@@ -31,6 +31,11 @@ const COMPOSER_MAX_H: f32 = 160.0;
 /// Diameter of the send button inside the input.
 const SEND_SIZE: f32 = 30.0;
 
+/// Space between the send button and the bubble's edges. With the input's
+/// margins a one-line bubble is `SEND_SIZE + 2 * SEND_GAP` high, so the gap
+/// is the same above, below and to the right.
+const SEND_GAP: f32 = 5.0;
+
 /// Interaction state that is not part of the conversation data.
 #[derive(Default)]
 pub struct ChatUi {
@@ -2560,8 +2565,8 @@ fn composer(
         .inner_margin(egui::Margin {
             left: 14,
             right: (SEND_SIZE + 14.0) as i8,
-            top: 7,
-            bottom: 7,
+            top: 9,
+            bottom: 9,
         })
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
@@ -2581,8 +2586,8 @@ fn composer(
     let box_rect = bubble.response.rect;
     let button = egui::Rect::from_min_size(
         egui::pos2(
-            box_rect.right() - SEND_SIZE - 6.0,
-            box_rect.bottom() - SEND_SIZE - 4.0,
+            box_rect.right() - SEND_SIZE - SEND_GAP,
+            box_rect.bottom() - SEND_SIZE - SEND_GAP,
         ),
         egui::vec2(SEND_SIZE, SEND_SIZE),
     );
