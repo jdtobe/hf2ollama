@@ -24,6 +24,8 @@ pub enum Icon {
     Tools,
     SendUp,
     Folder,
+    NewChat,
+    Incognito,
 }
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
@@ -271,6 +273,39 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 ],
                 stroke,
             ));
+        }
+        Icon::NewChat => {
+            // A square with a pencil crossing its corner.
+            painter.add(egui::Shape::line(
+                vec![
+                    p(8.5, 3.0),
+                    p(4.0, 3.0),
+                    p(2.5, 4.5),
+                    p(2.5, 12.0),
+                    p(4.0, 13.5),
+                    p(11.5, 13.5),
+                    p(13.0, 12.0),
+                    p(13.0, 8.0),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(7.0, 9.0), p(13.5, 2.5)], Stroke::new(2.0, color));
+        }
+        Icon::Incognito => {
+            // An eye with a line through it.
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(1.5, 8.0),
+                    p(5.0, 4.5),
+                    p(11.0, 4.5),
+                    p(14.5, 8.0),
+                    p(11.0, 11.5),
+                    p(5.0, 11.5),
+                ],
+                stroke,
+            ));
+            painter.circle_filled(p(8.0, 8.0), 1.8, color);
+            painter.line_segment([p(3.0, 13.5), p(13.0, 2.5)], stroke);
         }
         Icon::Details => {
             painter.circle_stroke(p(8.0, 8.0), 5.8, stroke);
