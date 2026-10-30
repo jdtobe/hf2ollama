@@ -34,6 +34,8 @@ fn row_for(s: &Session, title: &str) -> IndexRow {
         file_mtime_ms: 0,
         file_len: 0,
         preview: Some(String::new()),
+        last: Some(String::new()),
+        folder: None,
     }
 }
 
@@ -3412,5 +3414,86 @@ fn the_composer_is_compact_below_the_bubble() {
             composer.bottom() - input.bottom() <= 42.0,
             "{size:?}: pills and margin under the bubble: {input:?} in {composer:?}"
         );
+    }
+}
+
+// ------------------------------------------------------------ richer rail rows
+
+fn named_row(s: &Session, title: &str, preview: &str, last: &str) -> IndexRow {
+    let mut r = row_for(s, title);
+    r.preview = Some(preview.into());
+    r.last = Some(last.into());
+    r.updated_at_ms = now_ms();
+    r
+}
+
+#[test]
+fn chat_rows_show_the_last_message_a_quiet_new_chat_and_the_incognito_mark() {
+    for size in SIZES {
+        let mut f = fixture_with(0);
+        let mut h = Harness::new(false);
+        let said = Session::new_chat("qwen2.5:7b", SessionLifetime::Persisted, now_ms());
+        let fresh = Session::new_chat("qwen2.5:7b", SessionLifetime::Persisted, now_ms());
+        let hidden = Session::new_chat("qwen2.5:7b", SessionLifetime::Incognito, now_ms());
+        let rows = vec![
+            named_row(&said, "Planning", "what next", "the answer is here"),
+            named_row(&fresh, "Untitled", "", ""),
+            named_row(&hidden, "Draft a polite no", "hmm", "ok"),
+        ];
+        f.app.state_mut().chat.fold(ChatEvent::Rows(rows));
+        run(&mut f.app, &mut h, size, 4);
+        let texts = texts_of(&mut f.app, &mut h, size);
+        for want in [
+            "Planning",
+            "the answer is here",
+            "New chat",
+            "No messages yet",
+            "Incognito · not saved",
+        ] {
+            assert!(texts.contains(want), "{size:?}: {want}\n{texts}");
+        }
+        assert!(
+            !texts.lines().any(|l| l == "Untitled"),
+            "{size:?}: an empty chat is not called Untitled"
+        );
+        // Every row stays inside the rail.
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let rail = p.rail.unwrap();
+        for (_, r) in &p.rows {
+            assert!(inside(*r, rail), "{size:?}: {r:?} in {rail:?}");
+        }
+    }
+}
+
+#[test]
+fn an_agent_row_shows_its_folder_and_a_working_or_needs_you_badge() {
+    for size in SIZES {
+        let (mut app, _sent, s) = agent_fixture();
+        let mut row = named_row(&s, "Games library", "scan it", "I found 12 folders");
+        row.folder = Some("/work/a-project".into());
+        app.state_mut().chat.fold(ChatEvent::Rows(vec![row]));
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(texts.contains("/work/a-project"), "{size:?}\n{texts}");
+        assert!(!texts.contains("Working") && !texts.contains("Needs you"));
+        app.state_mut().chat.fold(ChatEvent::TurnStarted {
+            session: s.id,
+            turn: TurnId::new(),
+        });
+        run(&mut app, &mut h, size, 3);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(texts.contains("Working"), "{size:?}\n{texts}");
+        app.state_mut().chat.fold(ChatEvent::ApprovalRequested {
+            session: s.id,
+            call_id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a"}),
+            preview: None,
+            run: None,
+        });
+        run(&mut app, &mut h, size, 3);
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(texts.contains("Needs you"), "{size:?}\n{texts}");
     }
 }

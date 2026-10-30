@@ -75,8 +75,30 @@ pub struct RailRow {
     pub badge: RunBadge,
     pub status: RowStatus,
     pub lifetime: SessionLifetime,
+    pub mode: roost_core::session::SessionMode,
+    /// The start of the last message, for the second line.
+    pub last: String,
+    /// An agent's folder as saved.
+    pub folder: Option<String>,
+    pub updated_at_ms: u64,
+    /// No messages yet.
+    pub empty: bool,
+    /// An approval or a question waits for the user.
+    pub needs_you: bool,
     /// Branches made from this chat, newest first.
     pub children: Vec<RailRow>,
+}
+
+/// How a row's time reads at its right: `14:03` today, `Oct 28` earlier (with
+/// the year when it is not this year).
+pub fn row_time(at_ms: u64, now_ms: u64) -> String {
+    match local_stamp(at_ms, now_ms) {
+        Some((label, _)) => match label.rsplit_once(", ") {
+            Some((date, _)) => date.to_string(),
+            None => label,
+        },
+        None => String::new(),
+    }
 }
 
 /// A tool call the agent cannot make until the user answers.
@@ -721,6 +743,13 @@ impl ChatState {
             badge: self.badge(r.id),
             status: r.status,
             lifetime: r.lifetime,
+            mode: r.mode,
+            last: r.last.clone().unwrap_or_default(),
+            folder: r.folder.clone(),
+            updated_at_ms: r.updated_at_ms,
+            empty: r.preview.as_deref().is_some_and(str::is_empty)
+                && r.last.as_deref().is_none_or(str::is_empty),
+            needs_you: self.approvals.contains_key(&r.id) || self.questions.contains_key(&r.id),
             children: Vec::new(),
         };
         let mut placed: Vec<(u64, u8, RailRow)> = Vec::new();
@@ -873,6 +902,19 @@ mod tests {
         r
     }
 
+    #[test]
+    fn a_row_time_is_the_clock_today_and_the_date_before() {
+        use chrono::{Duration, Local};
+        let now = Local::now();
+        let ms = |d: chrono::DateTime<Local>| d.timestamp_millis() as u64;
+        let today = row_time(ms(now), ms(now));
+        assert!(today.contains(':') && !today.contains(','), "{today}");
+        let earlier = row_time(ms(now - Duration::days(3)), ms(now));
+        assert!(!earlier.contains(':') && !earlier.is_empty(), "{earlier}");
+        let old = row_time(ms(now - Duration::days(800)), ms(now));
+        assert!(old.contains(", 20") && !old.contains(':'), "{old}");
+    }
+
     fn roost_core_row(s: &Session) -> IndexRow {
         IndexRow {
             id: s.id,
@@ -889,6 +931,8 @@ mod tests {
             file_mtime_ms: 0,
             file_len: 0,
             preview: Some(String::new()),
+            last: Some(String::new()),
+            folder: None,
         }
     }
 

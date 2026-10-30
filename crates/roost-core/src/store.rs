@@ -59,24 +59,53 @@ pub struct IndexRow {
     /// no title yet. `None` means an index written before previews existed.
     #[serde(default)]
     pub preview: Option<String>,
+    /// The start of the last reply or message on one line, for the history
+    /// list. `None` means an index written before it existed.
+    #[serde(default)]
+    pub last: Option<String>,
+    /// An agent's folder, as saved.
+    #[serde(default)]
+    pub folder: Option<String>,
 }
 
 const PREVIEW_CHARS: usize = 80;
 
-/// The first user message squeezed onto one line and cut at 80 characters.
-fn preview_of(s: &Session) -> String {
-    let first = s.messages.iter().find_map(|m| match &m.content {
-        MessageContent::User { text, .. } => Some(text),
-        _ => None,
-    });
-    let line = first
-        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
-        .unwrap_or_default();
+/// `text` squeezed onto one line and cut at 80 characters.
+fn one_line(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.chars().count() <= PREVIEW_CHARS {
         return line;
     }
     let cut: String = line.chars().take(PREVIEW_CHARS - 1).collect();
     format!("{}…", cut.trim_end())
+}
+
+/// The first user message on one line.
+fn preview_of(s: &Session) -> String {
+    s.messages
+        .iter()
+        .find_map(|m| match &m.content {
+            MessageContent::User { text, .. } => Some(one_line(text)),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The last message with any text (yours or the reply) on one line; empty for
+/// a chat with no messages. Tool steps are skipped.
+fn last_of(s: &Session) -> String {
+    s.messages
+        .iter()
+        .rev()
+        .find_map(|m| match &m.content {
+            MessageContent::User { text, .. } | MessageContent::Assistant { text, .. }
+                if !text.trim().is_empty() =>
+            {
+                Some(one_line(text))
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 impl IndexRow {
@@ -208,6 +237,8 @@ fn row_of(s: &Session, st: Stamp) -> IndexRow {
         file_mtime_ms: st.mtime_ms,
         file_len: st.len,
         preview: Some(preview_of(s)),
+        last: Some(last_of(s)),
+        folder: s.workspace.as_ref().map(|p| p.display().to_string()),
     }
 }
 
@@ -238,6 +269,8 @@ fn placeholder(id: SessionId, status: RowStatus, title: Option<String>, st: Stam
         file_mtime_ms: st.mtime_ms,
         file_len: st.len,
         preview: Some(String::new()),
+        last: Some(String::new()),
+        folder: None,
     }
 }
 
@@ -315,6 +348,7 @@ impl Store {
             let reusable = old.get(id).filter(|r| {
                 r.status == RowStatus::Ok
                     && r.preview.is_some()
+                    && r.last.is_some()
                     && !r.active
                     && r.file_mtime_ms == st.mtime_ms
                     && r.file_len == st.len
@@ -834,6 +868,52 @@ mod tests {
             .unwrap();
         assert_eq!(p.chars().count(), 80);
         assert!(p.ends_with('…'));
+    }
+
+    #[test]
+    fn rows_carry_the_last_message_and_an_agents_folder() {
+        let d = TempDir::new().unwrap();
+        let (mut st, _) = open(d.path());
+        let mut s = Session::new_chat("m", SessionLifetime::Persisted, 1_000);
+        s.push_user("first question", 2_000);
+        let id = s.begin_assistant(RunId::new(), TurnId::new(), 3_000);
+        s.append_assistant(id, "  the   answer\nis here  ", "");
+        st.save(&s).unwrap();
+        assert_eq!(st.rows()[0].preview.as_deref(), Some("first question"));
+        assert_eq!(st.rows()[0].last.as_deref(), Some("the answer is here"));
+        assert_eq!(st.rows()[0].folder, None);
+    }
+
+    #[test]
+    fn an_agent_row_carries_its_folder() {
+        let d = TempDir::new().unwrap();
+        let (mut st, _) = open(d.path());
+        let dir = std::env::temp_dir().join("a-project");
+        let s = Session::new_agent("m", SessionLifetime::Persisted, dir.clone(), 1_000).unwrap();
+        st.save(&s).unwrap();
+        assert_eq!(
+            st.rows()[0].folder.as_deref(),
+            Some(dir.display().to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn an_index_from_before_the_last_message_existed_is_refreshed_on_open() {
+        let d = TempDir::new().unwrap();
+        let s = chat("Old index");
+        {
+            let (mut st, _) = open(d.path());
+            st.save(&s).unwrap();
+        }
+        let path = d.path().join(INDEX_FILE);
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for row in v["rows"].as_array_mut().unwrap() {
+            row.as_object_mut().unwrap().remove("last");
+            row.as_object_mut().unwrap().remove("folder");
+        }
+        fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+        let (st, _) = open(d.path());
+        assert_eq!(st.rows()[0].last.as_deref(), Some(""));
     }
 
     #[test]
