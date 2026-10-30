@@ -3241,3 +3241,47 @@ fn the_two_new_buttons_sit_beside_search_and_start_a_chat_or_an_incognito_one() 
         "{cmds:?}"
     );
 }
+
+#[test]
+fn the_send_button_is_the_same_distance_from_the_top_bottom_and_right_edges() {
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let input = p.input_rect.unwrap();
+        let (send, _) = p.send_button.unwrap();
+        let (top, bottom, right) = (
+            send.top() - input.top(),
+            input.bottom() - send.bottom(),
+            input.right() - send.right(),
+        );
+        assert!(
+            (top - bottom).abs() <= 1.0 && (right - bottom).abs() <= 1.0,
+            "{size:?}: top {top}, bottom {bottom}, right {right}"
+        );
+    }
+}
+
+#[test]
+fn the_composer_is_compact_below_the_bubble() {
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let (input, composer, chip) = (
+            p.input_rect.unwrap(),
+            p.composer.unwrap(),
+            p.model_chip.unwrap(),
+        );
+        assert!(
+            chip.height() <= 27.0,
+            "{size:?}: the model chip is as tall as a pill: {chip:?}"
+        );
+        assert!(
+            composer.bottom() - input.bottom() <= 42.0,
+            "{size:?}: pills and margin under the bubble: {input:?} in {composer:?}"
+        );
+    }
+}
