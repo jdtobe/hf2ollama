@@ -36,6 +36,8 @@ impl Options<'static> {
 pub enum Family {
     Files,
     Shell,
+    /// Asking the user questions.
+    Ask,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,8 @@ pub enum Capability {
     Read,
     Write,
     Run,
+    /// Asking the user a question. Always allowed: it changes nothing.
+    Ask,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +64,7 @@ impl Family {
         match self {
             Family::Files => "Files",
             Family::Shell => "Shell",
+            Family::Ask => "Ask you",
         }
     }
 }
@@ -70,6 +75,7 @@ impl Capability {
             Capability::Read => "Read",
             Capability::Write => "Write",
             Capability::Run => "Run",
+            Capability::Ask => "Ask",
         }
     }
 }
@@ -79,11 +85,13 @@ pub fn capability_key(family: Family, capability: Capability) -> String {
     let f = match family {
         Family::Files => "files",
         Family::Shell => "shell",
+        Family::Ask => "ask",
     };
     let c = match capability {
         Capability::Read => "read",
         Capability::Write => "write",
         Capability::Run => "run",
+        Capability::Ask => "ask",
     };
     format!("{f}.{c}")
 }
@@ -93,7 +101,9 @@ pub fn capability_key(family: Family, capability: Capability) -> String {
 /// Whatever a session's file says, `permission_of` never goes above this.
 pub fn max_permission(_family: Family, capability: Capability) -> Permission {
     match capability {
-        Capability::Read | Capability::Write | Capability::Run => Permission::Auto,
+        Capability::Read | Capability::Write | Capability::Run | Capability::Ask => {
+            Permission::Auto
+        }
     }
 }
 
@@ -105,6 +115,8 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
         Capability::Write => Permission::Ask,
         // Running commands is off until the user turns it on for an agent.
         Capability::Run => Permission::Off,
+        // Asking changes nothing, so it needs no permission.
+        Capability::Ask => Permission::Auto,
     }
 }
 
@@ -254,6 +266,13 @@ pub fn specs() -> Vec<ToolSpec> {
                 "required": ["command"]
             }),
         ),
+        ToolSpec {
+            name: super::ask::TOOL,
+            family: Family::Ask,
+            capability: Capability::Ask,
+            description: super::ask::description(),
+            parameters: super::ask::parameters(),
+        },
     ]
 }
 
@@ -413,6 +432,13 @@ fn run(
         "search_bytes" => (tools::search_bytes(ws, args, limits), None),
         "write_file" | "edit_file" => write(ws, name, args, undo_room, limits),
         "run_command" => (run_command(ws, args, limits, cancel), None),
+        // Asked through the chat manager, which waits for the user.
+        super::ask::TOOL => (
+            Err(ToolError::InvalidArguments(
+                "this tool is handled by the app, not run here".into(),
+            )),
+            None,
+        ),
         other => (Err(ToolError::UnknownTool(other.to_string())), None),
     }
 }
@@ -477,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_has_six_read_tools_two_write_tools_and_one_command_tool() {
+    fn the_registry_has_six_read_tools_two_write_tools_one_command_tool_and_the_question_tool() {
         let all = specs();
         assert_eq!(
             names(&all),
@@ -490,13 +516,21 @@ mod tests {
                 "search_bytes",
                 "write_file",
                 "edit_file",
-                "run_command"
+                "run_command",
+                "ask_user"
             ]
         );
         assert!(all
             .iter()
-            .filter(|s| s.name != "run_command")
+            .filter(|s| s.name != "run_command" && s.name != "ask_user")
             .all(|s| s.family == Family::Files));
+        let ask = all.iter().find(|s| s.name == "ask_user").unwrap();
+        assert_eq!((ask.family, ask.capability), (Family::Ask, Capability::Ask));
+        assert_eq!(
+            default_permission(Family::Ask, Capability::Ask),
+            Permission::Auto,
+            "asking needs no permission"
+        );
         let run = all.iter().find(|s| s.name == "run_command").unwrap();
         assert_eq!(
             (run.family, run.capability),
@@ -524,7 +558,7 @@ mod tests {
         assert!(!needs_approval(&c, "read_file"));
         assert_eq!(capability_of("edit_file").as_deref(), Some("files.write"));
         // Both are offered to the model; their calls wait for the user.
-        assert_eq!(offered(&c).len(), 8);
+        assert_eq!(offered(&c).len(), 9);
     }
 
     #[test]
@@ -575,7 +609,7 @@ mod tests {
         c.capabilities.insert("files.write".into(), Permission::Off);
         assert_eq!(
             offered(&c).len(),
-            6,
+            7,
             "a read-only agent is not offered writes"
         );
         c.capabilities
@@ -612,7 +646,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_session_allows_read_tools_automatically() {
-        assert_eq!(offered(&cfg()).len(), 8);
+        assert_eq!(offered(&cfg()).len(), 9);
         assert_eq!(
             capability_key(Family::Files, Capability::Read),
             "files.read"
@@ -636,7 +670,8 @@ mod tests {
                 "find_files",
                 "search_bytes",
                 "write_file",
-                "edit_file"
+                "edit_file",
+                "ask_user"
             ]
         );
         let spec = specs()
@@ -650,9 +685,9 @@ mod tests {
     fn a_whole_capability_can_be_turned_off_or_set_to_ask() {
         let mut c = cfg();
         c.capabilities.insert("files.read".into(), Permission::Off);
-        assert_eq!(names(&offered(&c)), ["write_file", "edit_file"]);
+        assert_eq!(names(&offered(&c)), ["write_file", "edit_file", "ask_user"]);
         c.capabilities.insert("files.read".into(), Permission::Ask);
-        assert_eq!(offered(&c).len(), 8, "tools that ask are still offered");
+        assert_eq!(offered(&c).len(), 9, "tools that ask are still offered");
         assert!(needs_approval(&c, "read_file"));
         assert!(!needs_approval(&c, "no_such_tool"));
         let spec = &specs()[0];
@@ -662,7 +697,7 @@ mod tests {
         );
         assert_eq!(capability_of("read_file").as_deref(), Some("files.read"));
         c.capabilities.insert("files.read".into(), Permission::Auto);
-        assert_eq!(offered(&c).len(), 8);
+        assert_eq!(offered(&c).len(), 9);
     }
 
     #[test]
@@ -694,7 +729,7 @@ mod tests {
         c.tools.insert("find_files".into(), false);
         let defs = ollama_definitions(&c);
         let list = defs.as_array().unwrap();
-        assert_eq!(list.len(), 7);
+        assert_eq!(list.len(), 8);
         for d in list {
             assert_eq!(d["type"], "function");
             assert!(d["function"]["name"].is_string());

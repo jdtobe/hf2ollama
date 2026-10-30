@@ -1,6 +1,7 @@
 //! Read-only agent building blocks: the workspace jail, the tools and the
 //! registry that decides which tools may run. No UI and no model calls here.
 
+pub mod ask;
 pub mod change;
 pub mod command;
 pub mod registry;

@@ -1161,7 +1161,7 @@ fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
     open_menu(&mut app, &mut h, size, chip);
     // The tool lists start closed; the heading opens one.
     let heads = app.state_mut().chat_ui.probe.tools_heads.clone();
-    assert_eq!(heads.len(), 1, "one family without commands");
+    assert_eq!(heads.len(), 2, "Files and Ask you, without commands");
     click(&mut app, &mut h, size, heads[0].center());
     let texts = texts_of(&mut app, &mut h, size);
     let upper = texts.to_uppercase();
@@ -2691,7 +2691,7 @@ fn the_shell_family_lists_run_command_when_commands_are_on() {
     let mut h = Harness::new(false);
     open_agent_settings(&mut app, &mut h, size);
     let heads = app.state_mut().chat_ui.probe.tools_heads.clone();
-    assert_eq!(heads.len(), 2, "Files and Shell");
+    assert_eq!(heads.len(), 3, "Files, Shell and Ask you");
     click(&mut app, &mut h, size, heads[1].center());
     let texts = texts_of(&mut app, &mut h, size);
     assert!(texts.contains("X   run_command"), "{texts}");
@@ -2811,4 +2811,206 @@ fn a_very_long_command_scrolls_in_its_box_and_never_crowds_out_the_buttons() {
             assert!(inside(*b, composer), "{size:?}: {b:?} outside {composer:?}");
         }
     }
+}
+
+// ------------------------------------------------- the agent asks a question
+
+use roost_core::agent::ask::Answer;
+
+fn ask(app: &mut App, s: &Session, args: serde_json::Value) {
+    let question = roost_core::agent::ask::parse(&args).expect("a valid question");
+    app.state_mut().chat.fold(ChatEvent::QuestionAsked {
+        session: s.id,
+        call_id: "call_7".into(),
+        question,
+    });
+}
+
+fn colours() -> serde_json::Value {
+    serde_json::json!({"question": "Which colour should the report use?", "kind": "one",
+        "options": ["Red", "Green", "Blue"]})
+}
+
+fn answers(rx: &Receiver<BackendRequest>) -> Vec<(String, Option<Answer>)> {
+    sent_chat_commands(rx)
+        .into_iter()
+        .filter_map(|c| match c {
+            ChatCommand::AnswerQuestion {
+                call_id, answer, ..
+            } => Some((call_id, answer)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_pick_one_question_sits_above_the_input_and_sends_the_chosen_option() {
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        ask(&mut app, &s, colours());
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+        let card = p.question_card.expect("the card");
+        assert!(inside(card, window), "{size:?}: {card:?}");
+        assert!(
+            inside(card, p.composer.unwrap()),
+            "{size:?}: in the composer area"
+        );
+        assert_eq!(p.question_options.len(), 3, "{size:?}");
+        assert!(p.question_other.is_some(), "a typed answer is allowed");
+        for o in &p.question_options {
+            assert!(inside(*o, card), "{size:?}: {o:?} {card:?}");
+        }
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(
+            texts.contains("Which colour should the report use?"),
+            "{texts}"
+        );
+        // Nothing to send until something is chosen.
+        click(&mut app, &mut h, size, p.question_buttons[0].center());
+        assert!(answers(&sent).is_empty(), "{size:?}: Send is off");
+        click(&mut app, &mut h, size, p.question_options[1].center());
+        run(&mut app, &mut h, size, 2);
+        let send = app.state_mut().chat_ui.probe.question_buttons[0];
+        click(&mut app, &mut h, size, send.center());
+        let got = answers(&sent);
+        assert_eq!(got.len(), 1, "{size:?}");
+        assert_eq!(got[0].0, "call_7");
+        assert_eq!(
+            got[0].1,
+            Some(Answer {
+                picked: vec!["Green".into()],
+                other: None
+            })
+        );
+        assert!(
+            app.state_mut().chat.question(s.id).is_none(),
+            "the card goes once answered"
+        );
+    }
+}
+
+#[test]
+fn a_pick_many_question_sends_everything_ticked_in_the_order_listed() {
+    let size = SIZES[0];
+    let (mut app, sent, s) = agent_fixture();
+    ask(
+        &mut app,
+        &s,
+        serde_json::json!({"question": "Which files?", "kind": "many",
+            "options": ["a.txt", "b.txt", "c.txt"], "allow_other": false}),
+    );
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    assert!(
+        app.state_mut().chat_ui.probe.question_other.is_none(),
+        "allow_other is off"
+    );
+    let opts = app.state_mut().chat_ui.probe.question_options.clone();
+    click(&mut app, &mut h, size, opts[2].center());
+    click(&mut app, &mut h, size, opts[0].center());
+    run(&mut app, &mut h, size, 2);
+    let send = app.state_mut().chat_ui.probe.question_buttons[0];
+    click(&mut app, &mut h, size, send.center());
+    assert_eq!(
+        answers(&sent)[0].1,
+        Some(Answer {
+            picked: vec!["a.txt".into(), "c.txt".into()],
+            other: None
+        })
+    );
+}
+
+#[test]
+fn a_typed_answer_goes_through_for_text_and_for_other() {
+    use super::view::QuestionDraft;
+    let size = SIZES[0];
+    for (args, draft_text, want_picked) in [
+        (
+            serde_json::json!({"question": "Your name?", "kind": "text"}),
+            "Ada",
+            Vec::<String>::new(),
+        ),
+        (colours(), "Purple", Vec::new()),
+    ] {
+        let (mut app, sent, s) = agent_fixture();
+        ask(&mut app, &s, args);
+        app.state_mut().chat_ui.question_drafts.insert(
+            s.id,
+            QuestionDraft {
+                call_id: "call_7".into(),
+                other: draft_text.into(),
+                ..Default::default()
+            },
+        );
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let send = app.state_mut().chat_ui.probe.question_buttons[0];
+        click(&mut app, &mut h, size, send.center());
+        assert_eq!(
+            answers(&sent)[0].1,
+            Some(Answer {
+                picked: want_picked,
+                other: Some(draft_text.into())
+            })
+        );
+    }
+}
+
+#[test]
+fn skip_sends_no_answer_and_removes_the_card() {
+    let size = SIZES[1];
+    let (mut app, sent, s) = agent_fixture();
+    ask(&mut app, &s, colours());
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let skip = app.state_mut().chat_ui.probe.question_buttons[1];
+    click(&mut app, &mut h, size, skip.center());
+    let got = answers(&sent);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].1, None, "skip is no answer");
+    run(&mut app, &mut h, size, 2);
+    assert!(app.state_mut().chat_ui.probe.question_card.is_none());
+}
+
+#[test]
+fn the_question_goes_when_its_tool_finishes_or_the_run_ends() {
+    let (mut app, _sent, s) = agent_fixture();
+    ask(&mut app, &s, colours());
+    assert!(app.state_mut().chat.question(s.id).is_some());
+    app.state_mut().chat.fold(ChatEvent::ToolFinished {
+        session: s.id,
+        call_id: "call_7".into(),
+        ok: true,
+        output: "{\"answer\":\"Red\"}".into(),
+    });
+    assert!(app.state_mut().chat.question(s.id).is_none());
+    ask(&mut app, &s, colours());
+    app.state_mut().chat.fold(ChatEvent::RunEnded {
+        session: s.id,
+        outcome: roost_core::chat::RunOutcome::Cancelled,
+        message: None,
+    });
+    assert!(app.state_mut().chat.question(s.id).is_none());
+}
+
+#[test]
+fn an_answered_question_reads_as_words_in_the_transcript() {
+    use super::view::ask_view;
+    let args = serde_json::json!({"question": "Which?", "kind": "one", "options": ["A","B"]});
+    let view = |out: &str| ask_view(&args, &Some(out.to_string())).1;
+    assert_eq!(ask_view(&args, &None), ("Which?".to_string(), None));
+    assert_eq!(view(r#"{"answer":"B"}"#).as_deref(), Some("B"));
+    assert_eq!(view(r#"{"answers":["A","C"]}"#).as_deref(), Some("A, C"));
+    assert_eq!(
+        view(r#"{"answers":["A"],"other":"also D"}"#).as_deref(),
+        Some("A, also D")
+    );
+    assert_eq!(
+        view(roost_core::agent::ask::SKIPPED).as_deref(),
+        Some("skipped")
+    );
+    assert_eq!(view("Error: nope").as_deref(), Some("Error: nope"));
 }

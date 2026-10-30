@@ -75,6 +75,11 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - In an agent's Individual tools list, each tool shows how much it can return (for example `list_dir  200 entries`). Clicking it shows all of that tool's limits, with a button that opens Settings, Tools, where they are changed.
 
+### Agents can ask you questions
+
+- A new tool, `ask_user`, lets an agent stop and ask: pick one of 2 to 8 options, pick several, or type an answer. Pick questions also take an answer of your own, and you can skip. The question appears above the input, the run waits (also while you look at another chat), and your answer goes back to the model. The question and your answer stay in the chat.
+- It is on by default and can be switched off in the Individual tools list ("Ask you"). An agent may ask up to 5 questions per run. A question counts as an alert while the window is in the background ("Has a question for you").
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

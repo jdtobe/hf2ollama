@@ -811,7 +811,7 @@ fn agent_settings(
                         app.chat_ui.probe.run_confirm = None;
                         app.chat_ui.probe.tools_heads.clear();
                     }
-                    for family in [Family::Files, Family::Shell] {
+                    for family in [Family::Files, Family::Shell, Family::Ask] {
                         if family == Family::Shell && !app.settings.agents_can_run {
                             continue;
                         }
@@ -865,6 +865,8 @@ fn family_card(
                     continue;
                 }
                 let (title, sub, tips): (&str, &str, &[(&str, &str)]) = match cap {
+                    // Asking you needs no permission: only the tool's own switch.
+                    Capability::Ask => continue,
                     Capability::Read => (
                         "Read files",
                         "list, find, search, read",
@@ -915,6 +917,7 @@ fn family_card(
                         Capability::Read => app.chat_ui.probe.permission_buttons = rects.clone(),
                         Capability::Write => app.chat_ui.probe.write_buttons = rects.clone(),
                         Capability::Run => app.chat_ui.probe.run_buttons = rects.clone(),
+                        Capability::Ask => {}
                     }
                 }
                 let _ = rects;
@@ -971,6 +974,7 @@ fn family_card(
                         Capability::Read => 'R',
                         Capability::Write => 'W',
                         Capability::Run => 'X',
+                        Capability::Ask => 'Q',
                     };
                     let was_on = on;
                     ui.horizontal(|ui| {
