@@ -899,7 +899,8 @@ fn agents_card(
 }
 
 /// The warning shown before commands are switched on. Keeping it off is the
-/// default button, so Enter never turns commands on by accident.
+/// default button (focused, but a neutral grey, not the theme colour that an
+/// ON switch wears), so Enter never turns commands on by accident.
 fn run_warning(
     ui: &mut egui::Ui,
     cx: &mut Cx,
@@ -948,9 +949,12 @@ fn run_warning(
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
+                // Neutral on purpose: the theme colour is what an ON switch
+                // looks like, so it must not mark the button that keeps it off.
                 let keep = ui.add(
-                    egui::Button::new(RichText::new("Keep it off").size(13.0).color(t.accent_fg))
-                        .fill(t.accent)
+                    egui::Button::new(RichText::new("Keep it off").size(13.0).color(t.fg))
+                        .fill(t.surface2)
+                        .stroke(Stroke::new(1.0, t.line))
                         .min_size(vec2(0.0, 32.0)),
                 );
                 if ui.memory(|m| m.focused()).is_none() {

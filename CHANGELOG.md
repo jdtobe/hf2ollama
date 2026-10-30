@@ -114,6 +114,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Some models (a small `qwen2.5-coder`, for one) answer an agent with the JSON of a tool call, such as `{"name": "list_dir", "arguments": {}}`, instead of making a real call, so nothing runs. Roost used to show that JSON as the agent's answer. When a finished reply is only calls to Roost's tools written as JSON (one, several, in an array or in a code fence), the chat now says "The reply is a tool call written as text. Nothing ran (list_dir). This model may not handle tools well here; try another model." There is no Continue button, since going on would not help. An ordinary answer that mentions such JSON in a sentence is not affected.
 - The run counts as stopped for notifications, not as finished.
 
+### A clearer warning for running commands
+
+- In the "Let agents run commands?" warning, the "Keep it off" button was filled with the theme colour, which is also the colour of an ON switch, so it read like "on". It is now a neutral button (still the default one, so Enter never turns commands on), and "Turn on" keeps its red outline.
+
 ### Flatter edges
 
 - The sidebar (Chat, Work and Models) no longer has a border on all four sides, and the top bar, the status bar, the downloads dock and the menu bar no longer outline themselves. Each bar keeps the single line the panel draws along the edge that faces the content, and the sidebar keeps one divider on its right, so the top and bottom edges no longer double up with the bars above and below.
