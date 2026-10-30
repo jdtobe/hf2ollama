@@ -327,6 +327,12 @@ impl Manager {
             }
             ChatCommand::SetModel(id, model) => self.set_model(id, model).await,
             ChatCommand::Delete(id) => self.delete(id).await,
+            ChatCommand::Undelete(id) => {
+                if self.writer.restore(id).await {
+                    self.emit_rows().await;
+                }
+            }
+            ChatCommand::PurgeDeleted(id) => self.writer.purge(id),
             ChatCommand::Send { session, text } => self.begin(session, Intent::Send(text)).await,
             ChatCommand::Retry(id) => self.begin(id, Intent::Retry).await,
             ChatCommand::Regenerate(id) => self.begin(id, Intent::Regenerate).await,

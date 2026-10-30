@@ -92,6 +92,11 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - The "New chat" button with its arrow is replaced by two icon buttons beside the search field: new chat and new incognito chat. On the Work tab they start a new agent or a new incognito agent. The tooltips show the keyboard shortcuts.
 
+### Deleting a chat can be undone
+
+- The trash can on a sidebar row (gray, red on hover; it replaces the x) and the trash can in the header delete a chat at once. A small "Deleted … Undo" notice stays for 10 seconds; Undo brings the chat back as it was. The two-click confirmation (which could take three clicks, because a click inside the first 0.6 seconds was ignored) is gone for chats.
+- A deleted chat waits in a `trash` folder inside the history folder, and is removed for good when the notice goes away, when you delete another chat, or at the next start. Incognito chats have nothing on disk and cannot be brought back.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

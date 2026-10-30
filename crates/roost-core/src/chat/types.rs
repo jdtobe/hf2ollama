@@ -50,7 +50,14 @@ pub enum ChatCommand {
     SetCapability(SessionId, String, Permission),
     Rename(SessionId, String),
     SetPinned(SessionId, bool),
+    /// Deletes a session. A saved one is kept out of sight in the store's
+    /// trash until `PurgeDeleted` (or the next start), so `Undelete` can bring
+    /// it back; an incognito one is simply dropped.
     Delete(SessionId),
+    /// Brings back a session deleted a moment ago.
+    Undelete(SessionId),
+    /// Removes a deleted session for good (its Undo time is over).
+    PurgeDeleted(SessionId),
     SetModel(SessionId, String),
     Send {
         session: SessionId,

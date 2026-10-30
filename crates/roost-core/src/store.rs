@@ -23,6 +23,10 @@ pub use writer::Writer;
 const INDEX_FILE: &str = "index-v1.json";
 const INDEX_VERSION: u32 = 1;
 const LOCK_FILE: &str = ".lock";
+
+/// Where a deleted session waits for an undo. Whatever is still here at the
+/// next start is removed, so deleting still means gone.
+const TRASH_DIR: &str = "trash";
 const CORRUPT_INFIX: &str = ".json.corrupt-";
 const PLACEHOLDER_TITLE: &str = "Unreadable session";
 
@@ -268,6 +272,7 @@ impl Store {
             Err(TryLockError::WouldBlock) => return Err(StoreError::Locked),
             Err(TryLockError::Error(e)) => return Err(io(e)),
         }
+        let _ = fs::remove_dir_all(dir.join(TRASH_DIR));
         let mut store = Store {
             dir: dir.to_path_buf(),
             rows: BTreeMap::new(),
@@ -458,9 +463,22 @@ impl Store {
         Ok(())
     }
 
-    /// Removes the session file and any set-aside copies.
+    fn trash_path(&self, id: SessionId) -> PathBuf {
+        self.dir.join(TRASH_DIR).join(format!("{id}.json"))
+    }
+
+    /// Moves the session file into the trash, where it waits for `restore` or
+    /// `purge`, and removes any set-aside copies and the row. A file that
+    /// cannot be moved is removed instead, so a delete always deletes.
     pub fn delete(&mut self, id: SessionId) -> Result<(), StoreError> {
-        let _ = fs::remove_file(self.path(id));
+        let from = self.path(id);
+        let to = self.trash_path(id);
+        let moved = fs::create_dir_all(self.dir.join(TRASH_DIR))
+            .and_then(|()| fs::rename(&from, &to))
+            .is_ok();
+        if !moved {
+            let _ = fs::remove_file(&from);
+        }
         if let Ok(entries) = fs::read_dir(&self.dir) {
             let prefix = format!("{id}{CORRUPT_INFIX}");
             for e in entries.flatten() {
@@ -473,6 +491,25 @@ impl Store {
             self.write_index()?;
         }
         Ok(())
+    }
+
+    /// Brings a deleted session back from the trash. An error when it is not
+    /// there any more (purged, or never kept).
+    pub fn restore(&mut self, id: SessionId) -> Result<(), StoreError> {
+        let to = self.path(id);
+        if to.exists() {
+            return Ok(());
+        }
+        fs::rename(self.trash_path(id), &to).map_err(io)?;
+        let mut warnings = Vec::new();
+        let row = self.classify(id, &mut warnings);
+        self.rows.insert(id, row);
+        self.write_index()
+    }
+
+    /// Removes a deleted session from the trash for good.
+    pub fn purge(&mut self, id: SessionId) {
+        let _ = fs::remove_file(self.trash_path(id));
     }
 }
 
@@ -710,6 +747,57 @@ mod tests {
             .filter(|n| n.contains(&s.id.to_string()))
             .collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn a_deleted_session_waits_in_the_trash_and_comes_back_on_restore() {
+        let d = TempDir::new().unwrap();
+        let s = chat("Doomed");
+        let (mut st, _) = open(d.path());
+        st.save(&s).unwrap();
+        st.delete(s.id).unwrap();
+        assert!(st.rows().is_empty());
+        assert!(!file_of(d.path(), s.id).exists());
+        assert!(d
+            .path()
+            .join("trash")
+            .join(format!("{}.json", s.id))
+            .exists());
+        st.restore(s.id).unwrap();
+        assert!(file_of(d.path(), s.id).exists());
+        assert_eq!(st.rows().len(), 1);
+        assert_eq!(st.load(s.id).unwrap().title, "Doomed");
+    }
+
+    #[test]
+    fn a_purged_session_cannot_be_restored() {
+        let d = TempDir::new().unwrap();
+        let s = chat("Gone");
+        let (mut st, _) = open(d.path());
+        st.save(&s).unwrap();
+        st.delete(s.id).unwrap();
+        st.purge(s.id);
+        assert!(st.restore(s.id).is_err());
+        assert!(st.rows().is_empty());
+        assert!(!d
+            .path()
+            .join("trash")
+            .join(format!("{}.json", s.id))
+            .exists());
+    }
+
+    #[test]
+    fn whatever_is_left_in_the_trash_is_removed_at_the_next_start() {
+        let d = TempDir::new().unwrap();
+        let s = chat("Left behind");
+        {
+            let (mut st, _) = open(d.path());
+            st.save(&s).unwrap();
+            st.delete(s.id).unwrap();
+        }
+        let (mut st, _) = open(d.path());
+        assert!(!d.path().join("trash").exists());
+        assert!(st.restore(s.id).is_err());
     }
 
     #[test]

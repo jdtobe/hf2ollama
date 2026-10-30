@@ -482,12 +482,12 @@ fn hovering_a_rail_row_shows_a_delete_control_inside_the_row() {
     assert!(rail_delete_of(&mut f.app, f.open.id).is_some());
 }
 
-#[test]
-fn rail_delete_takes_a_click_and_a_confirm_after_a_short_pause() {
-    let size = (1180.0, 820.0);
-    let mut f = fixture_with(3);
-    let mut h = Harness::new(false);
-    run(&mut f.app, &mut h, size, 3);
+/// Hovers the first ordinary row and returns its id and trash can.
+fn hover_a_row_delete(
+    f: &mut Fixture,
+    h: &mut Harness,
+    size: (f32, f32),
+) -> (roost_core::session::SessionId, Rect) {
     let target = f
         .app
         .state_mut()
@@ -504,29 +504,80 @@ fn rail_delete_takes_a_click_and_a_confirm_after_a_short_pause() {
         vec![egui::Event::PointerMoved(row.center())],
         |ui| f.app.show(ui),
     );
-    run(&mut f.app, &mut h, size, 2);
+    run(&mut f.app, h, size, 2);
     let (del, _) = rail_delete_of(&mut f.app, target).unwrap();
-    click(&mut f.app, &mut h, size, del.center());
-    let (del, armed) = rail_delete_of(&mut f.app, target).expect("still shown while armed");
-    assert!(armed, "the first click arms");
-    let cmds = sent_chat_commands(&f.sent);
-    assert!(
-        !cmds
-            .iter()
-            .any(|c| matches!(c, ChatCommand::Delete(_) | ChatCommand::Open(_))),
-        "{cmds:?}"
-    );
-    // An immediate second click is inside the pause and must not delete.
-    click(&mut f.app, &mut h, size, del.center());
-    assert!(!sent_chat_commands(&f.sent)
-        .iter()
-        .any(|c| matches!(c, ChatCommand::Delete(_))));
-    std::thread::sleep(std::time::Duration::from_millis(650));
-    let (del, _) = rail_delete_of(&mut f.app, target).unwrap();
+    (target, del)
+}
+
+#[test]
+fn the_row_trash_can_deletes_at_once_and_the_toast_undoes_it() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(3);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let (target, del) = hover_a_row_delete(&mut f, &mut h, size);
+    let _ = sent_chat_commands(&f.sent);
     click(&mut f.app, &mut h, size, del.center());
     let cmds = sent_chat_commands(&f.sent);
     assert!(
         matches!(cmds.as_slice(), [ChatCommand::Delete(d)] if *d == target),
+        "one click deletes: {cmds:?}"
+    );
+    run(&mut f.app, &mut h, size, 2);
+    let texts = texts_of(&mut f.app, &mut h, size);
+    assert!(
+        texts.contains("Deleted") && texts.contains("Undo"),
+        "{texts}"
+    );
+    let undo = f.app.state_mut().chat_ui.probe.undo_button.expect("Undo");
+    click(&mut f.app, &mut h, size, undo.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::Undelete(d)] if *d == target),
+        "{cmds:?}"
+    );
+    run(&mut f.app, &mut h, size, 2);
+    assert!(
+        f.app.state_mut().chat_ui.undo.is_none(),
+        "the toast is gone"
+    );
+}
+
+#[test]
+fn an_expired_toast_purges_the_chat_and_a_newer_delete_purges_the_older_one() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(4);
+    let mut h = Harness::new(false);
+    run(&mut f.app, &mut h, size, 3);
+    let (first, del) = hover_a_row_delete(&mut f, &mut h, size);
+    click(&mut f.app, &mut h, size, del.center());
+    let _ = sent_chat_commands(&f.sent);
+    // Time runs out.
+    {
+        let toast = f.app.state_mut().chat_ui.undo.as_mut().expect("a toast");
+        assert_eq!(toast.id, first);
+        toast.at = std::time::Instant::now() - std::time::Duration::from_secs(11);
+    }
+    run(&mut f.app, &mut h, size, 2);
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(), [ChatCommand::PurgeDeleted(d)] if *d == first),
+        "{cmds:?}"
+    );
+    assert!(f.app.state_mut().chat_ui.undo.is_none());
+    // Deleting another chat while a toast shows removes the first for good.
+    f.app.state_mut().chat_ui.undo = Some(super::view::UndoToast {
+        id: first,
+        title: "old".into(),
+        at: std::time::Instant::now(),
+    });
+    let (second, del) = hover_a_row_delete(&mut f, &mut h, size);
+    let _ = sent_chat_commands(&f.sent);
+    click(&mut f.app, &mut h, size, del.center());
+    let cmds = sent_chat_commands(&f.sent);
+    assert!(
+        matches!(cmds.as_slice(),
+            [ChatCommand::PurgeDeleted(a), ChatCommand::Delete(b)] if *a == first && *b == second),
         "{cmds:?}"
     );
 }
@@ -804,7 +855,7 @@ fn texts_of(app: &mut App, h: &mut Harness, size: (f32, f32)) -> String {
 }
 
 #[test]
-fn the_title_row_has_a_pencil_a_pin_and_a_trash_can_and_deleting_takes_two_clicks() {
+fn the_title_row_has_a_pencil_a_pin_and_a_trash_can_and_deleting_is_one_click_with_undo() {
     let size = (1180.0, 820.0);
     let mut f = fixture_with(2);
     let mut h = Harness::new(false);
@@ -813,7 +864,7 @@ fn the_title_row_has_a_pencil_a_pin_and_a_trash_can_and_deleting_takes_two_click
     let header = p.header.unwrap();
     let (pencil, pin) = (p.rename_button.expect("pencil"), p.pin_button.expect("pin"));
     let (del, label) = p.delete_button.clone().expect("trash can");
-    assert_eq!(label, "Delete…");
+    assert_eq!(label, "Delete");
     for r in [pencil, pin, del] {
         assert!(inside(r, header), "{r:?} not in {header:?}");
     }
@@ -825,23 +876,14 @@ fn the_title_row_has_a_pencil_a_pin_and_a_trash_can_and_deleting_takes_two_click
         "{shown}"
     );
 
+    let _ = sent_chat_commands(&f.sent);
     click(&mut f.app, &mut h, size, del.center());
-    let (del, label) = f
-        .app
-        .state_mut()
-        .chat_ui
-        .probe
-        .delete_button
-        .clone()
-        .unwrap();
-    assert_eq!(label, "Click again to delete");
-    click(&mut f.app, &mut h, size, del.center());
+    let cmds = sent_chat_commands(&f.sent);
     assert!(
-        !sent_chat_commands(&f.sent)
-            .iter()
-            .any(|c| matches!(c, ChatCommand::Delete(_))),
-        "a quick second click must not delete"
+        matches!(cmds.as_slice(), [ChatCommand::Delete(d)] if *d == f.open.id),
+        "one click deletes: {cmds:?}"
     );
+    assert!(f.app.state_mut().chat_ui.undo.is_some(), "and offers Undo");
 }
 
 #[test]

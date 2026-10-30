@@ -36,6 +36,17 @@ const SEND_SIZE: f32 = 30.0;
 /// is the same above, below and to the right.
 const SEND_GAP: f32 = 5.0;
 
+/// How long a deleted chat can be brought back.
+const UNDO_SECS: u64 = 10;
+
+/// A chat deleted a moment ago, shown as "Chat deleted · Undo".
+#[derive(Debug, Clone)]
+pub struct UndoToast {
+    pub id: SessionId,
+    pub title: String,
+    pub at: Instant,
+}
+
 /// Interaction state that is not part of the conversation data.
 #[derive(Default)]
 pub struct ChatUi {
@@ -55,6 +66,8 @@ pub struct ChatUi {
     /// A session being renamed in the header, with the text so far.
     pub renaming: Option<(SessionId, String)>,
     pub confirm: Confirm,
+    /// The chat that was just deleted and can still be brought back.
+    pub undo: Option<UndoToast>,
     /// A rail row that cannot be opened (damaged, newer, unreadable).
     pub inspect: Option<SessionId>,
     /// Put the cursor in the composer on the next frame.
@@ -178,6 +191,8 @@ pub struct ChatProbe {
     pub pin_button: Option<egui::Rect>,
     pub rename_button: Option<egui::Rect>,
     pub new_button: Option<egui::Rect>,
+    pub undo_toast: Option<egui::Rect>,
+    pub undo_button: Option<egui::Rect>,
     pub incognito_button: Option<egui::Rect>,
     pub agent_chip: Option<egui::Rect>,
     pub plus_button: Option<egui::Rect>,
@@ -335,6 +350,7 @@ fn show_mode(
             }
             pane(ui, app, out, &t, open.as_ref(), &installed, now, mode);
         });
+    undo_toast(ui, app, out, &t, now);
     branch_dialog(ui, &t, app, out, &installed);
     app.chat.open = open.or(other);
 }
@@ -430,6 +446,94 @@ fn rail(
     }
     ui.add_space(8.0);
     rail_list(ui, app, out, t, mode);
+}
+
+/// Deletes a session at once. A saved one can be brought back for
+/// `UNDO_SECS` (the toast); an earlier toast's chat is removed for good first.
+/// An incognito chat has no file and cannot come back.
+pub(super) fn delete_session(
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    id: SessionId,
+    title: &str,
+    saved: bool,
+    now: Instant,
+) {
+    if let Some(prev) = app.chat_ui.undo.take() {
+        out.push(BackendRequest::Chat(ChatCommand::PurgeDeleted(prev.id)));
+    }
+    out.push(BackendRequest::Chat(ChatCommand::Delete(id)));
+    if saved {
+        app.chat_ui.undo = Some(UndoToast {
+            id,
+            title: title.to_string(),
+            at: now,
+        });
+    }
+}
+
+/// "Chat deleted · Undo", floating at the bottom left while the chat can
+/// still be brought back; when the time is up the chat is removed for good.
+fn undo_toast(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    t: &Tokens,
+    now: Instant,
+) {
+    let Some(toast) = app.chat_ui.undo.clone() else {
+        return;
+    };
+    let window = std::time::Duration::from_secs(UNDO_SECS);
+    if now >= toast.at + window {
+        app.chat_ui.undo = None;
+        out.push(BackendRequest::Chat(ChatCommand::PurgeDeleted(toast.id)));
+        return;
+    }
+    ui.ctx().request_repaint_after(toast.at + window - now);
+    let mut undo = false;
+    let area = egui::Area::new(egui::Id::unique("undo-toast"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::LEFT_BOTTOM, vec2(16.0, -16.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(t.surface)
+                .stroke(Stroke::new(1.0, t.line))
+                .corner_radius(10.0)
+                .inner_margin(Margin::symmetric(14, 9))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let name = truncate_chars(&toast.title, 28);
+                        ui.label(
+                            RichText::new(format!("Deleted “{name}”"))
+                                .size(13.0)
+                                .color(t.fg2),
+                        );
+                        let r = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Undo").font(semibold(13.0)).color(t.accent),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        #[cfg(test)]
+                        {
+                            app.chat_ui.probe.undo_button = Some(r.rect);
+                        }
+                        undo = r.clicked();
+                    });
+                });
+        });
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.undo_toast = Some(area.response.rect);
+    }
+    let _ = area;
+    if undo {
+        app.chat_ui.undo = None;
+        out.push(BackendRequest::Chat(ChatCommand::Undelete(toast.id)));
+    }
 }
 
 /// Side of the square buttons beside the search field.
@@ -680,9 +784,9 @@ fn row_note(row: &RailRow) -> Option<(&'static str, bool)> {
     }
 }
 
-/// One rail row. Clicking it opens the session; the delete control at its
-/// right (shown on hover, on the selected row and while armed) takes a click
-/// and a confirming second click after a short pause.
+/// One rail row. Clicking it opens the session; the trash can at its right
+/// (shown on hover and on the selected row) deletes it, with an Undo for a few
+/// seconds.
 fn rail_row(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -695,19 +799,13 @@ fn rail_row(
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
     #[cfg(test)]
     app.chat_ui.probe.rows.push((row.id, rect));
-    let key = row.id.to_string();
-    let armed = app.chat_ui.confirm.is_armed(&key, now);
-    let show_delete = selected || armed || ui.rect_contains_pointer(rect);
+    let show_delete = selected || ui.rect_contains_pointer(rect);
     if selected {
         ui.painter().rect_filled(rect, 8.0, t.accent_soft);
     } else if show_delete {
         ui.painter().rect_filled(rect, 8.0, t.surface2);
     }
-    let reserved = match (show_delete, armed) {
-        (false, _) => 0.0,
-        (true, false) => 30.0,
-        (true, true) => 76.0,
-    };
+    let reserved = if show_delete { 30.0 } else { 0.0 };
     let left = rect.left() + 10.0 + if row.pinned { 10.0 } else { 0.0 };
     if row.pinned {
         ui.painter().circle_filled(
@@ -731,59 +829,43 @@ fn rail_row(
 
     let mut delete_clicked = false;
     if show_delete {
-        let del_rect = if armed {
-            egui::Rect::from_min_max(
-                egui::pos2(rect.right() - 8.0 - 62.0, rect.top() + 6.0),
-                egui::pos2(rect.right() - 8.0, rect.top() + 28.0),
-            )
-        } else {
-            egui::Rect::from_center_size(
-                egui::pos2(rect.right() - 17.0, rect.top() + 17.0),
-                vec2(22.0, 22.0),
-            )
-        };
+        let del_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 17.0, rect.top() + 17.0),
+            vec2(22.0, 22.0),
+        );
         #[cfg(test)]
         app.chat_ui
             .probe
             .rail_delete
-            .push((row.id, del_rect, armed));
+            .push((row.id, del_rect, false));
         let hit = ui
             .interact(del_rect, resp.id.with("delete"), Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(if armed {
-                "Click again to delete this chat"
-            } else {
+            .on_hover_text(if row.lifetime == SessionLifetime::Incognito {
                 "Delete chat"
+            } else {
+                "Delete chat (you can undo it for a few seconds)"
             });
-        if armed {
-            ui.painter().rect_filled(del_rect, 6.0, t.bad_soft);
-            ui.painter().text(
-                del_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Delete?",
-                semibold(12.0),
-                t.bad,
-            );
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
-        } else {
-            if hit.hovered() {
-                ui.painter()
-                    .circle_filled(del_rect.center(), 11.0, t.surface);
-            }
-            let c = del_rect.center();
-            let arm = 3.5;
-            let stroke = Stroke::new(1.5, if hit.hovered() { t.bad } else { t.fg3 });
+        if hit.hovered() {
             ui.painter()
-                .line_segment([c + vec2(-arm, -arm), c + vec2(arm, arm)], stroke);
-            ui.painter()
-                .line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], stroke);
+                .circle_filled(del_rect.center(), 11.0, t.surface);
         }
+        crate::icons::paint(
+            ui.painter(),
+            del_rect,
+            crate::icons::Icon::Trash,
+            if hit.hovered() { t.bad } else { t.fg3 },
+        );
         if hit.clicked() {
             delete_clicked = true;
-            if app.chat_ui.confirm.click(&key, now) {
-                out.push(BackendRequest::Chat(ChatCommand::Delete(row.id)));
-            }
+            delete_session(
+                app,
+                out,
+                row.id,
+                &row.title,
+                row.lifetime == SessionLifetime::Persisted,
+                now,
+            );
         }
     }
     resp.clicked() && !delete_clicked
