@@ -2,7 +2,7 @@
 
 This is a contributor overview. The approved design is in `docs/superpowers/specs/2026-10-22-hf2ollama-design.md` (sections 3 and 4 are summarized here); the Roost workbench direction is in `docs/superpowers/specs/2026-10-27-roost-workbench-design.md`, and verified API behavior is in `docs/superpowers/notes/api-verification.md`. If this page and the spec disagree, the spec and the code win; please fix this page.
 
-Status: the importer (Browse, Installed, Settings, downloads) is implemented and tested. Chat and agents are planned (see `docs/ROADMAP.md`); only their data types exist so far.
+Status: the importer (Browse, Installed, Settings, downloads) is implemented and tested. Chat and agents are implemented too (see `docs/ROADMAP.md` for what is done and what is not).
 
 ## Crate layout
 
@@ -168,7 +168,7 @@ For safetensors the picker offers none, `int8` and `int4`, and the request carri
 ## Agents (stage 3)
 
 - **Jail** (`agent::workspace`). Every tool path is resolved through a `cap-std` directory handle rooted at the agent's folder, so absolute paths, `..`, NUL and escaping symlinks fail with no check-then-open race. A case-insensitive denylist keeps secrets unreadable. Walkers (`find_files`, `search_text`) never follow symlinks and skip `.git` and protected paths.
-- **Tools and registry** (`agent::tools`, `agent::registry`). Four read tools with fixed limits and explicit truncation markers. Family, capability, permission and tool layers; read capabilities may be Auto, Ask or Off; the check runs again at call time. A tool set to Ask is offered to the model, and its call waits in the run (the tool slot holds the pending call, no task) until the window answers with `ResolveApproval` (Allow, Allow for this session, which sets the capability to Auto, or Deny, which is reported to the model as a failed call). Stop ends the wait; reopening the chat asks the question again.
+- **Tools and registry** (`agent::tools`, `agent::registry`). Read, write and (opt-in) command tools. Their limits are the `Limits` in Settings (`[tools]`), scaled down for a small context window, and a result that is cut says what was left out and how to continue. A write is planned, diffed and kept for undo; a command runs with a scrubbed environment, a time limit and an output limit. Family, capability, permission and tool layers; read capabilities may be Auto, Ask or Off; the check runs again at call time. A tool set to Ask is offered to the model, and its call waits in the run (the tool slot holds the pending call, no task) until the window answers with `ResolveApproval` (Allow, Allow for this session, which sets the capability to Auto, or Deny, which is reported to the model as a failed call). Stop ends the wait; reopening the chat asks the question again.
 - **Loop** (`chat::agent_loop`, inside the manager). A run is steps: stream one reply, run its tool calls one at a time on the blocking pool, repeat until the model answers without tools, Stop, a failure or the budget. Each reply is its own turn; `RunEnded` closes the run. Steering waits in an inbox and is applied at the next safe point; a streaming reply is interrupted and kept. Settings cannot change under a running agent.
 - **Context** (`chat::context::build_agent_request`). Tool calls and their results are one group; the request always starts with a user message and keeps the newest user message; interrupted replies stay as the text they had.
 
