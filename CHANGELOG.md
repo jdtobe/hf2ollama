@@ -68,6 +68,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 ### Message times and notifications
 
 - Each message row shows when it was sent, muted, after its icons (`14:03` today, `Oct 28, 14:03` earlier, with the year for earlier years). The bubble's tooltip has the full date and time with the weekday.
+- The "Used N tools" line of an agent run also says when the first call started; its tooltip has the full date and time. Each tool card shows its own start time.
 - Notifications for agents: when an approval is waiting or a run finished or stopped, Roost bounces the Dock icon (flashes the taskbar) and sends a system notification while its window is not in front. Settings, Agents: when Roost is in the background (default), always, or off. Only the first alert of a visit notifies; the window title counts the rest, for example `(3) Roost`. The text is a fixed sentence and never includes file contents, commands or model output. A run you cancel does not notify.
 
 ### Quitting with work in progress

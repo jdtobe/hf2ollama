@@ -1193,6 +1193,16 @@ pub(super) fn tool_group(ui: &mut egui::Ui, t: &Tokens, msgs: &[Message], app: &
         "Used {count} tool{}: {list}",
         if count == 1 { "" } else { "s" }
     );
+    // When the first call of the group started.
+    let started = msgs.first().and_then(|m| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        super::state::local_stamp(m.created_at_ms, now)
+    });
+    if let Some((label, _)) = &started {
+        head.push_str(&format!("  ·  {label}"));
+    }
     if failed > 0 {
         head.push_str(&format!("  ·  {failed} failed"));
     }
@@ -1226,7 +1236,11 @@ pub(super) fn tool_group(ui: &mut egui::Ui, t: &Tokens, msgs: &[Message], app: &
             ),
         ));
     }
-    let _ = header;
+    if let Some((_, full)) = started {
+        header
+            .header_response
+            .on_hover_text(format!("Started {full}"));
+    }
     ui.add_space(6.0);
 }
 
