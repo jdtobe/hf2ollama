@@ -655,7 +655,10 @@ fn work_lists_only_agents_and_chat_lists_only_chats() {
         texts.contains("Config walkthrough") && !texts.contains("Just a chat"),
         "{texts}"
     );
-    assert!(texts.contains("+ New"), "{texts}");
+    assert!(
+        app.state_mut().chat_ui.probe.new_button.is_some(),
+        "the new-agent button"
+    );
     app.state_mut().view = View::Chat;
     run(&mut app, &mut h, size, 3);
     let texts = h
@@ -967,7 +970,10 @@ fn the_rail_has_one_new_button_and_no_footer() {
     let mut h = Harness::new(false);
     run(&mut f.app, &mut h, size, 3);
     let texts = texts_of(&mut f.app, &mut h, size);
-    assert!(texts.contains("+ New chat"), "{texts}");
+    assert!(
+        f.app.state_mut().chat_ui.probe.incognito_button.is_some(),
+        "the incognito button sits beside the new-chat button"
+    );
     for gone in ["New incognito", "IN MEMORY", "In memory"] {
         assert!(
             !texts
@@ -1005,8 +1011,8 @@ fn the_rail_search_filters_the_list_and_stays_inside_the_rail() {
     assert!(inside(search, rail), "{search:?} {rail:?}");
     let new = f.app.state_mut().chat_ui.probe.new_button.unwrap();
     assert!(
-        search.bottom() <= new.top(),
-        "search is above + New: {search:?} {new:?}"
+        search.right() <= new.left() && (search.center().y - new.center().y).abs() < 1.0,
+        "the new-chat button is beside the search field: {search:?} {new:?}"
     );
     f.app.state_mut().chat_ui.rail_query = "no-such-session-anywhere".into();
     run(&mut f.app, &mut h, size, 3);
@@ -3174,6 +3180,64 @@ fn a_long_press_on_x_asks_once_above_the_input_and_the_menu_does_not_ask_again()
     assert!(
         matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, key, Permission::Auto)]
             if *id == s.id && key == "shell.run"),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn the_two_new_buttons_sit_beside_search_and_start_a_chat_or_an_incognito_one() {
+    let size = (1180.0, 820.0);
+    let (mut app, sent, _s) = agent_fixture();
+    {
+        let st = app.state_mut();
+        st.installed
+            .on_installed_loaded(&Ok(vec![crate::runtime::InstalledEntry {
+                model: roost_core::ollama::InstalledModel {
+                    name: "qwen:7b".into(),
+                    size: 1,
+                    params: None,
+                    quant: None,
+                    family: None,
+                    modified: String::new(),
+                    digest: String::new(),
+                },
+                source_repo: None,
+            }]));
+        st.view = View::Chat;
+    }
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let p = app.state_mut().chat_ui.probe.clone();
+    let (search, new, hidden) = (
+        p.rail_search.unwrap(),
+        p.new_button.unwrap(),
+        p.incognito_button.unwrap(),
+    );
+    assert!(search.right() <= new.left() && new.right() <= hidden.left());
+    assert!(inside(hidden, p.rail.unwrap()), "{hidden:?} in the rail");
+    let _ = sent_chat_commands(&sent);
+    click(&mut app, &mut h, size, new.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(
+            cmds.as_slice(),
+            [ChatCommand::Create {
+                lifetime: SessionLifetime::Persisted,
+                ..
+            }]
+        ),
+        "{cmds:?}"
+    );
+    click(&mut app, &mut h, size, hidden.center());
+    let cmds = sent_chat_commands(&sent);
+    assert!(
+        matches!(
+            cmds.as_slice(),
+            [ChatCommand::Create {
+                lifetime: SessionLifetime::Incognito,
+                ..
+            }]
+        ),
         "{cmds:?}"
     );
 }

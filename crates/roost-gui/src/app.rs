@@ -1220,8 +1220,12 @@ mod tests {
         }
         let (_, first) = seen[0];
         for (view, f) in &seen {
+            // Chat and Work make room for the new-chat buttons beside the
+            // field, so it may be narrower, but it starts in the same place.
             assert!(
-                (f.min - first.min).length() < 0.5 && (f.width() - first.width()).abs() < 0.5,
+                (f.min - first.min).length() < 0.5
+                    && (f.height() - first.height()).abs() < 0.5
+                    && f.width() <= first.width() + 0.5,
                 "{view:?} search {f:?} differs from Models {first:?}"
             );
         }

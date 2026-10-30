@@ -178,6 +178,7 @@ pub struct ChatProbe {
     pub pin_button: Option<egui::Rect>,
     pub rename_button: Option<egui::Rect>,
     pub new_button: Option<egui::Rect>,
+    pub incognito_button: Option<egui::Rect>,
     pub agent_chip: Option<egui::Rect>,
     pub plus_button: Option<egui::Rect>,
     pub folder_pill: Option<egui::Rect>,
@@ -356,71 +357,61 @@ fn rail(
     mode: SessionMode,
 ) {
     let model = app.chat.default_model(installed);
-    let field = crate::widgets::search_field(ui, &mut app.chat_ui.rail_query, "Search");
+    let mut start = None;
+    let ready = model.is_some();
+    let hint = "Install a model first (Models), then start one.";
+    let (plain, incognito) = if mode == SessionMode::Agent {
+        ("New agent…", "New incognito agent…")
+    } else {
+        ("New chat", "New incognito chat")
+    };
+    // Search with the two ways to start something beside it.
+    let field = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let room = (ui.available_width() - 2.0 * (RAIL_BTN + 6.0)).max(80.0);
+            let field = ui
+                .allocate_ui(vec2(room, RAIL_BTN), |ui| {
+                    crate::widgets::search_field(ui, &mut app.chat_ui.rail_query, "Search")
+                })
+                .inner;
+            let new = rail_icon_button(
+                ui,
+                t,
+                crate::icons::Icon::NewChat,
+                &with_shortcut(plain, "N"),
+                (!ready).then_some(hint),
+                true,
+            );
+            let hidden = rail_icon_button(
+                ui,
+                t,
+                crate::icons::Icon::Incognito,
+                &with_shortcut(incognito, "⇧N"),
+                (!ready).then_some(hint),
+                false,
+            );
+            if new.clicked() {
+                start = Some(SessionLifetime::Persisted);
+            }
+            if hidden.clicked() {
+                start = Some(SessionLifetime::Incognito);
+            }
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.new_button = Some(new.rect);
+                app.chat_ui.probe.incognito_button = Some(hidden.rect);
+            }
+            field
+        })
+        .inner;
     app.search_rect = Some(field.response.rect);
     app.search_clear_rect = field.clear;
     #[cfg(test)]
     {
         app.chat_ui.probe.rail_search = Some(field.response.rect);
     }
-    let _ = field;
-    ui.add_space(8.0);
-    rail_new_menu(ui, app, out, t, &model, mode);
-    ui.add_space(8.0);
-    rail_list(ui, app, out, t, mode);
-}
-
-/// A split button: the main half starts a new chat/agent, the arrow beside it
-/// offers the incognito variant.
-fn rail_new_menu(
-    ui: &mut egui::Ui,
-    app: &mut AppState,
-    out: &mut Vec<BackendRequest>,
-    t: &Tokens,
-    model: &Option<String>,
-    mode: SessionMode,
-) {
-    let ready = model.is_some();
-    let hint = "Install a model first (Models), then start one.";
-    let (plain, incognito) = if mode == SessionMode::Agent {
-        ("+ New agent…", "New incognito agent…")
-    } else {
-        ("+ New chat", "New incognito chat")
-    };
-    let mut start = None;
-    let (main, arrow) = ui
-        .horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            let main = ui.add_enabled(
-                ready,
-                egui::Button::new(RichText::new(plain).font(semibold(13.0)).color(t.accent_fg))
-                    .fill(t.accent)
-                    .min_size(vec2(96.0, 30.0)),
-            );
-            if !ready {
-                main.clone().on_disabled_hover_text(hint);
-            }
-            if main.clicked() {
-                start = Some(SessionLifetime::Persisted);
-            }
-            let (arrow, _) = egui::containers::menu::MenuButton::from_button(
-                egui::Button::new(RichText::new("▾").font(semibold(13.0)).color(t.accent_fg))
-                    .fill(t.accent)
-                    .min_size(vec2(26.0, 30.0)),
-            )
-            .ui(ui, |ui| {
-                let item = ui.add_enabled(ready, egui::Button::new(incognito));
-                if !ready {
-                    item.clone().on_disabled_hover_text(hint);
-                }
-                if item.clicked() {
-                    start = Some(SessionLifetime::Incognito);
-                }
-            });
-            (main, arrow)
-        })
-        .inner;
-    if let Some(lifetime) = start {
+    if let Some(lifetime) = start.filter(|_| ready) {
         if mode == SessionMode::Agent {
             open_new_agent(
                 app,
@@ -437,11 +428,77 @@ fn rail_new_menu(
             }));
         }
     }
-    #[cfg(test)]
-    {
-        app.chat_ui.probe.new_button = Some(main.rect.union(arrow.rect));
+    ui.add_space(8.0);
+    rail_list(ui, app, out, t, mode);
+}
+
+/// Side of the square buttons beside the search field.
+const RAIL_BTN: f32 = 32.0;
+
+/// "New chat (⌘N)" on macOS, "New chat (Ctrl+N)" elsewhere.
+fn with_shortcut(label: &str, key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        let key = key.replace('⇧', "⇧⌘");
+        let key = if key.starts_with('⇧') {
+            key
+        } else {
+            format!("⌘{key}")
+        };
+        format!("{label} ({key})")
+    } else {
+        let key = key.replace('⇧', "Shift+");
+        format!("{label} (Ctrl+{key})")
     }
-    let _ = (main, arrow);
+}
+
+/// A square icon button for the rail. `disabled` is the hover text of a
+/// button that cannot be used right now.
+fn rail_icon_button(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    icon: crate::icons::Icon,
+    tip: &str,
+    disabled: Option<&str>,
+    primary: bool,
+) -> egui::Response {
+    let enabled = disabled.is_none();
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(RAIL_BTN, RAIL_BTN),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let resp = match disabled {
+        Some(why) => resp.on_hover_text(why),
+        None => resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(tip),
+    };
+    let (fill, stroke, ink) = if primary {
+        let fill = if enabled { t.accent } else { t.line };
+        (
+            fill,
+            Stroke::NONE,
+            if enabled { t.accent_fg } else { t.fg3 },
+        )
+    } else {
+        let fill = if resp.hovered() && enabled {
+            t.surface2
+        } else {
+            t.surface
+        };
+        (
+            fill,
+            Stroke::new(1.0, t.line),
+            if enabled { t.fg2 } else { t.fg3 },
+        )
+    };
+    ui.painter()
+        .rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
+    crate::icons::paint(ui.painter(), rect, icon, ink);
+    resp
 }
 
 /// Opens the New agent form with a default model, and asks whether it can use tools.

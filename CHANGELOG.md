@@ -88,6 +88,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Nothing sits behind the input: no lighter panel or border, only the bubble, on the same background as the conversation.
 - In a narrow window the folder shrinks to its icon and the model name is shortened. The header keeps the title, the folder path, the status, the pin and the trash can; the "Agent settings" button is gone from it.
 
+### A simpler top of the sidebar
+
+- The "New chat" button with its arrow is replaced by two icon buttons beside the search field: new chat and new incognito chat. On the Work tab they start a new agent or a new incognito agent. The tooltips show the keyboard shortcuts.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
