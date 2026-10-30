@@ -94,7 +94,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### Deleting a chat can be undone
 
-- Deleting a chat still takes a click and a confirming click (on the sidebar row's trash can and on the header's), and then a small "Deleted … Undo" notice stays for 10 seconds; Undo brings the chat back as it was. The sidebar's x is now a gray trash can (red on hover). The confirm button is dimmed for the first 0.6 seconds, which is when a second click is ignored (a quick double-click can never delete), so it no longer looks ready when it is not.
+- Deleting a chat still takes a click and a confirming click (on the sidebar row's trash can and on the header's), and then a small "Deleted … Undo" notice stays for 10 seconds; Undo brings the chat back as it was. The sidebar's x is now a gray trash can (red on hover). A second click inside the first 0.1 seconds is ignored, so a quick double-click can never delete (this pause was 0.6 seconds, long enough to make the confirm look ready when it was not; it is now 0.1 s for chats, installed models and Clear cached files).
 - A deleted chat waits in a `trash` folder inside the history folder, and is removed for good when the notice goes away, when you delete another chat, or at the next start. Incognito chats have nothing on disk and cannot be brought back.
 
 ### Quitting with work in progress
@@ -227,7 +227,7 @@ Five rounds of design (mockups and evaluations in `docs/design/ui-declutter-mock
 - File sizes from the remote are summed with saturating arithmetic.
 - Spec and plan aligned with the verified Ollama safetensors `quantize` values and Hugging Face hash rules.
 - CI runs on pushes to `main` and on pull requests only (no duplicate runs), and no longer installs `libgtk-3-dev`, which nothing uses.
-- Delete in Installed needs a 600 ms pause between arming and confirming, and held keys never confirm.
+- Delete in Installed needs a short pause (0.1 s) between arming and confirming, and held keys never confirm.
 - The file dialog for the staging folder uses `rfd` with the XDG portal backend on Linux.
 - A saved staging folder that is not an absolute path (or contains `..` or starts with `~`) is ignored at startup in favor of the default, with a notice in the status bar.
 - Removed the unused `quality_bar` and `fit_pill` widgets.

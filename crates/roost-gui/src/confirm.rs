@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 pub const ARM_WINDOW: Duration = Duration::from_secs(4);
 /// A click on the armed button is ignored until this long after arming, so a
 /// double-click can never confirm.
-pub const ARM_MIN_DELAY: Duration = Duration::from_millis(600);
+pub const ARM_MIN_DELAY: Duration = Duration::from_millis(100);
 
 /// At most one armed key at a time (a row name, or a fixed id for a button).
 #[derive(Debug, Default)]
@@ -129,7 +129,7 @@ mod tests {
         let mut c = Confirm::default();
         let t0 = Instant::now();
         c.click("a", t0);
-        for n in [0, 100, 599] {
+        for n in [0, 50, 99] {
             let now = t0 + ms(n);
             assert!(!c.click("a", now), "{n} ms");
             assert!(!c.confirm("a", now), "{n} ms");

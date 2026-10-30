@@ -554,7 +554,7 @@ fn the_row_trash_can_takes_a_click_and_a_confirm_after_a_short_pause() {
     assert!(!sent_chat_commands(&f.sent)
         .iter()
         .any(|c| matches!(c, ChatCommand::Delete(_))));
-    std::thread::sleep(std::time::Duration::from_millis(650));
+    std::thread::sleep(std::time::Duration::from_millis(150));
     let (del, _) = rail_delete_of(&mut f.app, target).unwrap();
     click(&mut f.app, &mut h, size, del.center());
     let cmds = sent_chat_commands(&f.sent);

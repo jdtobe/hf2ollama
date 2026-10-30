@@ -1339,12 +1339,10 @@ mod tests {
         assert!(st.clear.is_armed(CLEAR_KEY, t0));
         assert!(st.take_requests().is_empty(), "the first click only arms");
         // A double click inside the delay does nothing.
-        st.click_clear_cached(t0 + Duration::from_millis(150));
-        st.click_clear_cached(t0 + Duration::from_millis(599));
+        st.click_clear_cached(t0 + Duration::from_millis(50));
+        st.click_clear_cached(t0 + Duration::from_millis(99));
         assert!(st.take_requests().is_empty());
-        assert!(st
-            .clear
-            .is_armed(CLEAR_KEY, t0 + Duration::from_millis(599)));
+        assert!(st.clear.is_armed(CLEAR_KEY, t0 + Duration::from_millis(99)));
         // A deliberate second click after the delay sends exactly one.
         st.click_clear_cached(t0 + Duration::from_millis(700));
         let reqs = st.take_requests();
