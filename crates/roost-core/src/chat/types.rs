@@ -165,6 +165,9 @@ pub fn run_end_note(
         RunOutcome::Failed => RunEnd::Failed {
             message: message.unwrap_or_default().to_string(),
         },
+        RunOutcome::TextToolCall => RunEnd::TextToolCall {
+            tool: message.unwrap_or_default().to_string(),
+        },
     };
     Some(RunEndNote { end, after })
 }
@@ -177,6 +180,9 @@ pub enum RunOutcome {
     Cancelled,
     /// An agent used all its steps.
     BudgetExhausted,
+    /// The last reply was a tool call written as text; nothing ran. The
+    /// message names the tool or tools.
+    TextToolCall,
 }
 
 #[derive(Debug, Clone)]

@@ -3648,3 +3648,35 @@ fn no_banner_while_a_run_is_going_and_none_in_a_chat() {
     let p = f.app.state_mut().chat_ui.probe.clone();
     assert!(p.run_banner.is_none() && p.run_marker.is_none());
 }
+
+#[test]
+fn a_tool_call_written_as_text_gets_a_banner_without_a_button() {
+    use roost_core::session::RunEnd;
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        end_the_run_with(
+            &mut app,
+            RunEnd::TextToolCall {
+                tool: "list_dir".into(),
+            },
+            0,
+        );
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        for want in [
+            "The reply is a tool call written as text",
+            "Nothing ran (list_dir)",
+            "try another model",
+        ] {
+            assert!(texts.contains(want), "{size:?}: {want}\n{texts}");
+        }
+        let p = app.state_mut().chat_ui.probe.clone();
+        let banner = p.run_banner.expect("a banner");
+        assert!(inside(banner, p.pane.unwrap()), "{size:?}: {banner:?}");
+        assert!(
+            p.run_continue.is_none() && p.run_steps.is_none(),
+            "{size:?}: nothing to continue"
+        );
+    }
+}

@@ -43,7 +43,9 @@ pub fn kind_of(ev: &ChatEvent) -> Option<(SessionId, Kind)> {
             session, outcome, ..
         } => match outcome {
             RunOutcome::Completed => Some((*session, Kind::Finished)),
-            RunOutcome::Failed | RunOutcome::BudgetExhausted => Some((*session, Kind::Stopped)),
+            RunOutcome::Failed | RunOutcome::BudgetExhausted | RunOutcome::TextToolCall => {
+                Some((*session, Kind::Stopped))
+            }
             RunOutcome::Cancelled => None,
         },
         _ => None,
@@ -341,6 +343,10 @@ mod tests {
         );
         assert_eq!(
             kind_of(&ended(RunOutcome::BudgetExhausted)).map(|k| k.1),
+            Some(Kind::Stopped)
+        );
+        assert_eq!(
+            kind_of(&ended(RunOutcome::TextToolCall)).map(|k| k.1),
             Some(Kind::Stopped)
         );
         assert!(kind_of(&ended(RunOutcome::Cancelled)).is_none());
