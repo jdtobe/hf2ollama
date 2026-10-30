@@ -70,6 +70,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Each message row shows when it was sent, muted, after its icons (`14:03` today, `Oct 28, 14:03` earlier, with the year for earlier years). The bubble's tooltip has the full date and time with the weekday.
 - Notifications for agents: when an approval is waiting or a run finished or stopped, Roost bounces the Dock icon (flashes the taskbar) and sends a system notification while its window is not in front. Settings, Agents: when Roost is in the background (default), always, or off. Only the first alert of a visit notifies; the window title counts the rest, for example `(3) Roost`. The text is a fixed sentence and never includes file contents, commands or model output. A run you cancel does not notify.
 
+### Tool limits in the Work header
+
+- In an agent's Individual tools list, each tool shows how much it can return (for example `list_dir  200 entries`). Clicking it shows all of that tool's limits, with a button that opens Settings, Tools, where they are changed.
+
 ### One sidebar
 
 - Chat, Work and Models share one left column of the same width (340 by default, as wide as the Models list was). Drag its right edge to change it, between 280 and 520 points; a narrow window limits it so the page beside it keeps at least 540. The width you choose is remembered between runs and is the same on every tab. Saving it (and changing the theme or the auto-dismiss time) no longer restarts the download engine: only settings the engines use (the Ollama address, the staging folder, the delete/keep options, simultaneous downloads, the Hugging Face address and keep-alive) rebuild them. Before, any settings change did, which let a download started afterwards ignore the simultaneous-downloads limit.

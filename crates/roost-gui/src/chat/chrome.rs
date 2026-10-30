@@ -972,21 +972,107 @@ fn family_card(
                         Capability::Write => 'W',
                         Capability::Run => 'X',
                     };
-                    if ui
-                        .checkbox(&mut on, format!("{tag}   {}", spec.name))
-                        .on_hover_text(spec.description)
-                        .changed()
-                    {
-                        out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
-                            id,
-                            spec.name.into(),
-                            on,
-                        )));
+                    let was_on = on;
+                    ui.horizontal(|ui| {
+                        if ui
+                            .checkbox(&mut on, format!("{tag}   {}", spec.name))
+                            .on_hover_text(spec.description)
+                            .changed()
+                        {
+                            out.push(BackendRequest::Chat(ChatCommand::SetToolEnabled(
+                                id,
+                                spec.name.into(),
+                                on,
+                            )));
+                        }
+                        tool_limit_chip(ui, app, t, spec.name, was_on);
+                    });
+                    if app.chat_ui.limits_open.as_deref() == Some(spec.name) {
+                        tool_limit_panel(ui, app, t, spec.name);
                     }
                 }
             }
         });
     });
+}
+
+/// The short limit beside a tool in the list. Clicking it shows or hides all
+/// of that tool's limits under the row.
+fn tool_limit_chip(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &str, on: bool) {
+    use super::tool_limits;
+    let Some(summary) = tool_limits::summary(name, &app.settings.tools) else {
+        return;
+    };
+    let open = app.chat_ui.limits_open.as_deref() == Some(name);
+    let color = if open {
+        t.accent
+    } else if on {
+        t.fg3
+    } else {
+        t.fg3.gamma_multiply(0.55)
+    };
+    let chip = ui
+        .add(
+            egui::Label::new(RichText::new(summary).size(11.0).color(color))
+                .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("This tool's limits");
+    #[cfg(test)]
+    app.chat_ui.probe.tool_limit_chips.push(chip.rect);
+    if chip.clicked() {
+        app.chat_ui.limits_open = if open { None } else { Some(name.to_string()) };
+    }
+}
+
+/// All of one tool's limits, under its row. They are changed in Settings.
+fn tool_limit_panel(ui: &mut egui::Ui, app: &mut AppState, t: &Tokens, name: &str) {
+    use super::tool_limits;
+    let top = ui.cursor().min.y;
+    egui::Frame::new()
+        .fill(t.surface2)
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            for (what, value) in tool_limits::facts(name, &app.settings.tools) {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(what).size(12.0).color(t.fg2));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(value).font(mono(12.0)).color(t.fg));
+                    });
+                });
+            }
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "Smaller for a model with a small context window. The same for every agent.",
+                    )
+                    .size(11.0)
+                    .color(t.fg3),
+                )
+                .wrap(),
+            );
+            ui.add_space(2.0);
+            let r = ui.button("Change in Settings");
+            #[cfg(test)]
+            {
+                app.chat_ui.probe.tool_limit_settings = Some(r.rect);
+            }
+            if r.clicked() {
+                app.select(crate::app::View::Settings);
+            }
+        });
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.tool_limit_popover = Some(egui::Rect::from_min_max(
+            egui::pos2(ui.min_rect().left(), top),
+            egui::pos2(ui.min_rect().right(), ui.cursor().min.y),
+        ));
+    }
+    let _ = top;
+    ui.add_space(4.0);
 }
 
 /// The question after choosing Allow for Run. Cancel is the quiet default.
