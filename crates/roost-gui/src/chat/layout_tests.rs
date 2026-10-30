@@ -1072,6 +1072,21 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
                     texts.contains("Used 3 tools: search_text ×3"),
                     "{tag}: {texts}"
                 );
+                // The group says when it started: `14:03` for today.
+                let after = texts
+                    .split("Used 3 tools: search_text ×3  ·  ")
+                    .nth(1)
+                    .unwrap_or("");
+                let clock: Vec<char> = after.chars().take(5).collect();
+                assert!(
+                    clock.len() == 5
+                        && clock[2] == ':'
+                        && clock
+                            .iter()
+                            .enumerate()
+                            .all(|(i, c)| i == 2 || c.is_ascii_digit()),
+                    "{tag}: start time after the list: {texts}"
+                );
                 assert!(
                     texts.contains("1 failed") && texts.contains("search_text running…"),
                     "{tag}: {texts}"
@@ -1091,26 +1106,48 @@ fn an_agent_run_shows_progress_in_one_status_line_and_folds_tool_steps() {
 
 #[test]
 fn opening_the_tool_summary_shows_the_cards_inside_the_pane() {
-    let size = (1180.0, 820.0);
-    let (mut app, _sent, _s) = agent_fixture();
-    let mut h = Harness::new(false);
-    run(&mut app, &mut h, size, 4);
-    let group = app.state_mut().chat_ui.probe.tool_groups[0];
-    click(
-        &mut app,
-        &mut h,
-        size,
-        egui::pos2(group.left() + 12.0, group.center().y),
-    );
-    run(&mut app, &mut h, size, 3);
-    let p = app.state_mut().chat_ui.probe.clone();
-    assert_eq!(p.tool_cards.len(), 3, "{:?}", p.tool_cards);
-    let pane = p.pane.unwrap();
-    for c in &p.tool_cards {
-        assert!(
-            c.left() >= pane.left() - 0.5 && c.right() <= pane.right() + 0.5,
-            "{c:?} {pane:?}"
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let group = app.state_mut().chat_ui.probe.tool_groups[0];
+        click(
+            &mut app,
+            &mut h,
+            size,
+            egui::pos2(group.left() + 12.0, group.center().y),
         );
+        run(&mut app, &mut h, size, 3);
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert_eq!(p.tool_cards.len(), 3, "{:?}", p.tool_cards);
+        let pane = p.pane.unwrap();
+        for c in &p.tool_cards {
+            assert!(
+                c.left() >= pane.left() - 0.5 && c.right() <= pane.right() + 0.5,
+                "{c:?} {pane:?}"
+            );
+        }
+        // The group line and each of the three cards say when they started.
+        let texts = texts_of(&mut app, &mut h, size);
+        let clocks = texts
+            .split(|c: char| !(c.is_ascii_digit() || c == ':'))
+            .filter(|w| {
+                let b = w.as_bytes();
+                b.len() == 5
+                    && b[2] == b':'
+                    && b.iter()
+                        .enumerate()
+                        .all(|(i, c)| i == 2 || c.is_ascii_digit())
+            })
+            .count();
+        // The text dump holds only what the pane shows: all four at the large
+        // size, at least one card at the small one (the group line and the
+        // lower cards may be scrolled out).
+        if size.0 >= 1000.0 {
+            assert_eq!(clocks, 4, "{size:?}: {texts}");
+        } else {
+            assert!(clocks >= 1, "{size:?}: {texts}");
+        }
     }
 }
 

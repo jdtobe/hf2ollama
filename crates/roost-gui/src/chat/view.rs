@@ -1258,6 +1258,15 @@ pub(super) fn tool_card(ui: &mut egui::Ui, t: &Tokens, m: &Message, app: &mut Ap
                     ToolStatus::Cancelled => tag(ui, "Stopped", t.warn, t.warn_soft),
                     ToolStatus::Complete => {}
                 }
+                // When the call started, at the right edge of the title row.
+                if let Some((label, full)) =
+                    crate::chat::state::local_stamp(m.created_at_ms, now_ms())
+                {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(label).font(mono(11.0)).color(t.fg3))
+                            .on_hover_text(format!("Started {full}"));
+                    });
+                }
             });
             ui.add(
                 egui::Label::new(
