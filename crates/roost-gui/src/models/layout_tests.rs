@@ -886,3 +886,40 @@ fn the_models_search_hint_is_just_search_like_chat_and_work() {
     );
     assert!(!t.contains("Search installed models"), "{t}");
 }
+
+#[test]
+fn the_text_in_every_installed_row_has_the_same_space_above_and_below() {
+    for size in SIZES {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let rows = app.state_mut().browse.probe.installed_rows.clone();
+        let shapes = painted(&mut app, &mut h, size);
+        let mut gaps = Vec::new();
+        for (name, row) in &rows {
+            let mut text: Option<Rect> = None;
+            for s in &shapes {
+                if let egui::epaint::Shape::Text(t) = s {
+                    // The line boxes, so the space is measured the way it is laid out.
+                    let r = t.galley.rect.translate(t.pos.to_vec2());
+                    if row.contains(r.center()) {
+                        text = Some(text.map_or(r, |u| u.union(r)));
+                    }
+                }
+            }
+            let text = text.unwrap_or_else(|| panic!("{size:?}: no text in {name}"));
+            let (above, below) = (text.top() - row.top(), row.bottom() - text.bottom());
+            assert!(
+                (above - below).abs() <= 1.5,
+                "{size:?}: {name} has {above} above its text and {below} below"
+            );
+            gaps.push(above);
+        }
+        for g in &gaps {
+            assert!(
+                (g - gaps[0]).abs() <= 1.0,
+                "{size:?}: the gaps differ: {gaps:?}"
+            );
+        }
+    }
+}

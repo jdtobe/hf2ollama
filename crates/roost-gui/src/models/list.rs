@@ -10,7 +10,9 @@ use crate::theme::{mono, tokens, Tokens};
 use crate::widgets::{ellipsize_middle, small_button};
 use eframe::egui::{self, vec2, Margin, Rect, RichText, Sense, Stroke};
 
-const ROW_H: f32 = 56.0;
+const ROW_H: f32 = 60.0;
+/// Space between the name and the source line under it.
+const LINE_GAP: f32 = 2.0;
 
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
@@ -105,42 +107,60 @@ fn installed_section(
                     ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
                 let on = selected.as_deref() == Some(row.name());
                 paint_row(ui, t, rect, resp.hovered(), on);
-                ui.scope_builder(
-                    egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 9.0))),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        let size = format_size(row.model.size);
-                        let size_w = ui
-                            .painter()
-                            .layout_no_wrap(size.clone(), egui::FontId::proportional(12.0), t.fg2)
-                            .size()
-                            .x;
-                        let room = (ui.available_width() - size_w - 8.0).max(40.0);
-                        let font = if on {
-                            semibold(13.5)
-                        } else {
-                            egui::FontId::proportional(13.5)
-                        };
-                        let name = ellipsize_middle(ui, row.name(), font.clone(), room);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(name).font(font).color(t.fg));
+                // The two lines are centred in the row, so the space above and
+                // below them is the same for every row.
+                let name_font = if on {
+                    semibold(13.5)
+                } else {
+                    egui::FontId::proportional(13.5)
+                };
+                let small = egui::FontId::proportional(12.0);
+                let h1 = ui
+                    .painter()
+                    .layout_no_wrap("Ag".into(), name_font.clone(), t.fg)
+                    .size()
+                    .y;
+                let h2 = ui
+                    .painter()
+                    .layout_no_wrap("Ag".into(), small.clone(), t.fg)
+                    .size()
+                    .y;
+                let pad = ((ROW_H - (h1 + LINE_GAP + h2)) / 2.0).max(2.0);
+                let inner = Rect::from_min_max(
+                    egui::pos2(rect.left() + 14.0, rect.top() + pad),
+                    egui::pos2(rect.right() - 14.0, rect.bottom()),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                    ui.spacing_mut().item_spacing.y = LINE_GAP;
+                    let size = format_size(row.model.size);
+                    let size_w = ui
+                        .painter()
+                        .layout_no_wrap(size.clone(), small.clone(), t.fg2)
+                        .size()
+                        .x;
+                    let room = (ui.available_width() - size_w - 8.0).max(40.0);
+                    let name = ellipsize_middle(ui, row.name(), name_font.clone(), room);
+                    ui.allocate_ui_with_layout(
+                        vec2(ui.available_width(), h1),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.label(RichText::new(name).font(name_font).color(t.fg));
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.label(RichText::new(size).size(12.0).color(t.fg2));
+                                    ui.label(RichText::new(size).font(small.clone()).color(t.fg2));
                                 },
                             );
-                        });
-                        let from = source_line(row);
-                        let from = ellipsize_middle(
-                            ui,
-                            &from,
-                            egui::FontId::proportional(12.0),
-                            ui.available_width(),
-                        );
-                        ui.label(RichText::new(from).size(12.0).color(t.fg2));
-                    },
-                );
+                        },
+                    );
+                    let from = ellipsize_middle(
+                        ui,
+                        &source_line(row),
+                        small.clone(),
+                        ui.available_width(),
+                    );
+                    ui.label(RichText::new(from).font(small).color(t.fg2));
+                });
                 #[cfg(test)]
                 app.browse
                     .probe
