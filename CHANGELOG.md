@@ -143,7 +143,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 ### A calmer Models tab
 
 - The top of the Models list is one 60 px band like Chat's: the search field with a sort button and a filter button beside it. Sort has its own popover with the four orders.
-- The disk usage card is two flat lines with a thinner two-tone bar instead of a bordered card.
+- The disk usage display is two flat lines with a thinner two-tone bar instead of a bordered card, and it sits above the Installed heading.
 - Installed models are two lines: the name with its size at the right, then where it came from, its parameters and its quantisation (`unsloth · 27.3B · Q4_K_M`). The monospace names and the pills are gone.
 - An installed model's page has the same header as a chat: a 44 px tile (with a small neural-net icon), the name and facts in the deeper tint, and Chat, Work and delete at the right. Work is outlined and delete is a quiet icon that turns red when pointed at. The details sit on the page background and About stays on white.
 

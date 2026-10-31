@@ -76,6 +76,10 @@ fn installed_section(
         ListStatus::Loaded => format!("{} of {total}", visible.len()),
         _ => String::new(),
     };
+    // The disk bar sits above the Installed heading, once there is something to count.
+    if app.installed.status == ListStatus::Loaded && total > 0 {
+        usage(ui, app, t);
+    }
     section_header(ui, "Installed", &count);
     match app.installed.status.clone() {
         ListStatus::Loading => note(ui, t, "Reading the models Ollama has…"),
@@ -94,7 +98,6 @@ fn installed_section(
             );
         }
         ListStatus::Loaded => {
-            usage(ui, app, t);
             if visible.is_empty() {
                 note(ui, t, "No installed model matches this search.");
             }

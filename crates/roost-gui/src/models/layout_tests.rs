@@ -775,3 +775,21 @@ fn the_models_header_matches_chats_and_about_stays_on_white() {
         );
     }
 }
+
+#[test]
+fn the_disk_display_is_above_the_installed_heading() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let t = texts(&mut app, &mut h, size);
+    let at = |needle: &str| {
+        t.lines()
+            .position(|l| l.to_lowercase().starts_with(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing in:\n{t}"))
+    };
+    assert!(
+        at("disk used by models") < at("installed"),
+        "the disk display comes first:\n{t}"
+    );
+}
