@@ -923,3 +923,25 @@ fn the_text_in_every_installed_row_has_the_same_space_above_and_below() {
         }
     }
 }
+
+#[test]
+fn rows_in_the_list_follow_each_other_without_overlapping_at_both_pixel_densities() {
+    for ppp in [1.0, 2.0] {
+        let size = (1180.0, 820.0);
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        h.ctx().set_pixels_per_point(ppp);
+        run(&mut app, &mut h, size, 6);
+        let p = app.state_mut().browse.probe.clone();
+        let installed: Vec<Rect> = p.installed_rows.iter().map(|(_, r)| *r).collect();
+        assert!(installed.len() >= 3, "{ppp}x: too few rows");
+        for pair in installed.windows(2).chain(p.result_rows.windows(2)) {
+            assert!(
+                (pair[1].top() - pair[0].bottom()).abs() <= 0.5,
+                "{ppp}x: a row starts at {} but the one above ends at {}",
+                pair[1].top(),
+                pair[0].bottom()
+            );
+        }
+    }
+}

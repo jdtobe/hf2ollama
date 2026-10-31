@@ -130,7 +130,11 @@ fn installed_section(
                     egui::pos2(rect.left() + 14.0, rect.top() + pad),
                     egui::pos2(rect.right() - 14.0, rect.bottom()),
                 );
-                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                // A detached child: a scope would pull the list's cursor back up to
+                // just under the text, and the next row would start inside this one.
+                let mut content = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                {
+                    let ui = &mut content;
                     ui.spacing_mut().item_spacing.y = LINE_GAP;
                     let size = format_size(row.model.size);
                     let size_w = ui
@@ -160,7 +164,7 @@ fn installed_section(
                         ui.available_width(),
                     );
                     ui.label(RichText::new(from).font(small).color(t.fg2));
-                });
+                }
                 #[cfg(test)]
                 app.browse
                     .probe

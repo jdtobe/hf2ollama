@@ -217,50 +217,51 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
                 }
                 ui.painter()
                     .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, t.line));
-                ui.scope_builder(
-                    UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 10.0))),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.label(RichText::new(format!("{}/", m.owner)).color(t.fg3));
-                            ui.add(
-                                egui::Label::new(RichText::new(&m.name).font(semibold(14.0)))
-                                    .truncate(),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            if have.contains(&m.id.to_lowercase()) {
-                                tag(ui, "installed", t.accent2, t.accent2_soft);
-                            }
-                            if m.is_safetensors && !m.is_gguf {
-                                tag(ui, "Safetensors", t.warn, t.warn_soft);
-                            } else if m.is_gguf {
-                                tag(ui, "GGUF", t.ok, t.ok_soft);
-                            } else {
-                                tag(ui, "Other", t.fg2, t.surface2);
-                            }
-                            let pending = app.browse.info_pending(&m.id);
-                            for value in [&m.params, &m.arch] {
-                                match value {
-                                    Some(v) => tag(ui, &shorten(v, 16), t.fg2, t.surface2),
-                                    None if pending => tag(ui, "…", t.fg3, t.surface2),
-                                    None => {}
-                                }
-                            }
-                        });
-                        let mut stats = format!(
-                            "↓ {}  ·  {} likes",
-                            compact_count(m.downloads),
-                            compact_count(m.likes)
+                // A detached child, so the list's cursor stays at the row's bottom.
+                let mut content =
+                    ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 10.0))));
+                {
+                    let ui = &mut content;
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.label(RichText::new(format!("{}/", m.owner)).color(t.fg3));
+                        ui.add(
+                            egui::Label::new(RichText::new(&m.name).font(semibold(14.0)))
+                                .truncate(),
                         );
-                        if parse_iso(&m.updated).is_some() {
-                            stats.push_str(&format!("  ·  {}", relative_age(&m.updated, now)));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        if have.contains(&m.id.to_lowercase()) {
+                            tag(ui, "installed", t.accent2, t.accent2_soft);
                         }
-                        ui.label(RichText::new(stats).size(12.0).color(t.fg3));
-                    },
-                );
+                        if m.is_safetensors && !m.is_gguf {
+                            tag(ui, "Safetensors", t.warn, t.warn_soft);
+                        } else if m.is_gguf {
+                            tag(ui, "GGUF", t.ok, t.ok_soft);
+                        } else {
+                            tag(ui, "Other", t.fg2, t.surface2);
+                        }
+                        let pending = app.browse.info_pending(&m.id);
+                        for value in [&m.params, &m.arch] {
+                            match value {
+                                Some(v) => tag(ui, &shorten(v, 16), t.fg2, t.surface2),
+                                None if pending => tag(ui, "…", t.fg3, t.surface2),
+                                None => {}
+                            }
+                        }
+                    });
+                    let mut stats = format!(
+                        "↓ {}  ·  {} likes",
+                        compact_count(m.downloads),
+                        compact_count(m.likes)
+                    );
+                    if parse_iso(&m.updated).is_some() {
+                        stats.push_str(&format!("  ·  {}", relative_age(&m.updated, now)));
+                    }
+                    ui.label(RichText::new(stats).size(12.0).color(t.fg3));
+                }
                 if resp.clicked() {
                     picked = Some(i);
                 }
