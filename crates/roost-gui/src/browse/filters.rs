@@ -286,31 +286,61 @@ pub fn reset_filters(f: &Filters) -> Filters {
 
 const FILTER_BTN: f32 = 32.0;
 
-/// The row above the Models list: the sort order across the full width and a
-/// filter button at its right end that opens every filter in a popover.
-pub fn filter_bar(ui: &mut egui::Ui, app: &mut AppState) {
+/// The sort button beside the search field: a popover with the four orders.
+pub fn sort_button(ui: &mut egui::Ui, app: &mut AppState) {
+    let t = tokens(ui);
+    let before = app.browse.filters.sort;
+    let f = &mut app.browse.filters;
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(FILTER_BTN, FILTER_BTN), egui::Sense::click());
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("Sort: {}", sort_label(f.sort)));
+    let fill = if resp.hovered() {
+        t.surface2
+    } else {
+        t.surface
+    };
+    ui.painter().rect(
+        rect,
+        8.0,
+        fill,
+        egui::Stroke::new(1.0, t.line),
+        egui::StrokeKind::Inside,
+    );
+    crate::icons::paint(ui.painter(), rect, crate::icons::Icon::Sort, t.fg2);
+    egui::Popup::from_toggle_button_response(&resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_min_width(170.0);
+            for s in [
+                SortKey::Downloads,
+                SortKey::Trending,
+                SortKey::Updated,
+                SortKey::Likes,
+            ] {
+                ui.selectable_value(&mut f.sort, s, sort_label(s));
+            }
+        });
+    #[cfg(test)]
+    {
+        app.browse.probe.sort_button = Some(rect);
+    }
+    if app.browse.filters.sort != before {
+        app.browse.apply_filters();
+    }
+}
+
+/// The filter button beside the search field; it opens every filter in a
+/// popover.
+pub fn filter_button(ui: &mut egui::Ui, app: &mut AppState) {
     let t = tokens(ui);
     let before = app.browse.filters.clone();
     let machine = app.machine.clone();
     let f = &mut app.browse.filters;
-    let mut button = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+    let button;
+    {
         let n = active_count(f);
-        let sort_w = (ui.available_width() - FILTER_BTN - ui.spacing().item_spacing.x).max(80.0);
-        egui::ComboBox::from_id_salt("sort")
-            .selected_text(sort_label(f.sort))
-            .width(sort_w)
-            .show_ui(ui, |ui| {
-                for s in [
-                    SortKey::Downloads,
-                    SortKey::Trending,
-                    SortKey::Updated,
-                    SortKey::Likes,
-                ] {
-                    ui.selectable_value(&mut f.sort, s, sort_label(s));
-                }
-            });
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(FILTER_BTN, FILTER_BTN), egui::Sense::click());
         let resp = resp
@@ -329,7 +359,7 @@ pub fn filter_bar(ui: &mut egui::Ui, app: &mut AppState) {
         };
         ui.painter().rect(
             rect,
-            6.0,
+            8.0,
             fill,
             egui::Stroke::new(1.0, if n > 0 { t.accent } else { t.line }),
             egui::StrokeKind::Inside,
@@ -348,7 +378,7 @@ pub fn filter_bar(ui: &mut egui::Ui, app: &mut AppState) {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| controls(ui, f, &machine));
         button = Some(rect);
-    });
+    }
     #[cfg(test)]
     {
         app.browse.probe.filters_chip = button;

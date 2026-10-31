@@ -1226,7 +1226,12 @@ mod tests {
                 assert!(list.contains_rect(search), "{tag}");
                 assert!(search.top() - list.top() < 20.0, "not at the top: {tag}");
                 if let Some(chip) = filters {
-                    assert!(search.bottom() <= chip.top(), "below the filters: {tag}");
+                    // The filter button is beside the search field, on its row.
+                    assert!(search.right() <= chip.left(), "beside the filters: {tag}");
+                    assert!(
+                        (search.center().y - chip.center().y).abs() < 4.0,
+                        "same row: {tag}"
+                    );
                 }
             }
         }

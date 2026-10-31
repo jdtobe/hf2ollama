@@ -27,6 +27,8 @@ pub enum Icon {
     NewChat,
     Incognito,
     Download,
+    Sort,
+    Model,
 }
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
@@ -297,6 +299,37 @@ pub fn paint_scaled(painter: &egui::Painter, rect: Rect, icon: Icon, color: Colo
                 stroke,
             ));
             painter.line_segment([p(7.0, 9.0), p(13.5, 2.5)], Stroke::new(2.0, color));
+        }
+        Icon::Model => {
+            // A small neural net: two nodes, three nodes, two nodes, every
+            // node joined to each one in the next layer.
+            let thin = Stroke::new(stroke.width * 0.6, color);
+            let layers: [(f32, &[f32]); 3] = [
+                (2.5, &[5.0, 11.0]),
+                (8.0, &[2.5, 8.0, 13.5]),
+                (13.5, &[5.0, 11.0]),
+            ];
+            for pair in layers.windows(2) {
+                for &a in pair[0].1 {
+                    for &b in pair[1].1 {
+                        painter.line_segment([p(pair[0].0, a), p(pair[1].0, b)], thin);
+                    }
+                }
+            }
+            for (x, ys) in layers {
+                for &y in ys {
+                    painter.circle_filled(p(x, y), 1.5 * scale, color);
+                }
+            }
+        }
+        Icon::Sort => {
+            // Two arrows, one up and one down.
+            painter.line_segment([p(5.0, 13.0), p(5.0, 3.0)], stroke);
+            painter.line_segment([p(2.5, 5.5), p(5.0, 3.0)], stroke);
+            painter.line_segment([p(7.5, 5.5), p(5.0, 3.0)], stroke);
+            painter.line_segment([p(11.0, 3.0), p(11.0, 13.0)], stroke);
+            painter.line_segment([p(8.5, 10.5), p(11.0, 13.0)], stroke);
+            painter.line_segment([p(13.5, 10.5), p(11.0, 13.0)], stroke);
         }
         Icon::Download => {
             // An arrow down into a tray.

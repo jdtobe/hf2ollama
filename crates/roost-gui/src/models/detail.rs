@@ -43,7 +43,6 @@ fn installed(
     let t = tokens(ui);
     let dark = ui.visuals().dark_mode;
     let now = Instant::now();
-    let name = row.name().to_string();
     let panel = egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(t.surface))
         .show(ui, |ui| {
@@ -53,13 +52,8 @@ fn installed(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let (_, top) = band(ui, t.head_band(), Some(t.line), 0.0, |ui| {
-                        // The same heading and sub-line as a repository's page.
-                        ui.add(egui::Label::new(egui::RichText::new(&name).heading()).wrap());
-                        ui.label(RichText::new(facts(row)).color(t.band_ink2()));
-                        actions(ui, app, out, row, now, dark);
-                    });
-                    let (_, mid) = band(ui, t.surface2, Some(t.line), 0.0, |ui| {
+                    let top = header(ui, app, out, row, now, dark, &t);
+                    let (_, mid) = band(ui, t.bg, Some(t.line), 0.0, |ui| {
                         details(ui, app, row, &t, dark);
                     });
                     let rest = (view_h - top.height() - mid.height() - 32.0).max(0.0);
@@ -95,6 +89,73 @@ fn facts(row: &InstalledRow) -> String {
     parts.join("  ·  ")
 }
 
+/// The header band of an installed model: the kind tile, the name and facts,
+/// and the actions at the right, in the same shape as a chat's header.
+fn header(
+    ui: &mut egui::Ui,
+    app: &mut AppState,
+    out: &mut Vec<BackendRequest>,
+    row: &InstalledRow,
+    now: Instant,
+    dark: bool,
+    t: &Tokens,
+) -> egui::Rect {
+    let name = row.name().to_string();
+    let rect = egui::Frame::new()
+        .fill(t.head_band())
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.set_min_height(44.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    actions(ui, app, out, row, now, dark);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let (tile, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+                        ui.painter().rect(
+                            tile,
+                            11.0,
+                            t.surface,
+                            egui::Stroke::new(1.0, t.side_edge()),
+                            egui::StrokeKind::Inside,
+                        );
+                        crate::icons::paint_scaled(
+                            ui.painter(),
+                            tile,
+                            crate::icons::Icon::Model,
+                            t.fg2,
+                            1.8,
+                        );
+                        ui.add_space(4.0);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&name).font(semibold(18.0)).color(t.fg),
+                                )
+                                .truncate(),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(facts(row)).size(12.0).color(t.band_ink2()),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
+                });
+            });
+        })
+        .response
+        .rect;
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom(),
+        egui::Stroke::new(1.0, t.line),
+    );
+    rect
+}
+
 fn actions(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -107,26 +168,11 @@ fn actions(
     let name = row.name().to_string();
     let armed = app.installed.is_armed(&name, now);
     let ready = app.installed.confirm_ready(&name, now);
-    let mut chat = false;
-    let mut work = false;
-    let mut delete = false;
-    ui.horizontal_wrapped(|ui| {
+    let chat;
+    let work;
+    let delete;
+    {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-        let r = primary_button(ui, "Chat", true);
-        #[cfg(test)]
-        {
-            app.browse.probe.chat_button = Some(r.rect);
-        }
-        chat = r.clicked();
-        let r = ui.add(
-            egui::Button::new(RichText::new("Work").size(14.0).color(t.fg2))
-                .min_size(vec2(0.0, 32.0)),
-        );
-        #[cfg(test)]
-        {
-            app.browse.probe.work_button = Some(r.rect);
-        }
-        work = r.clicked();
         let r = if armed {
             // Dimmed until the confirm delay has passed, but kept enabled so
             // keyboard focus survives; the state ignores early clicks.
@@ -145,24 +191,26 @@ fn actions(
                 .min_size(vec2(0.0, 32.0)),
             )
         } else {
-            // A red trash can, like the delete controls elsewhere.
+            // A trash can, red when pointed at like the delete controls elsewhere.
             let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 32.0), Sense::click());
             let resp = resp
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Delete this model…");
-            let fill = if resp.hovered() {
-                bad(dark).gamma_multiply(0.18)
+            // Quiet until pointed at, then red.
+            let hot = resp.hovered();
+            let (fill, edge, ink) = if hot {
+                (bad(dark).gamma_multiply(0.18), bad(dark), bad(dark))
             } else {
-                t.surface
+                (t.surface, t.line, t.fg2)
             };
             ui.painter().rect(
                 rect,
-                6.0,
+                8.0,
                 fill,
-                egui::Stroke::new(1.0, bad(dark).gamma_multiply(0.6)),
+                egui::Stroke::new(1.0, edge),
                 egui::StrokeKind::Inside,
             );
-            crate::icons::paint(ui.painter(), rect, crate::icons::Icon::Trash, bad(dark));
+            crate::icons::paint(ui.painter(), rect, crate::icons::Icon::Trash, ink);
             resp
         };
         #[cfg(test)]
@@ -172,7 +220,24 @@ fn actions(
         // A held Enter or Space repeats `clicked()`; only a fresh activation
         // may arm or confirm.
         delete = r.clicked() && !crate::confirm::activation_key_held(ui);
-    });
+        let r = ui.add(
+            egui::Button::new(RichText::new("Work").size(14.0).color(t.fg))
+                .fill(t.surface)
+                .stroke(egui::Stroke::new(1.0, t.line))
+                .min_size(vec2(0.0, 32.0)),
+        );
+        #[cfg(test)]
+        {
+            app.browse.probe.work_button = Some(r.rect);
+        }
+        work = r.clicked();
+        let r = primary_button(ui, "Chat", true);
+        #[cfg(test)]
+        {
+            app.browse.probe.chat_button = Some(r.rect);
+        }
+        chat = r.clicked();
+    }
     if armed {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));

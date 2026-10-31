@@ -5,11 +5,12 @@ use crate::app::AppState;
 use crate::browse::results::{format_size, section, section_header};
 use crate::installed::state::ListStatus;
 use crate::runtime::BackendRequest;
+use crate::theme::semibold;
 use crate::theme::{mono, tokens, Tokens};
-use crate::widgets::{ellipsize_middle, small_button, tag};
+use crate::widgets::{ellipsize_middle, small_button};
 use eframe::egui::{self, vec2, Margin, Rect, RichText, Sense, Stroke};
 
-const ROW_H: f32 = 82.0;
+const ROW_H: f32 = 56.0;
 
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
@@ -18,21 +19,34 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     let frame = egui::Frame::new().fill(t.side_list());
     let wanted = app.settings.sidebar_width;
     let (rect, width) = crate::sidebar::show(ui, wanted, frame, t.side_edge(), |ui| {
+        // The band, the disk strip and the list meet with no gap between them.
+        ui.spacing_mut().item_spacing.y = 0.0;
         egui::Frame::new()
             .fill(t.side_band())
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                // One band as tall as Chat's: the search field and the filter
+                // button, which also holds the sort order.
+                ui.set_min_height(crate::sidebar::BAND_H - 24.0);
                 ui.add_space(crate::sidebar::SEARCH_DROP);
-                let search = crate::widgets::search_field(
-                    ui,
-                    &mut app.query,
-                    "Search installed models and Hugging Face",
-                );
-                app.search_rect = Some(search.response.rect);
-                app.search_clear_rect = search.clear;
-                ui.add_space(8.0);
-                crate::browse::filters::filter_bar(ui, app);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let room = (ui.available_width() - 2.0 * (32.0 + 6.0)).max(80.0);
+                    let search = ui
+                        .allocate_ui(vec2(room, 32.0), |ui| {
+                            crate::widgets::search_field(
+                                ui,
+                                &mut app.query,
+                                "Search installed models and Hugging Face",
+                            )
+                        })
+                        .inner;
+                    app.search_rect = Some(search.response.rect);
+                    app.search_clear_rect = search.clear;
+                    crate::browse::filters::sort_button(ui, app);
+                    crate::browse::filters::filter_button(ui, app);
+                });
             });
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -64,6 +78,10 @@ fn installed_section(
         ListStatus::Loaded => format!("{} of {total}", visible.len()),
         _ => String::new(),
     };
+    // The disk bar sits above the Installed heading, once there is something to count.
+    if app.installed.status == ListStatus::Loaded && total > 0 {
+        usage(ui, app, t);
+    }
     section_header(ui, "Installed", &count);
     match app.installed.status.clone() {
         ListStatus::Loading => note(ui, t, "Reading the models Ollama has…"),
@@ -82,7 +100,6 @@ fn installed_section(
             );
         }
         ListStatus::Loaded => {
-            usage(ui, app, t);
             if visible.is_empty() {
                 note(ui, t, "No installed model matches this search.");
             }
@@ -93,32 +110,39 @@ fn installed_section(
                 let on = selected.as_deref() == Some(row.name());
                 paint_row(ui, t, rect, resp.hovered(), on);
                 ui.scope_builder(
-                    egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 12.0))),
+                    egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 9.0))),
                     |ui| {
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        let room = ui.available_width();
-                        let name = ellipsize_middle(ui, row.name(), mono(13.0), room);
-                        ui.label(RichText::new(name).font(mono(13.0)).color(t.fg));
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for pill in [
-                                row.model.params.clone(),
-                                row.model.quant.clone(),
-                                Some(format_size(row.model.size)),
-                            ]
-                            .into_iter()
-                            .flatten()
-                            {
-                                tag(ui, &pill, t.fg2, t.surface2);
-                            }
-                        });
-                        let from = match &row.source_repo {
-                            Some(r) => format!("from {r}"),
-                            None => "Pulled from the Ollama library".to_string(),
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        let size = format_size(row.model.size);
+                        let size_w = ui
+                            .painter()
+                            .layout_no_wrap(size.clone(), egui::FontId::proportional(12.0), t.fg2)
+                            .size()
+                            .x;
+                        let room = (ui.available_width() - size_w - 8.0).max(40.0);
+                        let font = if on {
+                            semibold(13.5)
+                        } else {
+                            egui::FontId::proportional(13.5)
                         };
-                        let from =
-                            ellipsize_middle(ui, &from, egui::FontId::proportional(12.0), room);
-                        ui.label(RichText::new(from).size(12.0).color(t.fg3));
+                        let name = ellipsize_middle(ui, row.name(), font.clone(), room);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(name).font(font).color(t.fg));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(RichText::new(size).size(12.0).color(t.fg2));
+                                },
+                            );
+                        });
+                        let from = source_line(row);
+                        let from = ellipsize_middle(
+                            ui,
+                            &from,
+                            egui::FontId::proportional(12.0),
+                            ui.available_width(),
+                        );
+                        ui.label(RichText::new(from).size(12.0).color(t.fg2));
                     },
                 );
                 #[cfg(test)]
@@ -135,6 +159,19 @@ fn installed_section(
             }
         }
     }
+}
+
+/// Where a model came from, then its size in parameters and quantisation:
+/// `unsloth · 27.3B · Q4_K_M`, or `Ollama library · 7.6B · Q4_K_M`.
+fn source_line(row: &crate::installed::state::InstalledRow) -> String {
+    let source = match &row.source_repo {
+        Some(r) => r.split('/').next().unwrap_or(r).to_string(),
+        None => "Ollama library".to_string(),
+    };
+    let mut parts = vec![source];
+    parts.extend(row.model.params.clone());
+    parts.extend(row.model.quant.clone());
+    parts.join(" · ")
 }
 
 /// Selected / hovered background plus a divider under the row.
@@ -162,7 +199,7 @@ fn note(ui: &mut egui::Ui, t: &Tokens, text: &str) {
         });
 }
 
-/// Disk used by the installed models, as a titled card: the total, a bar split
+/// Disk used by the installed models, as two flat lines: the total, a bar split
 /// into what Roost imported and what was pulled from Ollama, and a legend
 /// with a colour swatch for each.
 fn usage(ui: &mut egui::Ui, app: &AppState, t: &Tokens) {
@@ -177,75 +214,72 @@ fn usage(ui: &mut egui::Ui, app: &AppState, t: &Tokens) {
     let library = app.installed.rows().len() - imported;
     // Two clearly different shades of the theme's accent.
     let (c_roost, c_ollama) = (t.accent, t.accent.gamma_multiply(0.35));
-    egui::Frame::new()
-        .inner_margin(Margin::symmetric(12, 10))
+    // A white strip (the theme's surface) with a line under it.
+    let strip = egui::Frame::new()
+        .fill(t.surface)
+        .inner_margin(Margin::symmetric(14, 10))
         .show(ui, |ui| {
             let outer = ui.available_width();
             ui.set_width(outer);
-            egui::Frame::new()
-                .fill(t.surface2)
-                .stroke(Stroke::new(1.0, t.line))
-                .corner_radius(8.0)
-                .inner_margin(Margin::symmetric(12, 10))
-                .show(ui, |ui| {
-                    let width = ui.available_width();
-                    ui.set_width(width);
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Disk used by models").size(12.0).color(t.fg2));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format_size(total))
-                                    .font(mono(12.5))
-                                    .color(t.fg),
-                            );
-                        });
-                    });
-                    let (bar, _) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
-                    let p = ui.painter();
-                    p.rect_filled(bar, 5.0, t.line);
-                    if total > 0 {
-                        let cut = bar.left() + width * (split.imported as f32 / total as f32);
-                        let mut left = bar;
-                        left.set_right(cut);
-                        let mut right = bar;
-                        right.set_left(cut);
-                        if split.library > 0 {
-                            p.rect_filled(right, 5.0, c_ollama);
-                        }
-                        if split.imported > 0 {
-                            p.rect_filled(left, 5.0, c_roost);
-                        }
-                        // A hairline keeps the two shades apart.
-                        if split.imported > 0 && split.library > 0 {
-                            p.vline(cut, bar.y_range(), Stroke::new(1.5, t.surface2));
-                        }
-                    }
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(14.0, 4.0);
-                        for (colour, label, bytes, n) in [
-                            (c_roost, "Imported with Roost", split.imported, imported),
-                            (c_ollama, "Pulled from Ollama", split.library, library),
-                        ] {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 5.0;
-                                let (dot, _) =
-                                    ui.allocate_exact_size(vec2(9.0, 9.0), Sense::hover());
-                                ui.painter().rect_filled(dot, 2.5, colour);
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(format!(
-                                            "{label} {} ({n})",
-                                            format_size(bytes)
-                                        ))
-                                        .size(11.5)
-                                        .color(t.fg2),
-                                    )
-                                    .truncate(),
-                                );
-                            });
-                        }
+            ui.scope(|ui| {
+                let width = ui.available_width();
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Disk used by models").size(12.0).color(t.fg2));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format_size(total))
+                                .font(mono(12.5))
+                                .color(t.fg),
+                        );
                     });
                 });
-        });
+                let (bar, _) = ui.allocate_exact_size(vec2(width, 6.0), Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(bar, 3.0, t.line);
+                if total > 0 {
+                    let cut = bar.left() + width * (split.imported as f32 / total as f32);
+                    let mut left = bar;
+                    left.set_right(cut);
+                    let mut right = bar;
+                    right.set_left(cut);
+                    if split.library > 0 {
+                        p.rect_filled(right, 3.0, c_ollama);
+                    }
+                    if split.imported > 0 {
+                        p.rect_filled(left, 3.0, c_roost);
+                    }
+                    // A hairline keeps the two shades apart.
+                    if split.imported > 0 && split.library > 0 {
+                        p.vline(cut, bar.y_range(), Stroke::new(1.5, t.surface));
+                    }
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(14.0, 4.0);
+                    for (colour, label, bytes, n) in [
+                        (c_roost, "Imported with Roost", split.imported, imported),
+                        (c_ollama, "Pulled from Ollama", split.library, library),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 5.0;
+                            let (dot, _) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::hover());
+                            ui.painter().rect_filled(dot, 2.5, colour);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("{label} {} ({n})", format_size(bytes)))
+                                        .size(11.5)
+                                        .color(t.fg2),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    }
+                });
+            });
+        })
+        .response
+        .rect;
+    ui.painter()
+        .hline(strip.x_range(), strip.bottom(), Stroke::new(1.0, t.line));
 }
