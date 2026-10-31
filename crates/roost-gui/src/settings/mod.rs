@@ -375,13 +375,17 @@ fn card(
 ) {
     cx.heading_drawn = false;
     let start = ui.cursor().top();
+    ui.spacing_mut().item_spacing.y = 0.0;
     if cx.searching() {
         cx.pending = Some(title.to_string());
     } else {
         heading(ui, cx, title, width);
     }
-    ui.spacing_mut().item_spacing.y = 0.0;
-    body(ui, cx);
+    // The rows are as wide as the rule under the heading, no wider.
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        body(ui, cx);
+    });
     cx.pending = None;
     if cx.heading_drawn {
         #[cfg(test)]

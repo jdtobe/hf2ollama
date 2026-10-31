@@ -1117,3 +1117,48 @@ fn searching_shows_only_the_matching_rows_under_their_headings() {
     run(&mut app, &mut h, size, 4);
     assert!(texts_now(&mut app, &mut h, size).contains("Server address"));
 }
+
+#[test]
+fn the_links_fit_their_column_and_the_rows_are_no_wider_than_the_heading_rule() {
+    for size in SIZES {
+        for dark in [false, true] {
+            let tag = format!("{size:?} dark={dark}");
+            let (mut app, _) = settings_app();
+            let mut h = Harness::new(dark);
+            run(&mut app, &mut h, size, 6);
+            let p = probe(&mut app);
+            let view = p.viewport.unwrap();
+            // No link text reaches into the page.
+            let shapes = painted(&mut app, &mut h, size);
+            for s in &shapes {
+                if let egui::epaint::Shape::Text(t) = s {
+                    let r = t.visual_bounding_rect();
+                    if r.left() < view.left() - 4.0
+                        && r.top() > view.top() - 1.0
+                        && r.bottom() < view.bottom()
+                    {
+                        assert!(
+                            r.right() <= view.left() + 0.5,
+                            "{tag}: link text {:?} reaches {} past the column",
+                            t.galley.text(),
+                            r.right() - view.left()
+                        );
+                    }
+                }
+            }
+            // Every control sits inside its section's width.
+            for (name, r) in p.controls.iter().filter(|(n, _)| !n.starts_with("link-")) {
+                let section = p
+                    .cards
+                    .iter()
+                    .find(|(_, c)| r.center().y >= c.top() && r.center().y <= c.bottom());
+                if let Some((title, c)) = section {
+                    assert!(
+                        r.right() <= c.right() + 0.5,
+                        "{tag}: {name} {r:?} is wider than the {title} section {c:?}"
+                    );
+                }
+            }
+        }
+    }
+}
