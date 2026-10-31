@@ -3986,11 +3986,11 @@ fn the_header_buttons_and_title_are_centred_in_the_band() {
         let trash = p.delete_button.clone().unwrap().0;
         let (title, path) = (p.title_rect.unwrap(), p.path_rect.unwrap());
         let block = title.union(path);
-        // The buttons are as far from the band's right edge as from its top.
-        let (side, above) = (header.right() - trash.right(), trash.top() - header.top());
+        // The buttons are close to the band's right edge, not a pane margin away.
+        let side = header.right() - trash.right();
         assert!(
-            (side - above).abs() <= 3.0,
-            "{size:?}: {side} from the right edge, {above} from the top"
+            (side - 10.0).abs() <= 1.0,
+            "{size:?}: {side} from the right edge"
         );
         for (name, r) in [("buttons", trash), ("title and folder", block)] {
             let (above, below) = (r.top() - header.top(), header.bottom() - r.bottom());

@@ -75,6 +75,8 @@ const PENCIL_W: f32 = 24.0;
 const TILE_ICON_SCALE: f32 = 1.8;
 /// The session kind's tile in the header: bigger than the buttons beside it.
 const TILE_SIZE: f32 = 44.0;
+/// How far the tile and the buttons are from the header band's sides.
+const HEADER_SIDE_INSET: f32 = 10.0;
 /// How far the folder under the title is set in from the title's left edge.
 const PATH_INSET: f32 = 6.0;
 
@@ -141,9 +143,9 @@ pub(super) fn header(
     let row_h = HEADER_ROW_H;
     ui.add_space(band_top + (super::view::BAND_H - row_h) / 2.0 - start);
     // A row of a set height, so the buttons and status are centred on it.
-    // The row reaches out over the pane's margin, so the buttons sit as far
-    // from the band's side as from its top.
-    let out_by = super::view::PANE_MARGIN_X - (super::view::BAND_H - 32.0) / 2.0;
+    // The row reaches out over the pane's margin, so the tile and buttons sit
+    // close to the band's sides, about as close as the tile is to its top.
+    let out_by = super::view::PANE_MARGIN_X - HEADER_SIDE_INSET;
     let wide = egui::Rect::from_min_size(
         egui::pos2(pane.left() - out_by, ui.cursor().min.y),
         egui::vec2(pane.width() + 2.0 * out_by, row_h),
