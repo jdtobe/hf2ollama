@@ -72,9 +72,9 @@ pub(super) enum StatusKind {
 /// Side of the rename pencil beside the title.
 const PENCIL_W: f32 = 24.0;
 /// How much larger than the usual 16 px the session kind's glyph is drawn.
-const TILE_ICON_SCALE: f32 = 1.6;
+const TILE_ICON_SCALE: f32 = 1.8;
 /// The session kind's tile in the header: bigger than the buttons beside it.
-const TILE_SIZE: f32 = 40.0;
+const TILE_SIZE: f32 = 44.0;
 /// How far the folder under the title is set in from the title's left edge.
 const PATH_INSET: f32 = 6.0;
 
@@ -109,7 +109,7 @@ fn icon_button(ui: &mut egui::Ui, t: &Tokens, icon: Icon, tip: &str) -> egui::Re
 }
 
 /// Height of the row of title, status and buttons in the page header.
-const HEADER_ROW_H: f32 = 40.0;
+const HEADER_ROW_H: f32 = 44.0;
 
 pub(super) fn header(
     ui: &mut egui::Ui,
