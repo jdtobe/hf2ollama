@@ -228,12 +228,12 @@ fn title_block(
 ) {
     let agent = s.mode == SessionMode::Agent;
     let (tile, _) = ui.allocate_exact_size(egui::vec2(TILE_SIZE, TILE_SIZE), egui::Sense::hover());
-    // A quiet tile: the theme colour is kept for the one thing selected.
+    // A quiet tile with the sidebar divider's darker edge to set it off.
     ui.painter().rect(
         tile,
         11.0,
         t.surface,
-        egui::Stroke::new(1.0, t.line),
+        egui::Stroke::new(1.0, t.side_edge()),
         egui::StrokeKind::Inside,
     );
     // The glyph is large in its tile, with little margin round it.

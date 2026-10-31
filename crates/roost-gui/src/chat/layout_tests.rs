@@ -4030,12 +4030,27 @@ fn the_session_kind_glyph_is_larger_than_the_header_buttons_icons() {
         let tile = shapes
             .iter()
             .filter_map(|s| match s {
-                egui::epaint::Shape::Rect(r) if r.rect.right() <= title.left() => {
-                    Some(r.rect.width())
+                egui::epaint::Shape::Rect(r)
+                    if r.rect.right() <= title.left()
+                        && r.rect.left() >= header.left()
+                        && r.rect.width() < 60.0
+                        && r.stroke.width > 0.0 =>
+                {
+                    Some((r.rect.width(), r.stroke.color))
                 }
                 _ => None,
             })
-            .fold(0.0_f32, f32::max);
+            .fold((0.0_f32, egui::Color32::TRANSPARENT), |a, b| {
+                if b.0 > a.0 {
+                    b
+                } else {
+                    a
+                }
+            });
+        let (tile, edge) = tile;
+        let want = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false)
+            .side_edge();
+        assert!(close(edge, want), "{size:?}: the tile's edge is {edge:?}");
         let button = p.delete_button.clone().unwrap().0.width();
         assert!(
             tile >= button + 6.0,
