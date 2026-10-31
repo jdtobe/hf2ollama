@@ -8,9 +8,18 @@ use std::time::{Duration, Instant};
 
 /// Speed is averaged over progress reports from the last five seconds.
 pub const RATE_WINDOW: Duration = Duration::from_secs(5);
-/// Time constant of the speed the estimate uses. Longer than `RATE_WINDOW`
-/// so one fast or slow burst barely moves it.
-const ETA_TAU: Duration = Duration::from_secs(20);
+/// Reports closer together than this are one report: when the window was not
+/// being redrawn they all arrive at the same instant, and their bytes would
+/// look like a burst of speed.
+const COALESCE: Duration = Duration::from_millis(200);
+/// The speed is not read over a stretch shorter than this.
+const MIN_SPAN: Duration = Duration::from_secs(1);
+/// The estimate never trusts a speed more than this many times the average
+/// speed since the download began.
+const SPIKE_LIMIT: f64 = 3.0;
+/// The estimate reads the speed over this longer window, so one fast or
+/// slow stretch barely moves it.
+const ETA_WINDOW: Duration = Duration::from_secs(20);
 /// No estimate is shown before this much downloading has been seen.
 const ETA_WARMUP: Duration = Duration::from_secs(5);
 
@@ -53,10 +62,10 @@ pub struct JobRow {
     rate: Option<f64>,
     /// `(when, bytes done)` reports inside the rolling window.
     samples: VecDeque<(Instant, u64)>,
-    /// Speed smoothed over about `ETA_TAU`, for the estimate only.
-    smooth: Option<f64>,
     /// When the first report of this stretch of downloading arrived.
     first_report: Option<Instant>,
+    /// Bytes done at that first report.
+    first_done: u64,
     /// The estimate on screen, in seconds, already rounded.
     eta: Option<u64>,
 }
@@ -76,8 +85,8 @@ impl JobRow {
             paused: false,
             rate: None,
             samples: VecDeque::new(),
-            smooth: None,
             first_report: None,
+            first_done: 0,
             eta: None,
         }
     }
@@ -193,7 +202,6 @@ impl JobRow {
     fn clear_rate(&mut self) {
         self.rate = None;
         self.samples.clear();
-        self.smooth = None;
         self.first_report = None;
         self.eta = None;
     }
@@ -214,34 +222,53 @@ impl JobRow {
         downloading.then(|| "calculating…".to_string())
     }
 
-    /// Folds the newest rate into the smoothed speed and refreshes the
-    /// estimate. The estimate needs `ETA_WARMUP` of data, is rounded, and a
-    /// single rounding step upward is ignored, so it counts down steadily.
-    fn update_eta(&mut self, now: Instant, previous: Option<Instant>) {
-        let (Some(rate), Some(first)) = (self.rate, self.first_report) else {
+    /// Bytes per second over the last `window`, measured from the newest
+    /// report older than the window (or the oldest report there is), so a
+    /// long silence counts as a long silence. `None` for a span under
+    /// `MIN_SPAN`.
+    fn rate_over(&self, window: Duration) -> Option<f64> {
+        let (last_at, last_done) = *self.samples.back()?;
+        let (first_at, first_done) = self
+            .samples
+            .iter()
+            .rev()
+            .find(|(at, _)| last_at.saturating_duration_since(*at) > window)
+            .or_else(|| self.samples.front())
+            .copied()?;
+        let span = last_at.saturating_duration_since(first_at);
+        (span >= MIN_SPAN).then(|| last_done.saturating_sub(first_done) as f64 / span.as_secs_f64())
+    }
+
+    /// Refreshes the estimate. It needs `ETA_WARMUP` of data, reads the speed
+    /// over `ETA_WINDOW` and never more than `SPIKE_LIMIT` times the average
+    /// so far, is rounded, and a single rounding step upward is ignored, so it
+    /// counts down steadily.
+    fn update_eta(&mut self, now: Instant) {
+        let (Some(rate), Some(first)) = (self.rate_over(ETA_WINDOW), self.first_report) else {
             return;
         };
-        let dt = previous.map_or(0.0, |p| now.saturating_duration_since(p).as_secs_f64());
-        let alpha = 1.0 - (-dt / ETA_TAU.as_secs_f64()).exp();
-        let smooth = match self.smooth {
-            Some(s) => s + alpha * (rate - s),
-            None => rate,
-        };
-        self.smooth = Some(smooth);
-        if now.saturating_duration_since(first) < ETA_WARMUP || smooth <= 0.0 {
+        if now.saturating_duration_since(first) < ETA_WARMUP || rate <= 0.0 {
             return;
         }
         let left = self.total.saturating_sub(self.done) as f64;
-        let next = quantize_eta((left / smooth).ceil() as u64);
+        let spent = now.saturating_duration_since(first).as_secs_f64();
+        let average = self.done.saturating_sub(self.first_done) as f64 / spent.max(1.0);
+        let rate = if average > 0.0 {
+            rate.min(average * SPIKE_LIMIT)
+        } else {
+            rate
+        };
+        let next = quantize_eta((left / rate).ceil() as u64);
         self.eta = match self.eta {
             Some(prev) if next > prev && next - prev <= eta_step(prev) => Some(prev),
             _ => Some(next),
         };
     }
 
-    /// Adds one progress report and recomputes the rate over the last
+    /// Adds one progress report and recomputes the speed over the last
     /// `RATE_WINDOW`. Reports that do not advance the byte count are ignored
-    /// so a stalled transfer does not average in zero-length samples.
+    /// so a stalled transfer does not average in zero-length samples, and
+    /// reports within `COALESCE` of the last one count as the same report.
     fn record_rate(&mut self, now: Instant) {
         if self
             .samples
@@ -250,26 +277,25 @@ impl JobRow {
         {
             return;
         }
-        let previous = self.samples.back().map(|(at, _)| *at);
-        self.first_report.get_or_insert(now);
-        self.samples.push_back((now, self.done));
-        while let Some((at, _)) = self.samples.front() {
-            if now.saturating_duration_since(*at) > RATE_WINDOW {
-                self.samples.pop_front();
-            } else {
-                break;
-            }
+        if self.first_report.is_none() {
+            self.first_report = Some(now);
+            self.first_done = self.done;
         }
-        self.rate = match (self.samples.front(), self.samples.back()) {
-            (Some((first_at, first_done)), Some((last_at, last_done)))
-                if self.samples.len() >= 2 =>
-            {
-                let secs = last_at.saturating_duration_since(*first_at).as_secs_f64();
-                (secs > 0.0).then(|| last_done.saturating_sub(*first_done) as f64 / secs)
+        match self.samples.back_mut() {
+            // Close to the last report: the same report, with more bytes.
+            Some(last) if now.saturating_duration_since(last.0) < COALESCE => {
+                last.1 = self.done;
             }
-            _ => None,
-        };
-        self.update_eta(now, previous);
+            _ => self.samples.push_back((now, self.done)),
+        }
+        // Keep one report older than the longest window as a baseline.
+        while self.samples.len() >= 2
+            && now.saturating_duration_since(self.samples[1].0) > ETA_WINDOW
+        {
+            self.samples.pop_front();
+        }
+        self.rate = self.rate_over(RATE_WINDOW);
+        self.update_eta(now);
     }
 
     fn live_status(&self) -> RowStatus {
@@ -847,18 +873,26 @@ mod tests {
             now + Duration::from_secs(1),
         );
         assert_eq!(row(&s, 1).status_text(), "Downloading 20% · 10.0 MB/s");
-        // A gap longer than the window drops the old samples instead of
-        // carrying a stale rate forward.
+        // A gap longer than the window is measured as a gap: the speed over
+        // it is the real average, not a blank and not a burst.
         s.apply(
             &progress(1, 30_000_000, 100_000_000),
             now + Duration::from_secs(7),
         );
-        assert_eq!(row(&s, 1).status_text(), "Downloading 30%");
+        assert_eq!(row(&s, 1).status_text(), "Downloading 30% · 1.7 MB/s");
         s.apply(
             &progress(1, 40_000_000, 100_000_000),
             now + Duration::from_secs(8),
         );
-        assert_eq!(row(&s, 1).status_text(), "Downloading 40% · 10.0 MB/s");
+        assert_eq!(row(&s, 1).status_text(), "Downloading 40% · 2.9 MB/s");
+        // Once the gap is out of the window the speed is back to normal.
+        for t in 9..=14u64 {
+            s.apply(
+                &progress(1, 40_000_000 + (t - 8) * 10_000_000, 100_000_000),
+                now + Duration::from_secs(t),
+            );
+        }
+        assert_eq!(row(&s, 1).status_text(), "Downloading 100% · 10.0 MB/s");
     }
 
     /// Feeds one report per second, `mb` megabytes more each time.
@@ -1074,5 +1108,72 @@ mod tests {
         s.apply(&stage(3, Stage::Queued), now);
         s.apply(&JobEvent::Cancelled { id: id(3) }, now);
         assert_eq!(row(&s, 3).status_text(), "Cancelled");
+    }
+
+    #[test]
+    fn progress_that_piles_up_while_the_ui_is_idle_does_not_look_like_a_fast_download() {
+        // 10 MB/s of a 10 GB download. The window is in the background for
+        // two minutes, so the reports are handled in one burst, microseconds
+        // apart, when it comes back.
+        let start = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, start);
+        let mut done = 0u64;
+        for t in 0..10u64 {
+            done += 10_000_000;
+            s.apply(
+                &progress(1, done, 10_000_000_000),
+                start + Duration::from_secs(t),
+            );
+        }
+        let back = start + Duration::from_secs(130);
+        for k in 0..120u64 {
+            done += 10_000_000;
+            s.apply(
+                &progress(1, done, 10_000_000_000),
+                back + Duration::from_micros(k * 50),
+            );
+        }
+        // A few ordinary reports after that.
+        for t in 1..=12u64 {
+            done += 10_000_000;
+            s.apply(
+                &progress(1, done, 10_000_000_000),
+                back + Duration::from_secs(t),
+            );
+            let left = (10_000_000_000 - done) / 10_000_000;
+            let eta = row(&s, 1).eta_secs().expect("an estimate");
+            assert!(
+                eta as f64 > left as f64 * 0.6 && (eta as f64) < left as f64 * 1.6,
+                "{t} s after the burst the estimate is {eta} s, the truth is about {left} s"
+            );
+            let rate = row(&s, 1).rate.expect("a speed");
+            assert!(
+                rate < 30_000_000.0,
+                "{t} s after the burst the speed reads {rate} B/s"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fast_start_does_not_keep_the_estimate_low_for_long() {
+        // 3 s at 200 MB/s (buffers and caches), then a steady 10 MB/s.
+        let start = t0();
+        let mut s = JobsState::new();
+        running(&mut s, 1, start);
+        let mut done = 0u64;
+        for t in 0..60u64 {
+            done += if t < 3 { 200_000_000 } else { 10_000_000 };
+            s.apply(
+                &progress(1, done, 10_000_000_000),
+                start + Duration::from_secs(t),
+            );
+        }
+        let left = (10_000_000_000 - done) / 10_000_000;
+        let eta = row(&s, 1).eta_secs().expect("an estimate");
+        assert!(
+            eta as f64 > left as f64 * 0.6 && (eta as f64) < left as f64 * 1.6,
+            "estimate {eta} s, truth about {left} s"
+        );
     }
 }
