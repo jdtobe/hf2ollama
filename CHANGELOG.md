@@ -157,6 +157,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - The sort and filter buttons on the Models tab now get the same hover as the new-chat buttons in Chat and Work: a faint outline in the theme colour. The look is one shared function, so they stay the same. The search box on Models says just "Search", like Chat and Work. The two lines in each installed model's row are centred in the row, so the space above and below them is the same in every row (the second line used to sit close to the divider).
 
+### Rows in the Models list no longer overlap
+
+- Each row in the Installed and Hugging Face lists started partway down the one above it, so the dividers and the selected or pointed-at tint were drawn over the row's own text and the spacing looked uneven (the first row was fine and the ones below were not). Rows now follow each other exactly, and the two lines in an installed row are centred in it.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
