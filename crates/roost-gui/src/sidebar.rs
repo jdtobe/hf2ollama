@@ -43,6 +43,14 @@ pub fn show<R>(
     (panel.inner, r.width())
 }
 
+/// Height of the tinted band across the top of the sidebar, and of the page
+/// header beside it, so the two read as one strip.
+pub const BAND_H: f32 = 60.0;
+
+/// How far the search field sits below the band's own padding, so it is
+/// centred in the band.
+pub const SEARCH_DROP: f32 = (BAND_H - 32.0) / 2.0 - 12.0;
+
 /// Call after `show` with the width it returned.
 pub fn finish(ui: &egui::Ui, app: &mut AppState, width: f32) {
     remember(app, width, ui.input(|i| i.pointer.any_down()));

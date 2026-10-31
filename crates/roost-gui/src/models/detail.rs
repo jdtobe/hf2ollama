@@ -53,10 +53,10 @@ fn installed(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let (_, top) = band(ui, t.header, Some(t.line), 0.0, |ui| {
+                    let (_, top) = band(ui, t.head_band(), Some(t.line), 0.0, |ui| {
                         // The same heading and sub-line as a repository's page.
                         ui.add(egui::Label::new(egui::RichText::new(&name).heading()).wrap());
-                        ui.label(RichText::new(facts(row)).color(t.fg2));
+                        ui.label(RichText::new(facts(row)).color(t.band_ink2()));
                         actions(ui, app, out, row, now, dark);
                     });
                     let (_, mid) = band(ui, t.surface2, Some(t.line), 0.0, |ui| {

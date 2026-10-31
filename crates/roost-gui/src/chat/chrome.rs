@@ -71,6 +71,14 @@ pub(super) enum StatusKind {
 
 /// Side of the rename pencil beside the title.
 const PENCIL_W: f32 = 24.0;
+/// How much larger than the usual 16 px the session kind's glyph is drawn.
+const TILE_ICON_SCALE: f32 = 1.8;
+/// The session kind's tile in the header: bigger than the buttons beside it.
+const TILE_SIZE: f32 = 44.0;
+/// How far the tile and the buttons are from the header band's sides.
+const HEADER_SIDE_INSET: f32 = 10.0;
+/// How far the folder under the title is set in from the title's left edge.
+const PATH_INSET: f32 = 6.0;
 
 /// The folder under an agent's title: smaller than body text so it stays
 /// quiet and fits more of the path.
@@ -102,6 +110,9 @@ fn icon_button(ui: &mut egui::Ui, t: &Tokens, icon: Icon, tip: &str) -> egui::Re
     resp
 }
 
+/// Height of the row of title, status and buttons in the page header.
+const HEADER_ROW_H: f32 = 44.0;
+
 pub(super) fn header(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -121,51 +132,70 @@ pub(super) fn header(
     let band = ui.painter().add(egui::Shape::Noop);
     let pane = ui.max_rect();
     let start = ui.cursor().min.y;
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            header_actions(ui, app, out, t, s, pinned, incognito, now);
-            if incognito {
-                tag(ui, "Incognito", t.accent, t.accent_soft);
-            }
-            let (colour, glow) = match kind {
-                StatusKind::Idle => (t.fg3, false),
-                StatusKind::Working => (t.accent, true),
-                StatusKind::Waiting => (t.warn, true),
-            };
-            let label = ui.label(RichText::new(&status).size(12.5).color(t.fg2));
-            #[cfg(test)]
-            {
-                app.chat_ui.probe.status_rect = Some(label.rect);
-            }
-            let dot = egui::Rect::from_center_size(
-                egui::pos2(label.rect.left() - 10.0, label.rect.center().y),
-                egui::vec2(9.0, 9.0),
-            );
-            ui.add_space(14.0);
-            if glow {
-                ui.painter()
-                    .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
-            }
-            ui.painter().circle_filled(dot.center(), 4.5, colour);
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                title_block(ui, app, out, t, s, &shown);
-            });
-        });
-    });
-    #[cfg(test)]
-    {
-        app.chat_ui.probe.status_label = Some(status.clone());
-    }
-    ui.add_space(10.0);
-    let bottom = ui.cursor().min.y;
-    // Reach over the pane's margins; with nothing above the header the band
-    // starts at the top edge of the pane.
-    let top = if start - pane.top() < 1.0 {
+    let first = start - pane.top() < 1.0;
+    let band_top = if first {
         pane.top() - super::view::PANE_MARGIN_Y
     } else {
         start - 8.0
     };
+    // Pull the row up so the padding is the same above and below it in the
+    // band.
+    let row_h = HEADER_ROW_H;
+    ui.add_space(band_top + (super::view::BAND_H - row_h) / 2.0 - start);
+    // A row of a set height, so the buttons and status are centred on it.
+    // The row reaches out over the pane's margin, so the tile and buttons sit
+    // close to the band's sides, about as close as the tile is to its top.
+    let out_by = super::view::PANE_MARGIN_X - HEADER_SIDE_INSET;
+    let wide = egui::Rect::from_min_size(
+        egui::pos2(pane.left() - out_by, ui.cursor().min.y),
+        egui::vec2(pane.width() + 2.0 * out_by, row_h),
+    );
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(wide)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    {
+        let ui = &mut row_ui;
+        header_actions(ui, app, out, t, s, pinned, incognito, now);
+        if incognito {
+            tag(ui, "Incognito", t.accent, t.accent_soft);
+        }
+        let (colour, glow) = match kind {
+            StatusKind::Idle => (t.fg3, false),
+            StatusKind::Working => (t.accent, true),
+            StatusKind::Waiting => (t.warn, true),
+        };
+        let label = ui.label(RichText::new(&status).size(12.5).color(t.band_ink2()));
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.status_rect = Some(label.rect);
+        }
+        let dot = egui::Rect::from_center_size(
+            egui::pos2(label.rect.left() - 10.0, label.rect.center().y),
+            egui::vec2(9.0, 9.0),
+        );
+        ui.add_space(14.0);
+        if glow {
+            ui.painter()
+                .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
+        }
+        ui.painter().circle_filled(dot.center(), 4.5, colour);
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            title_block(ui, app, out, t, s, &shown);
+        });
+    }
+    ui.add_space(row_h);
+    #[cfg(test)]
+    {
+        app.chat_ui.probe.status_label = Some(status.clone());
+    }
+    // As tall as the sidebar's band, so the two line up.
+    let bottom = band_top + super::view::BAND_H;
+    ui.add_space((bottom - ui.cursor().min.y).max(0.0));
+    // Reach over the pane's margins; with nothing above the header the band
+    // starts at the top edge of the pane.
+    let top = band_top;
     let rect = egui::Rect::from_min_max(
         egui::pos2(pane.left() - super::view::PANE_MARGIN_X, top),
         egui::pos2(pane.right() + super::view::PANE_MARGIN_X, bottom),
@@ -173,7 +203,7 @@ pub(super) fn header(
     ui.painter().set(
         band,
         egui::Shape::Vec(vec![
-            egui::Shape::rect_filled(rect, 0.0, t.header),
+            egui::Shape::rect_filled(rect, 0.0, t.head_band()),
             egui::Shape::hline(
                 rect.x_range(),
                 rect.bottom(),
@@ -199,13 +229,22 @@ fn title_block(
     shown: &str,
 ) {
     let agent = s.mode == SessionMode::Agent;
-    let (tile, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-    ui.painter().rect_filled(tile, 9.0, t.accent);
-    crate::icons::paint(
+    let (tile, _) = ui.allocate_exact_size(egui::vec2(TILE_SIZE, TILE_SIZE), egui::Sense::hover());
+    // A quiet tile with the sidebar divider's darker edge to set it off.
+    ui.painter().rect(
+        tile,
+        11.0,
+        t.surface,
+        egui::Stroke::new(1.0, t.side_edge()),
+        egui::StrokeKind::Inside,
+    );
+    // The glyph is large in its tile, with little margin round it.
+    crate::icons::paint_scaled(
         ui.painter(),
         tile,
         if agent { Icon::Agent } else { Icon::Chat },
-        t.accent_fg,
+        t.fg2,
+        TILE_ICON_SCALE,
     );
     ui.add_space(4.0);
     if app
@@ -223,7 +262,7 @@ fn title_block(
     } else {
         shown.to_string()
     };
-    let font = semibold(21.0);
+    let font = semibold(18.0);
     let natural = ui
         .painter()
         .layout_no_wrap(text.clone(), font.clone(), t.fg)
@@ -288,7 +327,16 @@ fn title_block(
             let room = ui.available_width().max(0.0);
             let cut_to = crate::widgets::ellipsize_middle(ui, &short, mono(PATH_FONT), room);
             let cut = cut_to != short;
-            let r = ui.label(RichText::new(cut_to).font(mono(PATH_FONT)).color(t.fg2));
+            let r = ui
+                .horizontal(|ui| {
+                    ui.add_space(PATH_INSET);
+                    ui.label(
+                        RichText::new(cut_to)
+                            .font(mono(PATH_FONT))
+                            .color(t.band_ink2()),
+                    )
+                })
+                .inner;
             #[cfg(test)]
             {
                 app.chat_ui.probe.path_rect = Some(r.rect);
@@ -854,15 +902,19 @@ pub(super) fn permission_pills(
     chips.push((Capability::Read, Family::Files, 'R', "Reading files"));
     for (cap, family, letter, what) in chips {
         let perm = cap_permission(&s.effective_tools, cap);
-        // Running commands is never drawn in the calm accent colour.
+        // One hue for every state, told apart by the shape: solid is allowed,
+        // outlined asks first, dashed is off. Running commands is red when it
+        // is allowed, never the calm colour.
         let danger = cap == Capability::Run && perm == Permission::Auto;
+        let hue = if danger {
+            crate::app::bad(dark)
+        } else {
+            t.accent
+        };
         let (fg, fill, stroke) = match perm {
-            Permission::Auto if danger => {
-                (crate::app::bad(dark), t.surface2, crate::app::bad(dark))
-            }
-            Permission::Auto => (t.accent, t.accent_soft, t.accent),
-            Permission::Ask => (t.warn, t.warn_soft, t.warn),
-            Permission::Off => (t.fg3, t.surface2, t.line),
+            Permission::Auto => (if danger { t.surface } else { t.accent_fg }, hue, hue),
+            Permission::Ask => (hue, t.surface, hue),
+            Permission::Off => (t.fg3, t.surface, t.line),
         };
         let sense = if running {
             egui::Sense::hover()
@@ -870,13 +922,20 @@ pub(super) fn permission_pills(
             egui::Sense::click()
         };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, PILL_H), sense);
-        ui.painter().rect(
-            rect,
-            PILL_H / 2.0,
-            fill,
-            egui::Stroke::new(1.0, stroke.gamma_multiply(0.6)),
-            egui::StrokeKind::Inside,
-        );
+        let width = 1.5;
+        ui.painter().rect_filled(rect, PILL_H / 2.0, fill);
+        let outline = rect.shrink(width / 2.0);
+        if perm == Permission::Off {
+            // Dashes round the pill: short strokes along a circle-ended rect.
+            dashed_pill(ui.painter(), outline, stroke, width);
+        } else {
+            ui.painter().rect_stroke(
+                outline,
+                PILL_H / 2.0,
+                egui::Stroke::new(width, stroke),
+                egui::StrokeKind::Inside,
+            );
+        }
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -1603,4 +1662,25 @@ pub(super) fn tool_group(ui: &mut egui::Ui, t: &Tokens, msgs: &[Message], app: &
 #[allow(dead_code)]
 fn _id(id: roost_core::session::SessionId) -> egui::Id {
     composer_id(id)
+}
+
+/// A dashed outline for a pill: the straight sides in dashes and the round
+/// ends in dots along the arc.
+fn dashed_pill(p: &egui::Painter, r: egui::Rect, colour: egui::Color32, width: f32) {
+    let radius = r.height() / 2.0;
+    let stroke = egui::Stroke::new(width, colour);
+    let mut path = Vec::new();
+    let steps = 10;
+    let right = egui::pos2(r.right() - radius, r.center().y);
+    let left = egui::pos2(r.left() + radius, r.center().y);
+    for i in 0..=steps {
+        let a = std::f32::consts::PI * (-0.5 + i as f32 / steps as f32);
+        path.push(right + egui::vec2(a.cos(), a.sin()) * radius);
+    }
+    for i in 0..=steps {
+        let a = std::f32::consts::PI * (0.5 + i as f32 / steps as f32);
+        path.push(left + egui::vec2(a.cos(), a.sin()) * radius);
+    }
+    path.push(path[0]);
+    p.extend(egui::Shape::dashed_line(&path, stroke, 3.0, 2.5));
 }

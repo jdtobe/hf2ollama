@@ -5,9 +5,10 @@ use super::*;
 use crate::app::App;
 use crate::browse::detail::MIN_SCROLL_H;
 use crate::browse::test_util::Harness;
+use crate::dock::jobs::JobsState;
 use eframe::egui::{Pos2, Rect};
 use roost_core::config::Settings;
-use roost_core::events::{JobEvent, Stage};
+use roost_core::events::{JobEvent, JobId, Stage};
 use roost_core::fit::Machine;
 use roost_core::hf::ModelInfo;
 use roost_core::model::RepoFile;
@@ -429,20 +430,72 @@ fn dock_buttons_are_fully_visible_for_running_and_settled_rows() {
 }
 
 #[test]
-fn idle_dock_is_a_single_compact_line() {
+fn an_idle_dock_is_out_of_the_way_and_opens_from_the_status_bar_as_a_single_line() {
     for size in SIZES {
         for dark in [false, true] {
             let mut app = laid_out(browse_app(), dark, size);
+            assert!(
+                app.state_mut().dock.probe.panel.is_none(),
+                "{size:?} dark={dark}: nothing running, so no dock"
+            );
+            app.state_mut().dock.toggle();
+            let mut app = laid_out(app, dark, size);
             let p = &app.state_mut().dock.probe;
-            let panel = p.panel.expect("dock panel");
+            let panel = p.panel.expect("dock panel once opened");
             assert!(
                 panel.height() <= 44.0,
                 "{size:?} dark={dark}: idle dock {} px tall",
                 panel.height()
             );
             assert!(p.buttons.is_empty() && p.viewport.is_none() && p.rows.is_empty());
+            // The same button folds it away again.
+            app.state_mut().dock.toggle();
+            let mut app = laid_out(app, dark, size);
+            assert!(app.state_mut().dock.probe.panel.is_none(), "{size:?}");
         }
     }
+}
+
+#[test]
+fn jobs_show_the_dock_and_the_button_folds_it_until_the_next_job_starts() {
+    let size = (1180.0, 820.0);
+    let mut app = laid_out(many_jobs_app(), false, size);
+    assert!(app.state_mut().dock.probe.panel.is_some(), "jobs show it");
+    app.state_mut().dock.toggle();
+    let mut app = laid_out(app, false, size);
+    assert!(
+        app.state_mut().dock.probe.panel.is_none(),
+        "folded away while jobs are still running"
+    );
+    app.state_mut()
+        .jobs
+        .accept(JobId(9_999), "another/model".into(), 1_000);
+    let mut app = laid_out(app, false, size);
+    assert!(
+        app.state_mut().dock.probe.panel.is_some(),
+        "a new job brings it back"
+    );
+}
+
+#[test]
+fn the_dock_lingers_a_few_seconds_after_the_last_job_and_then_goes() {
+    let ctx = egui::Context::default();
+    let mut st = DockUi::default();
+    let mut jobs = JobsState::new();
+    let at = |t: f64, st: &mut DockUi, jobs: &JobsState| {
+        ctx.begin_pass(egui::RawInput {
+            time: Some(t),
+            ..Default::default()
+        });
+        let shown = st.tick(&ctx, jobs);
+        ctx.end_pass().textures_delta.clear();
+        shown
+    };
+    jobs.accept(JobId(1), "a/b".into(), 10);
+    assert!(at(1.0, &mut st, &jobs), "a job shows it");
+    jobs.dismiss(JobId(1));
+    assert!(at(2.0, &mut st, &jobs), "still there a moment later");
+    assert!(!at(6.0, &mut st, &jobs), "gone after the hold");
 }
 
 #[test]
@@ -617,5 +670,38 @@ fn every_job_has_a_bar_of_the_same_width_and_a_pill_clear_of_the_buttons() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn the_status_bar_button_opens_and_folds_the_dock_with_a_real_click() {
+    for size in SIZES {
+        let (mut app, sent) = browse_app_chan(false);
+        let mut harness = Harness::new(false);
+        for _ in 0..10 {
+            harness.frame(vec2(size.0, size.1), vec![], |ui| app.show(ui));
+        }
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1));
+        let button = app
+            .state_mut()
+            .downloads_button
+            .expect("a downloads button");
+        let bar = app.state_mut().status_rect.expect("status bar");
+        assert!(
+            inside(button, window) && inside(button, bar.expand(6.0)),
+            "{size:?}: {button:?} not in the status bar {bar:?}"
+        );
+        assert!(app.state_mut().dock.probe.panel.is_none(), "{size:?}");
+        let _ = click_at(&mut app, &sent, &mut harness, size, button.center());
+        assert!(
+            app.state_mut().dock.probe.panel.is_some(),
+            "{size:?}: the click opened nothing"
+        );
+        let button = app.state_mut().downloads_button.unwrap();
+        let _ = click_at(&mut app, &sent, &mut harness, size, button.center());
+        assert!(
+            app.state_mut().dock.probe.panel.is_none(),
+            "{size:?}: a second click did not fold it away"
+        );
     }
 }

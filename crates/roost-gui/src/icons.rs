@@ -26,13 +26,20 @@ pub enum Icon {
     Folder,
     NewChat,
     Incognito,
+    Download,
 }
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
-    let origin = rect.center() - vec2(8.0, 8.0);
-    let p = |x: f32, y: f32| origin + vec2(x, y);
-    let stroke = Stroke::new(1.5, color);
+    paint_scaled(painter, rect, icon, color, 1.0);
+}
+
+/// Like `paint`, with the 16 x 16 grid drawn `scale` times as large. Meant
+/// for the icons made of lines (the line width grows with it, a little less).
+pub fn paint_scaled(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32, scale: f32) {
+    let centre = rect.center();
+    let p = |x: f32, y: f32| centre + vec2(x - 8.0, y - 8.0) * scale;
+    let stroke = Stroke::new(1.5 * (1.0 + (scale - 1.0) * 0.6), color);
     match icon {
         Icon::Copy => {
             painter.rect_stroke(
@@ -290,6 +297,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 stroke,
             ));
             painter.line_segment([p(7.0, 9.0), p(13.5, 2.5)], Stroke::new(2.0, color));
+        }
+        Icon::Download => {
+            // An arrow down into a tray.
+            painter.line_segment([p(8.0, 2.0), p(8.0, 10.0)], stroke);
+            painter.line_segment([p(4.5, 6.5), p(8.0, 10.0)], stroke);
+            painter.line_segment([p(11.5, 6.5), p(8.0, 10.0)], stroke);
+            painter.line_segment([p(2.5, 13.5), p(13.5, 13.5)], stroke);
         }
         Icon::Incognito => {
             // An eye with a line through it.

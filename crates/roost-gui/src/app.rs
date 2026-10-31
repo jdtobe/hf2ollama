@@ -87,6 +87,9 @@ pub struct AppState {
     pub search_rect: Option<egui::Rect>,
     /// Where its clear (✕) button was last painted; `None` when the field is empty.
     pub search_clear_rect: Option<egui::Rect>,
+    /// The status bar's downloads button as last painted.
+    #[cfg(test)]
+    pub downloads_button: Option<egui::Rect>,
     /// Extent of the status bar contents as last painted (for layout tests).
     pub status_rect: Option<egui::Rect>,
     /// One-line startup message (e.g. an ignored saved setting).
@@ -168,6 +171,8 @@ impl AppState {
             search_rect: None,
             search_clear_rect: None,
             status_rect: None,
+            #[cfg(test)]
+            downloads_button: None,
             startup_notice: None,
             #[cfg(test)]
             top_bar: Vec::new(),
@@ -357,6 +362,44 @@ pub fn pill_size(text_width: f32) -> egui::Vec2 {
 
 /// Height of the top bar's single row; the tallest item (the nav) fits.
 const TOP_ROW_H: f32 = 36.0;
+/// Room the status bar keeps for the downloads button at its right end.
+const DOWNLOADS_BTN_W: f32 = 60.0;
+
+/// The status bar's downloads button: shows how many jobs are running and
+/// folds the dock away or brings it back. True when clicked.
+fn downloads_button(
+    ui: &mut egui::Ui,
+    t: &crate::theme_tokens::Tokens,
+    jobs: &crate::dock::jobs::JobsState,
+    dock: &crate::dock::DockUi,
+) -> egui::Response {
+    let running = jobs.unsettled_ids().len();
+    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if dock.is_shown() {
+            "Hide downloads"
+        } else {
+            "Show downloads and imports"
+        });
+    if resp.hovered() || dock.is_shown() {
+        ui.painter().rect_filled(rect, 6.0, t.surface2);
+    }
+    let ink = if running > 0 || dock.is_shown() {
+        t.accent
+    } else {
+        t.fg2
+    };
+    crate::icons::paint(ui.painter(), rect, crate::icons::Icon::Download, ink);
+    if running > 0 {
+        ui.label(
+            RichText::new(running.to_string())
+                .size(11.5)
+                .color(t.accent),
+        );
+    }
+    resp
+}
 /// Height of the segmented nav: 28 px segments, 2 px padding, 1 px border.
 const NAV_H: f32 = 34.0;
 
@@ -823,7 +866,7 @@ impl App {
                 ui.ctx().layer_painter(ui.layer_id()).rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(screen.left(), top),
-                        egui::pos2(screen.right(), top + 4.0),
+                        egui::pos2(screen.right(), top + 3.0),
                     ),
                     0.0,
                     t.accent,
@@ -963,7 +1006,7 @@ impl App {
                     let label_w = measure("Staging folder", small.clone());
                     let path_w = measure(&path, mono(11.5));
                     let note_w = measure(note, small);
-                    let room = ui.available_width() - label_w - gap;
+                    let room = ui.available_width() - label_w - gap - DOWNLOADS_BTN_W;
                     // The note is the first thing to give way, then the path
                     // loses its middle (the end is the part people look for).
                     let show_note = (self.state.delete_after_import || notice.is_some())
@@ -979,6 +1022,16 @@ impl App {
                         let color = if notice.is_some() { t.warn } else { t.fg3 };
                         ui.label(RichText::new(note).size(12.0).color(color));
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let b = downloads_button(ui, &t, &self.state.jobs, &self.state.dock);
+                        #[cfg(test)]
+                        {
+                            self.state.downloads_button = Some(b.rect);
+                        }
+                        if b.clicked() {
+                            self.state.dock.toggle();
+                        }
+                    });
                 });
                 self.state.status_rect = Some(row.response.rect);
             });
@@ -2209,7 +2262,7 @@ mod tests {
                 egui::epaint::Shape::Rect(r)
                     if near(r.fill, accent)
                         && r.rect.width() >= 1179.0
-                        && (r.rect.height() - 4.0).abs() < 0.5 =>
+                        && (r.rect.height() - 3.0).abs() < 0.5 =>
                 {
                     Some(r.rect)
                 }

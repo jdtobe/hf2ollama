@@ -24,6 +24,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Margins of the conversation pane (a header band reaches over them).
 pub(super) const PANE_MARGIN_X: f32 = 20.0;
 pub(super) const PANE_MARGIN_Y: f32 = 16.0;
+const LANDING_W: f32 = 460.0;
+pub(super) const BAND_H: f32 = crate::sidebar::BAND_H;
 const ROW_H: f32 = 46.0;
 /// The tallest the input grows before it scrolls.
 const COMPOSER_MAX_H: f32 = 160.0;
@@ -185,6 +187,8 @@ pub struct ChatProbe {
     /// Where the status text and the title were painted in the header.
     pub status_rect: Option<egui::Rect>,
     pub title_rect: Option<egui::Rect>,
+    /// The title and text of the landing panel, when it is showing.
+    pub landing: Option<egui::Rect>,
     pub path_rect: Option<egui::Rect>,
     pub rows: Vec<(SessionId, egui::Rect)>,
     pub send_button: Option<(egui::Rect, &'static str)>,
@@ -395,7 +399,8 @@ fn rail(
     } else {
         ("New chat", "New incognito chat")
     };
-    // Search with the two ways to start something beside it.
+    // Search with the two ways to start something beside it, centred in the band.
+    ui.add_space(crate::sidebar::SEARCH_DROP);
     let field = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -458,7 +463,7 @@ fn rail(
             }));
         }
     }
-    ui.add_space(10.0);
+    ui.add_space((band_top + BAND_H - ui.cursor().min.y).max(0.0));
     ui.painter().set(
         band,
         egui::Shape::rect_filled(
@@ -606,24 +611,19 @@ fn rail_icon_button(
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(tip),
     };
-    let (fill, stroke, ink) = if primary {
-        let fill = if enabled { t.accent } else { t.line };
-        (
-            fill,
-            Stroke::NONE,
-            if enabled { t.accent_fg } else { t.fg3 },
-        )
+    // Both buttons are outlined. The new-chat one has its icon in the theme
+    // colour, and either takes a faint outline of it when pointed at.
+    let hot = resp.hovered() && enabled;
+    let fill = if hot { t.surface2 } else { t.surface };
+    let stroke = if hot {
+        Stroke::new(1.0, t.accent.gamma_multiply(0.5))
     } else {
-        let fill = if resp.hovered() && enabled {
-            t.surface2
-        } else {
-            t.surface
-        };
-        (
-            fill,
-            Stroke::new(1.0, t.line),
-            if enabled { t.fg2 } else { t.fg3 },
-        )
+        Stroke::new(1.0, t.line)
+    };
+    let ink = match (enabled, primary) {
+        (false, _) => t.fg3,
+        (true, true) => t.accent,
+        (true, false) => t.fg2,
     };
     ui.painter()
         .rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
@@ -1111,10 +1111,24 @@ fn pane(
                     "Choose a conversation on the left, or start a new one. Incognito chats are never saved.",
                 )
             };
-            ui.add_space(24.0);
-            ui.label(RichText::new(title).font(semibold(18.0)));
-            ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new(text).color(t.fg2)).wrap());
+            // Centred in the pane, a little above the middle.
+            let wide = ui.available_width().min(LANDING_W);
+            ui.add_space((ui.available_height() * 0.5 - 70.0).max(24.0));
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(wide);
+                let head = ui.label(RichText::new(title).font(semibold(18.0)));
+                ui.add_space(6.0);
+                let body = ui.add(
+                    egui::Label::new(RichText::new(text).color(t.fg2))
+                        .wrap()
+                        .halign(Align::Center),
+                );
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.landing = Some(head.rect.union(body.rect));
+                }
+                let _ = (head, body);
+            });
         }
         return;
     };
@@ -2064,6 +2078,28 @@ fn message_card(
             None,
         ),
     };
+    // A reply that only thought (no words, no error, not still coming) is one
+    // quiet line, not an empty card.
+    if is_assistant
+        && body.is_empty()
+        && error.is_none()
+        && status != Some(AssistantStatus::Streaming)
+        && thinking.as_ref().is_some_and(|x| !x.is_empty())
+    {
+        let th = thinking.unwrap_or_default();
+        let line = ui.scope(|ui| {
+            egui::CollapsingHeader::new(RichText::new("Thinking").size(12.0).color(t.fg3))
+                .id_salt(("thinking", m.id))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(th).size(12.5).color(t.fg2))
+                            .selectable(true)
+                            .wrap(),
+                    );
+                });
+        });
+        return line.response.rect;
+    }
     let card = egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, t.line))
@@ -2173,7 +2209,6 @@ fn message_actions(
     card: egui::Rect,
 ) {
     use crate::icons::{slot, Icon};
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ACTION_H), Sense::hover());
     let (text, status, stats) = match &m.content {
         MessageContent::User { text, .. } => (text, None, None),
         MessageContent::Assistant {
@@ -2184,6 +2219,12 @@ fn message_actions(
         } => (text, Some(*status), *stats),
         MessageContent::Tool { .. } => return,
     };
+    // Nothing to put in the row (an empty reply that is done): no room for it.
+    if text.is_empty() && status != Some(AssistantStatus::Streaming) && s.version_of(m.id).is_none()
+    {
+        return;
+    }
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ACTION_H), Sense::hover());
     if let Some((n, total)) = s.version_of(m.id) {
         let after = index.checked_sub(1).map(|i| s.messages[i].id);
         let idle = !app.chat.is_running(s.id);

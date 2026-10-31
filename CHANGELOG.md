@@ -130,6 +130,16 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - The sidebar (Chat, Work and Models) takes colour from the theme: the list is a half-strength tint of the theme's light colour, the search field and buttons (and, on Models, the filters) sit on a band of the full tint, the selected row is white with a dark 3 px edge on its left, and the divider on the sidebar's right is a darker tint. The tints are worked out from each theme's own colours, so all four families and both modes get a matching sidebar.
 
+### A calmer Work and Chat page
+
+- The page header is a deeper tint of the theme colour (one family in every theme, so the pink-against-purple clash is gone), and it is the same height (60 px) as the sidebar's lighter search band beside it. The title is a little smaller, the folder under it is set in a few pixels, and the buttons and title are centred in the band, close to its sides (10 px). The tile with the chat or agent glyph in the header is bigger than the buttons beside it (44 px, with the glyph scaled up and a darker edge). The Models and Browse headers use the same deeper tint. Muted text on it is a touch darker to stay readable.
+- The sidebar list is a lighter tint, and the strip at the top of the window is 3 px.
+- The two buttons beside the search field are both outlined, with the new-chat plus in the theme colour; either one gets a faint theme-colour outline when you point at it.
+- The session tile in the header is neutral. The R, W and X permission pills stay one colour and change shape instead: solid means allowed, outlined means asks first, dashed means off. Running commands, when allowed, is solid red.
+- A reply that only thought, with no words, is one quiet "Thinking" line instead of an empty card, and it no longer reserves the empty row of icons beneath it.
+- The downloads dock is out of the way when nothing is running: it slides down and fades a few seconds after the last job is dismissed. A downloads button at the right of the status bar (with the number of running jobs) opens it by hand and folds it away again, even while jobs are running; a new job brings it back.
+- The "Start a chat" and "Start an agent" text shown when nothing is open is centred in the pane, a little above the middle, instead of sitting in the top-left corner.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

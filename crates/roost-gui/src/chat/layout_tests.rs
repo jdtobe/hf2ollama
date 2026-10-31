@@ -2221,8 +2221,8 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
             "{size:?}: {path:?} under {title:?}"
         );
         assert!(
-            (path.left() - title.left()).abs() < 0.5,
-            "{size:?}: same left edge"
+            (path.left() - title.left() - 6.0).abs() < 0.5,
+            "{size:?}: the folder is set in a little from the title"
         );
         assert!(inside(path, header), "{size:?}: {path:?} in {header:?}");
     }
@@ -3860,5 +3860,231 @@ fn the_sidebar_list_is_half_tinted_with_a_full_tint_band_a_white_selection_and_a
             _ => false,
         });
         assert!(divider, "{size:?}: no dark divider on the right");
+    }
+}
+
+#[test]
+fn the_page_header_is_as_tall_as_the_sidebars_band_but_in_a_deeper_tint() {
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let header = p.header.unwrap();
+        let panel = p.rail.unwrap().expand(12.0);
+        let shapes = painted(&mut f.app, &mut h, size);
+        let rects = || {
+            shapes.iter().filter_map(|s| match s {
+                egui::epaint::Shape::Rect(r) => Some((r.rect, r.fill)),
+                _ => None,
+            })
+        };
+        let side = rects()
+            .find(|(r, c)| {
+                close(*c, t.side_band())
+                    && (r.left() - panel.left()).abs() < 2.0
+                    && (r.top() - panel.top()).abs() < 2.0
+            })
+            .map(|(r, _)| r)
+            .expect("the sidebar's band");
+        assert!(
+            (side.top() - header.top()).abs() < 1.0
+                && (side.bottom() - header.bottom()).abs() < 1.0,
+            "{size:?}: sidebar band {side:?} and header {header:?} do not line up"
+        );
+        assert!(
+            rects().any(|(r, c)| close(c, t.head_band()) && (r.min - header.min).length() < 1.0),
+            "{size:?}: the header is not in the deeper tint"
+        );
+        assert!(
+            !close(t.head_band(), t.side_band()),
+            "{size:?}: the header and the sidebar band must differ"
+        );
+    }
+}
+
+#[test]
+fn a_reply_that_only_thought_is_a_line_not_an_empty_card() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    let now = now_ms();
+    let mut s = Session::new_chat("llama3.2:3b", SessionLifetime::Persisted, now);
+    s.push_user("Hello", now);
+    let a = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(a, "", "Let me think about that.");
+    s.finish_assistant(a, AssistantStatus::Complete, None, now);
+    let b = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(b, "An answer.", "");
+    s.finish_assistant(b, AssistantStatus::Complete, None, now);
+    f.app.state_mut().chat.fold(ChatEvent::Opened(Box::new(s)));
+    run(&mut f.app, &mut h, size, 4);
+    let cards = f.app.state_mut().chat_ui.probe.cards.clone();
+    assert_eq!(cards.len(), 3, "{cards:?}");
+    assert!(
+        cards[1].height() < 34.0 && cards[0].height() > 40.0 && cards[2].height() > 40.0,
+        "the thinking-only reply is one line: {cards:?}"
+    );
+    let gap = cards[2].top() - cards[1].bottom();
+    assert!(gap < 24.0, "no empty row of actions under it: gap {gap}");
+}
+
+#[test]
+fn the_permission_pills_keep_one_colour_and_change_shape_with_what_they_allow() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    let chips = app.state_mut().chat_ui.probe.chips.clone();
+    let shapes = painted(&mut app, &mut h, size);
+    // The smallest rectangle that holds the pill is the pill itself.
+    let rect_of = |chip: egui::Rect| {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::epaint::Shape::Rect(r)
+                    if r.fill.a() > 0 && r.rect.contains_rect(chip.shrink(2.0)) =>
+                {
+                    Some(r.clone())
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+    };
+    // Read is allowed: solid in the theme colour. Write asks: the same colour
+    // as an outline on the plain surface.
+    let read = rect_of(chips[0].1).expect("the read pill");
+    assert!(close(read.fill, t.accent), "read is solid: {:?}", read.fill);
+    let write_fill = shapes.iter().any(|s| match s {
+        egui::epaint::Shape::Rect(r) => {
+            close(r.fill, t.accent) && r.rect.contains_rect(chips[1].1.shrink(2.0))
+        }
+        _ => false,
+    });
+    assert!(!write_fill, "write asks, so it is not solid");
+    let outlined = shapes.iter().any(|s| match s {
+        egui::epaint::Shape::Rect(r) => {
+            close(r.stroke.color, t.accent)
+                && r.stroke.width > 0.0
+                && chips[1].1.expand(1.0).contains_rect(r.rect)
+        }
+        _ => false,
+    });
+    assert!(outlined, "write has an outline in the theme colour");
+}
+
+#[test]
+fn the_header_buttons_and_title_are_centred_in_the_band() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let header = p.header.unwrap();
+        let trash = p.delete_button.clone().unwrap().0;
+        let (title, path) = (p.title_rect.unwrap(), p.path_rect.unwrap());
+        let block = title.union(path);
+        // The buttons are close to the band's right edge, not a pane margin away.
+        let side = header.right() - trash.right();
+        assert!(
+            (side - 10.0).abs() <= 1.0,
+            "{size:?}: {side} from the right edge"
+        );
+        for (name, r) in [("buttons", trash), ("title and folder", block)] {
+            let (above, below) = (r.top() - header.top(), header.bottom() - r.bottom());
+            assert!(
+                (above - below).abs() <= 3.0 && above >= 6.0,
+                "{size:?}: {name} sit {above} below the top and {below} above the bottom of {header:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_session_kind_glyph_is_larger_than_the_header_buttons_icons() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (header, title) = (p.header.unwrap(), p.title_rect.unwrap());
+        let shapes = painted(&mut app, &mut h, size);
+        // The bubble is the largest line drawing left of the title.
+        let widest = shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::epaint::Shape::Path(path) => {
+                    let r = Rect::from_points(&path.points);
+                    (r.right() <= title.left()
+                        && r.top() >= header.top()
+                        && r.bottom() <= header.bottom())
+                    .then_some(r.width())
+                }
+                _ => None,
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(widest >= 17.0, "{size:?}: the glyph is {widest} px wide");
+        // And its box is bigger than the buttons beside the title.
+        let tile = shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::epaint::Shape::Rect(r)
+                    if r.rect.right() <= title.left()
+                        && r.rect.left() >= header.left()
+                        && r.rect.width() < 60.0
+                        && r.stroke.width > 0.0 =>
+                {
+                    Some((r.rect.width(), r.stroke.color))
+                }
+                _ => None,
+            })
+            .fold((0.0_f32, egui::Color32::TRANSPARENT), |a, b| {
+                if b.0 > a.0 {
+                    b
+                } else {
+                    a
+                }
+            });
+        let (tile, edge) = tile;
+        let want = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false)
+            .side_edge();
+        assert!(close(edge, want), "{size:?}: the tile's edge is {edge:?}");
+        let button = p.delete_button.clone().unwrap().0.width();
+        assert!(
+            tile >= button + 6.0,
+            "{size:?}: the tile is {tile} px, the buttons {button} px"
+        );
+    }
+}
+
+#[test]
+fn the_landing_text_is_centred_in_the_pane_on_chat_and_on_work() {
+    for size in SIZES {
+        for view in [View::Chat, View::Work] {
+            let mut f = fixture_with(0);
+            f.app.state_mut().chat.open = None;
+            f.app.state_mut().view = view;
+            let mut h = Harness::new(false);
+            run(&mut f.app, &mut h, size, 4);
+            let p = f.app.state_mut().chat_ui.probe.clone();
+            let landing = p.landing.expect("the landing panel");
+            let rail = p.rail.unwrap().expand(12.0);
+            let pane = Rect::from_min_max(
+                egui::pos2(rail.right(), rail.top()),
+                egui::pos2(size.0, size.1),
+            );
+            assert!(
+                (landing.center().x - pane.center().x).abs() <= 12.0,
+                "{size:?} {view:?}: {landing:?} is not centred across {pane:?}"
+            );
+            let middle = landing.center().y;
+            assert!(
+                middle > pane.top() + pane.height() * 0.25
+                    && middle < pane.top() + pane.height() * 0.6,
+                "{size:?} {view:?}: {landing:?} is not about the middle of {pane:?}"
+            );
+        }
     }
 }
