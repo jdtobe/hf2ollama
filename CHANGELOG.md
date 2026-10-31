@@ -161,6 +161,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Each row in the Installed and Hugging Face lists started partway down the one above it, so the dividers and the selected or pointed-at tint were drawn over the row's own text and the spacing looked uneven (the first row was fine and the ones below were not). Rows now follow each other exactly, and the two lines in an installed row are centred in it.
 
+### A download time estimate that holds up
+
+- The estimate under a download could say "~5 s left" for most of a long download. Progress reports were timed when the window handled them, so when the window was not being redrawn (in the background, say) minutes of progress arrived at once and looked like an enormous speed, and the estimate stayed tiny for a long time after. Reports that arrive together are now one report, a long silence is measured as a long silence, the estimate reads the speed over the last 20 seconds instead of a slow running average, and it never trusts a speed more than three times the average so far. While a download is running in the foreground it behaves as before.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.
