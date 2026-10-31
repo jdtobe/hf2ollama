@@ -871,3 +871,18 @@ fn the_sort_and_filter_buttons_get_the_same_hover_as_the_chat_buttons() {
         );
     }
 }
+
+#[test]
+fn the_models_search_hint_is_just_search_like_chat_and_work() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let t = texts(&mut app, &mut h, size);
+    assert!(t.lines().any(|l| l == "Search"), "{t}");
+    assert!(
+        !t.contains("Hugging Face\n") || !t.contains("Search installed"),
+        "{t}"
+    );
+    assert!(!t.contains("Search installed models"), "{t}");
+}

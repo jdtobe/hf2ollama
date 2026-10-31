@@ -149,7 +149,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### Same hover on the icon buttons
 
-- The sort and filter buttons on the Models tab now get the same hover as the new-chat buttons in Chat and Work: a faint outline in the theme colour. The look is one shared function, so they stay the same.
+- The sort and filter buttons on the Models tab now get the same hover as the new-chat buttons in Chat and Work: a faint outline in the theme colour. The look is one shared function, so they stay the same. The search box on Models says just "Search", like Chat and Work.
 
 ### Quitting with work in progress
 

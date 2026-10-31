@@ -35,11 +35,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                     let room = (ui.available_width() - 2.0 * (32.0 + 6.0)).max(80.0);
                     let search = ui
                         .allocate_ui(vec2(room, 32.0), |ui| {
-                            crate::widgets::search_field(
-                                ui,
-                                &mut app.query,
-                                "Search installed models and Hugging Face",
-                            )
+                            crate::widgets::search_field(ui, &mut app.query, "Search")
                         })
                         .inner;
                     app.search_rect = Some(search.response.rect);
