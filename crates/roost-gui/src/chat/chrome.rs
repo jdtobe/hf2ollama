@@ -138,8 +138,19 @@ pub(super) fn header(
     let row_h = if tall { HEADER_ROW_H } else { 32.0 };
     ui.add_space(band_top + (super::view::BAND_H - row_h) / 2.0 - start);
     // A row of a set height, so the buttons and status are centred on it.
-    let size = egui::vec2(ui.available_width(), row_h);
-    ui.allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
+    // The row reaches out over the pane's margin, so the buttons sit as far
+    // from the band's side as from its top.
+    let out_by = super::view::PANE_MARGIN_X - (super::view::BAND_H - 32.0) / 2.0;
+    let wide = egui::Rect::from_min_size(
+        egui::pos2(pane.left() - out_by, ui.cursor().min.y),
+        egui::vec2(pane.width() + 2.0 * out_by, row_h),
+    );
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(wide)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    (|ui: &mut egui::Ui| {
         header_actions(ui, app, out, t, s, pinned, incognito, now);
         if incognito {
             tag(ui, "Incognito", t.accent, t.accent_soft);
@@ -167,7 +178,8 @@ pub(super) fn header(
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             title_block(ui, app, out, t, s, &shown);
         });
-    });
+    })(&mut row_ui);
+    ui.add_space(row_h);
     #[cfg(test)]
     {
         app.chat_ui.probe.status_label = Some(status.clone());
