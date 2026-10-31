@@ -614,12 +614,7 @@ fn rail_icon_button(
     // Both buttons are outlined. The new-chat one has its icon in the theme
     // colour, and either takes a faint outline of it when pointed at.
     let hot = resp.hovered() && enabled;
-    let fill = if hot { t.surface2 } else { t.surface };
-    let stroke = if hot {
-        Stroke::new(1.0, t.accent.gamma_multiply(0.5))
-    } else {
-        Stroke::new(1.0, t.line)
-    };
+    let (fill, stroke) = crate::widgets::icon_button_look(t, hot);
     let ink = match (enabled, primary) {
         (false, _) => t.fg3,
         (true, true) => t.accent,

@@ -153,6 +153,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - The seven bordered cards are flat sections: a heading with a thin rule in the theme colour, then its rows with hairlines between them. A narrow column of heading links at the left jumps to a section and shows the one being read.
 - The search box filters the rows by their label and help text. A section keeps its heading only while one of its rows matches, the links follow, and a search with no match says so.
 
+### Same hover on the icon buttons
+
+- The sort and filter buttons on the Models tab now get the same hover as the new-chat buttons in Chat and Work: a faint outline in the theme colour. The look is one shared function, so they stay the same. The search box on Models says just "Search", like Chat and Work. The two lines in each installed model's row are centred in the row, so the space above and below them is the same in every row (the second line used to sit close to the divider).
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

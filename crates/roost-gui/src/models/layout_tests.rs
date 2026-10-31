@@ -833,3 +833,93 @@ fn the_disk_display_is_on_a_white_strip() {
         strip.top() - band.bottom()
     );
 }
+
+#[test]
+fn the_sort_and_filter_buttons_get_the_same_hover_as_the_chat_buttons() {
+    let size = (1180.0, 820.0);
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    let want = crate::widgets::icon_button_look(&t, true);
+    for which in ["sort", "filter"] {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().browse.probe.clone();
+        let rect = if which == "sort" {
+            p.sort_button
+        } else {
+            p.filters_chip
+        }
+        .unwrap();
+        // Pointed at: the fill and outline of the Chat and Work buttons.
+        h.frame(
+            vec2(size.0, size.1),
+            vec![egui::Event::PointerMoved(rect.center())],
+            |ui| app.show(ui),
+        );
+        let shapes = painted(&mut app, &mut h, size);
+        let hot = shapes.iter().any(|s| match s {
+            egui::epaint::Shape::Rect(r) => {
+                (r.rect.center() - rect.center()).length() < 1.0
+                    && r.fill == want.0
+                    && r.stroke.color == want.1.color
+            }
+            _ => false,
+        });
+        assert!(
+            hot,
+            "{which}: not drawn like the Chat buttons when pointed at"
+        );
+    }
+}
+
+#[test]
+fn the_models_search_hint_is_just_search_like_chat_and_work() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let t = texts(&mut app, &mut h, size);
+    assert!(t.lines().any(|l| l == "Search"), "{t}");
+    assert!(
+        !t.contains("Hugging Face\n") || !t.contains("Search installed"),
+        "{t}"
+    );
+    assert!(!t.contains("Search installed models"), "{t}");
+}
+
+#[test]
+fn the_text_in_every_installed_row_has_the_same_space_above_and_below() {
+    for size in SIZES {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let rows = app.state_mut().browse.probe.installed_rows.clone();
+        let shapes = painted(&mut app, &mut h, size);
+        let mut gaps = Vec::new();
+        for (name, row) in &rows {
+            let mut text: Option<Rect> = None;
+            for s in &shapes {
+                if let egui::epaint::Shape::Text(t) = s {
+                    // The line boxes, so the space is measured the way it is laid out.
+                    let r = t.galley.rect.translate(t.pos.to_vec2());
+                    if row.contains(r.center()) {
+                        text = Some(text.map_or(r, |u| u.union(r)));
+                    }
+                }
+            }
+            let text = text.unwrap_or_else(|| panic!("{size:?}: no text in {name}"));
+            let (above, below) = (text.top() - row.top(), row.bottom() - text.bottom());
+            assert!(
+                (above - below).abs() <= 1.5,
+                "{size:?}: {name} has {above} above its text and {below} below"
+            );
+            gaps.push(above);
+        }
+        for g in &gaps {
+            assert!(
+                (g - gaps[0]).abs() <= 1.0,
+                "{size:?}: the gaps differ: {gaps:?}"
+            );
+        }
+    }
+}

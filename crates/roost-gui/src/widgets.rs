@@ -181,6 +181,20 @@ pub fn tag(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32) {
 }
 
 /// Accent-filled primary action.
+/// The fill and outline of the outlined icon buttons beside a search field
+/// (Chat, Work and Models): plain, and a faint outline of the theme colour on
+/// hover.
+pub fn icon_button_look(t: &crate::theme::Tokens, hot: bool) -> (Color32, egui::Stroke) {
+    if hot {
+        (
+            t.surface2,
+            egui::Stroke::new(1.0, t.accent.gamma_multiply(0.5)),
+        )
+    } else {
+        (t.surface, egui::Stroke::new(1.0, t.line))
+    }
+}
+
 pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     let t = tokens(ui);
     let b = egui::Button::new(RichText::new(text).font(semibold(14.0)).color(if enabled {
