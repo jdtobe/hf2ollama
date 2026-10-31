@@ -167,6 +167,9 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - With Ask, a card shows the exact address and offers Fetch, "Allow <host> in this chat" (that host only, for this chat only; another host, even after a redirect, asks again) and Deny.
 - It fetches over https only, with no user name or password in the address, 20 seconds at most, up to five redirects and a size cap, and returns readable text (no scripts or styles) that is marked as untrusted text from the web. Pages that are not text are refused.
 - Addresses on this computer or the local network are always refused, whatever you answer: `localhost`, private and link-local numbers, names like `.local` or `.lan`, and a name that resolves to one. The check is repeated after every redirect, and the request goes to the address that was checked, so a page cannot steer an agent at Ollama or a router.
+### A download time estimate that holds up
+
+- The estimate under a download could say "~5 s left" for most of a long download. Progress reports were timed when the window handled them, so when the window was not being redrawn (in the background, say) minutes of progress arrived at once and looked like an enormous speed, and the estimate stayed tiny for a long time after. Reports that arrive together are now one report, a long silence is measured as a long silence, the estimate reads the speed over the last 20 seconds instead of a slow running average, and it never trusts a speed more than three times the average so far. While a download is running in the foreground it behaves as before.
 
 ### Quitting with work in progress
 
