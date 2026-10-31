@@ -279,7 +279,8 @@ fn every_control_is_fully_visible_after_scrolling_to_it() {
                         inside(view, window(size)),
                         "{tag}: the viewport {view:?} leaves the window"
                     );
-                    for (n, r) in &p.controls {
+                    // The heading links live left of the page, not in it.
+                    for (n, r) in p.controls.iter().filter(|(n, _)| !n.starts_with("link-")) {
                         assert!(
                             r.left() >= view.left() - 0.5 && r.right() <= view.right() + 0.5,
                             "{tag}: {n} {r:?} is clipped sideways by {view:?}"
@@ -986,4 +987,133 @@ fn neither_button_in_the_commands_warning_is_the_themes_on_colour() {
             );
         }
     }
+}
+
+/// Every shape drawn in one frame, with groups flattened.
+fn painted(app: &mut App, h: &mut Harness, size: (f32, f32)) -> Vec<egui::epaint::Shape> {
+    fn flat(shape: &egui::epaint::Shape, into: &mut Vec<egui::epaint::Shape>) {
+        match shape {
+            egui::epaint::Shape::Vec(items) => items.iter().for_each(|s| flat(s, into)),
+            other => into.push(other.clone()),
+        }
+    }
+    let input = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1))),
+        ..Default::default()
+    };
+    let out = h.ctx().run_ui(input, |ui| app.show(ui));
+    let mut shapes = Vec::new();
+    for clipped in &out.shapes {
+        flat(&clipped.shape, &mut shapes);
+    }
+    out.drop_without_applying_deltas();
+    shapes
+}
+
+fn texts_now(app: &mut App, h: &mut Harness, size: (f32, f32)) -> String {
+    h.frame_texts(vec2(size.0, size.1), vec![], |ui| app.show(ui))
+        .join("\n")
+}
+
+#[test]
+fn the_page_has_a_deeper_tint_header_band_with_the_title_and_a_search_box() {
+    for size in SIZES {
+        let (mut app, _) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 6);
+        let panel = probe(&mut app).panel.unwrap();
+        let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+        let shapes = painted(&mut app, &mut h, size);
+        let band = shapes
+            .iter()
+            .find_map(|s| match s {
+                egui::epaint::Shape::Rect(r)
+                    if r.fill == t.head_band()
+                        && (r.rect.top() - panel.top()).abs() < 1.5
+                        && r.rect.width() >= panel.width() - 2.0 =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("a header band in the deeper tint");
+        assert!(
+            (band.height() - crate::sidebar::BAND_H).abs() < 1.5,
+            "{size:?}: the band is {} px",
+            band.height()
+        );
+        let texts = texts_now(&mut app, &mut h, size);
+        assert!(texts.contains("Settings"), "{texts}");
+        assert!(texts.contains("Search settings"), "{texts}");
+    }
+}
+
+#[test]
+fn heading_links_on_the_left_jump_to_their_sections() {
+    for size in SIZES {
+        let (mut app, _) = settings_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 6);
+        let p = probe(&mut app);
+        let view = p.viewport.unwrap();
+        for name in CARD_NAMES {
+            let link = p
+                .controls
+                .iter()
+                .find(|(n, _)| n == &format!("link-{name}"))
+                .unwrap_or_else(|| panic!("no link for {name}"))
+                .1;
+            assert!(
+                link.right() <= view.left() + 0.5,
+                "{size:?}: {name} link {link:?} is not left of the page"
+            );
+        }
+        let link = p
+            .controls
+            .iter()
+            .find(|(n, _)| n == "link-Agents")
+            .unwrap()
+            .1;
+        click(&mut app, &mut h, size, link.center());
+        let p = probe(&mut app);
+        let view = p.viewport.unwrap();
+        let agents = p.cards.iter().find(|(n, _)| n == "Agents").unwrap().1;
+        assert!(
+            agents.top() >= view.top() - 1.0 && agents.top() < view.top() + 60.0,
+            "{size:?}: Agents starts at {} in {view:?}",
+            agents.top()
+        );
+    }
+}
+
+#[test]
+fn searching_shows_only_the_matching_rows_under_their_headings() {
+    let size = (1180.0, 820.0);
+    let (mut app, _) = settings_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 6);
+    app.state_mut().settings_view.query = "staging".into();
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_now(&mut app, &mut h, size);
+    assert!(texts.contains("Staging folder"), "{texts}");
+    assert!(
+        texts.contains("Downloads"),
+        "the matching section keeps its heading"
+    );
+    for gone in ["Server address", "Keep models in memory", "Colour family"] {
+        assert!(!texts.contains(gone), "{gone:?} should be hidden:\n{texts}");
+    }
+    let names: Vec<String> = probe(&mut app)
+        .cards
+        .iter()
+        .map(|(n, _)| n.clone())
+        .collect();
+    assert!(!names.contains(&"Ollama".to_string()), "{names:?}");
+    app.state_mut().settings_view.query = "zzzzqq".into();
+    run(&mut app, &mut h, size, 4);
+    let texts = texts_now(&mut app, &mut h, size);
+    assert!(texts.contains("No setting matches that search"), "{texts}");
+    app.state_mut().settings_view.query.clear();
+    run(&mut app, &mut h, size, 4);
+    assert!(texts_now(&mut app, &mut h, size).contains("Server address"));
 }

@@ -147,6 +147,12 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Installed models are two lines: the name with its size at the right, then where it came from, its parameters and its quantisation (`unsloth · 27.3B · Q4_K_M`). The monospace names and the pills are gone.
 - An installed model's page has the same header as a chat: a 44 px tile (with a small neural-net icon), the name and facts in the deeper tint, and Chat, Work and delete at the right. Work is outlined and delete is a quiet icon that turns red when pointed at. The details sit on the page background and About stays on white.
 
+### A flatter Settings page with search
+
+- Settings has a header band in the deeper tint, like the other tabs, with the page title, a search box and the save state ("Changes apply immediately", "Saving…", "Saved").
+- The seven bordered cards are flat sections: a heading with a thin rule in the theme colour, then its rows with hairlines between them. A narrow column of heading links at the left jumps to a section and shows the one being read.
+- The search box filters the rows by their label and help text. A section keeps its heading only while one of its rows matches, the links follow, and a search with no match says so.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

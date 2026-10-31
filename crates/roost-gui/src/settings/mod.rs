@@ -11,9 +11,7 @@ use crate::browse::results::format_size;
 use crate::runtime::{BackendRequest, CachedRow, HfTokenStatus};
 use crate::theme::{mono, semibold, tokens, Tokens};
 use crate::widgets::toggle;
-use eframe::egui::{
-    self, vec2, Align, Align2, CornerRadius, Layout, Margin, Rect, RichText, Sense, Stroke,
-};
+use eframe::egui::{self, vec2, Align, Align2, Layout, Margin, Rect, RichText, Sense, Stroke};
 use roost_core::config::{AutoDismiss, KeepAlive, Notifications, Settings, ThemeFamily, ThemeMode};
 use roost_core::fit::Machine;
 use state::{
@@ -25,10 +23,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 /// Widest a card grows; the mockup keeps settings readable on big windows.
-const CARD_MAX_W: f32 = 860.0;
-const CARD_RADIUS: f32 = 10.0;
-const HEAD_H: f32 = 34.0;
-const ROW_PAD_X: f32 = 16.0;
+const CARD_MAX_W: f32 = 760.0;
+const ROW_PAD_X: f32 = 2.0;
+/// The narrow column of heading links at the left of the page.
+const NAV_W: f32 = 180.0;
+const SEARCH_W: f32 = 280.0;
 const ROW_PAD_Y: f32 = 14.0;
 const COL_GAP: f32 = 24.0;
 /// The control column of a row (the mockup's `minmax(200px, 340px)`).
@@ -76,6 +75,14 @@ pub struct HelpProbe {
 /// The Settings view: its pure state plus what it painted (for tests).
 pub struct SettingsView {
     pub state: SettingsState,
+    /// What is typed in the search box; rows that do not match are hidden.
+    pub query: String,
+    /// Where each section heading was drawn last frame, from the top of the
+    /// page, for the heading links.
+    sections: Vec<(String, f32)>,
+    /// Scroll to this offset next frame (a heading link was clicked).
+    pending_scroll: Option<f32>,
+    scroll_y: f32,
     #[cfg(test)]
     pub probe: SettingsProbe,
     /// Test hook: scroll the cards to this offset.
@@ -87,6 +94,15 @@ struct Cx<'a> {
     t: Tokens,
     dark: bool,
     now: Instant,
+    /// The search text, lowercased; empty when not searching.
+    query: String,
+    /// While searching, the heading waits until its first matching row.
+    pending: Option<String>,
+    /// Section headings drawn this frame and their offsets from the page top.
+    sections: Vec<(String, f32)>,
+    content_top: f32,
+    /// Whether the section being drawn has put its heading on the page.
+    heading_drawn: bool,
     #[cfg(test)]
     probe: &'a mut SettingsProbe,
     #[cfg(not(test))]
@@ -94,6 +110,17 @@ struct Cx<'a> {
 }
 
 impl Cx<'_> {
+    fn searching(&self) -> bool {
+        !self.query.is_empty()
+    }
+
+    /// Whether a row with this label and help text is shown.
+    fn matches(&self, label: &str, help: &str) -> bool {
+        self.query.is_empty()
+            || label.to_lowercase().contains(&self.query)
+            || help.to_lowercase().contains(&self.query)
+    }
+
     #[cfg(test)]
     fn rec(&mut self, name: &str, rect: Rect) {
         self.probe.controls.push((name.to_string(), rect));
@@ -111,6 +138,10 @@ impl SettingsView {
     ) -> SettingsView {
         SettingsView {
             state: SettingsState::new(settings, default_staging, detected),
+            query: String::new(),
+            sections: Vec::new(),
+            pending_scroll: None,
+            scroll_y: 0.0,
             #[cfg(test)]
             probe: SettingsProbe::default(),
             #[cfg(test)]
@@ -118,7 +149,7 @@ impl SettingsView {
         }
     }
 
-    /// Draws the cards; returns which settings the user changed this frame.
+    /// Draws the page; returns which settings the user changed this frame.
     pub fn show(&mut self, ui: &mut egui::Ui, settings: &mut Settings) -> SettingsChange {
         let t = tokens(ui);
         let now = Instant::now();
@@ -134,6 +165,11 @@ impl SettingsView {
             };
         }
         let mut change = SettingsChange::default();
+        header(ui, &t, &self.state, &mut self.query);
+        let avail = ui.available_size();
+        let sections = self.sections.clone();
+        let (scroll_y, query) = (self.scroll_y, self.query.to_lowercase());
+        let mut jump = None;
         let state = &mut self.state;
         #[cfg(test)]
         let probe = &mut self.probe;
@@ -141,42 +177,126 @@ impl SettingsView {
             t,
             dark: ui.visuals().dark_mode,
             now,
+            query,
+            pending: None,
+            sections: Vec::new(),
+            content_top: 0.0,
+            heading_drawn: false,
             #[cfg(test)]
             probe,
             #[cfg(not(test))]
             _probe: std::marker::PhantomData,
         };
-        header(ui, state, &cx);
-        ui.add_space(10.0);
         let scroll = egui::ScrollArea::vertical()
             .id_salt("settings-scroll")
             .auto_shrink([false, false]);
+        let scroll = match self.pending_scroll.take() {
+            Some(offset) => scroll.vertical_scroll_offset(offset),
+            None => scroll,
+        };
         #[cfg(test)]
         let scroll = match self.scroll_to {
             Some(offset) => scroll.vertical_scroll_offset(offset),
             None => scroll,
         };
-        let shown = scroll.show(ui, |ui| {
-            // Leave room for the scroll bar so it never covers a control.
-            let width = (ui.available_width() - SCROLL_GUTTER).clamp(300.0, CARD_MAX_W);
-            ollama_card(ui, &mut cx, state, settings, width, &mut change);
-            downloads_card(ui, &mut cx, state, settings, width, &mut change);
-            cached_card(ui, &mut cx, state, width);
-            hugging_face_card(ui, &mut cx, state, settings, width, &mut change);
-            agents_card(ui, &mut cx, state, settings, width, &mut change);
-            tools_card(ui, &mut cx, state, settings, width, &mut change);
-            hardware_card(ui, &mut cx, state, settings, width, &mut change);
+        let mut shown = None;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.allocate_ui_with_layout(vec2(NAV_W, avail.y), Layout::top_down(Align::Min), |ui| {
+                jump = heading_links(ui, &mut cx, &sections, scroll_y);
+            });
+            ui.allocate_ui_with_layout(
+                vec2((avail.x - NAV_W).max(300.0), avail.y),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    shown = Some(scroll.show(ui, |ui| {
+                        cx.content_top = ui.cursor().top();
+                        ui.add_space(8.0);
+                        // Leave room for the scroll bar so it never covers a control.
+                        let width = (ui.available_width() - SCROLL_GUTTER).clamp(300.0, CARD_MAX_W);
+                        ollama_card(ui, &mut cx, state, settings, width, &mut change);
+                        downloads_card(ui, &mut cx, state, settings, width, &mut change);
+                        cached_card(ui, &mut cx, state, width);
+                        hugging_face_card(ui, &mut cx, state, settings, width, &mut change);
+                        agents_card(ui, &mut cx, state, settings, width, &mut change);
+                        tools_card(ui, &mut cx, state, settings, width, &mut change);
+                        hardware_card(ui, &mut cx, state, settings, width, &mut change);
+                        if cx.searching() && cx.sections.is_empty() {
+                            ui.add_space(16.0);
+                            ui.label(
+                                RichText::new("No setting matches that search.")
+                                    .size(13.0)
+                                    .color(cx.t.fg3),
+                            );
+                        }
+                    }));
+                },
+            );
         });
         run_warning(ui, &mut cx, state, settings, &mut change);
-        #[cfg(test)]
-        {
-            self.probe.viewport = Some(shown.inner_rect);
-            self.probe.content_height = shown.content_size.y;
-            self.probe.max_offset = (shown.content_size.y - shown.inner_rect.height()).max(0.0);
+        self.sections = std::mem::take(&mut cx.sections);
+        if let Some(offset) = jump {
+            self.pending_scroll = Some(offset);
+            ui.ctx().request_repaint();
         }
-        let _ = shown;
+        if let Some(shown) = shown {
+            self.scroll_y = shown.state.clamped_offset().y;
+            #[cfg(test)]
+            {
+                self.probe.viewport = Some(shown.inner_rect);
+                self.probe.content_height = shown.content_size.y;
+                self.probe.max_offset = (shown.content_size.y - shown.inner_rect.height()).max(0.0);
+            }
+        }
         change
     }
+}
+
+/// The narrow column of heading links: one per section on the page, the one
+/// being read in the theme colour. Returns the offset to scroll to when one
+/// is clicked.
+fn heading_links(
+    ui: &mut egui::Ui,
+    cx: &mut Cx,
+    sections: &[(String, f32)],
+    scroll_y: f32,
+) -> Option<f32> {
+    let t = cx.t;
+    let mut jump = None;
+    ui.add_space(14.0);
+    let current = sections
+        .iter()
+        .rposition(|(_, y)| *y <= scroll_y + 40.0)
+        .unwrap_or(0);
+    for (i, (title, y)) in sections.iter().enumerate() {
+        let on = i == current;
+        let (rect, resp) = ui.allocate_exact_size(vec2(NAV_W - 12.0, 28.0), Sense::click());
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let colour = if on {
+            t.accent
+        } else if resp.hovered() {
+            t.fg
+        } else {
+            t.fg2
+        };
+        let font = if on {
+            semibold(13.5)
+        } else {
+            egui::FontId::proportional(13.5)
+        };
+        ui.painter().text(
+            egui::pos2(rect.left() + 24.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            title,
+            font,
+            colour,
+        );
+        cx.rec(&format!("link-{title}"), rect);
+        if resp.clicked() {
+            jump = Some(*y);
+        }
+    }
+    jump
 }
 
 /// Draws the Settings view in the central panel, applies what changed and
@@ -184,11 +304,7 @@ impl SettingsView {
 pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>) {
     let t = tokens(ui);
     egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(t.surface)
-                .inner_margin(Margin::symmetric(24, 20)),
-        )
+        .frame(egui::Frame::new().fill(t.surface))
         .show(ui, |ui| {
             let change = app.settings_view.show(ui, &mut app.settings);
             out.extend(app.apply_change(change, ui.ctx()));
@@ -207,36 +323,49 @@ pub fn forget_token_field(ctx: &egui::Context, state: &mut SettingsState) {
     ctx.data_mut(|d| d.remove::<egui::text_edit::TextEditState>(token_field_id()));
 }
 
-fn header(ui: &mut egui::Ui, state: &SettingsState, cx: &Cx) {
-    ui.label(RichText::new("Settings").font(semibold(20.0)));
-    ui.horizontal_wrapped(|ui| {
-        ui.label(
-            RichText::new("Changes apply immediately.")
-                .size(13.0)
-                .color(cx.t.fg3),
-        );
-        match &state.save {
-            SaveIndicator::Idle => {}
-            SaveIndicator::Saving => {
-                ui.label(RichText::new("Saving…").size(13.0).color(cx.t.fg3));
-            }
-            SaveIndicator::Saved { .. } => {
-                ui.label(RichText::new("Saved").size(13.0).color(cx.t.ok));
-            }
-            SaveIndicator::Failed(e) => {
-                ui.label(
-                    RichText::new(format!("Could not save settings: {e}"))
-                        .size(13.0)
-                        .color(bad(cx.dark)),
-                );
-            }
-        }
-    });
+/// The band across the top: the title, the search box and the save state.
+fn header(ui: &mut egui::Ui, t: &Tokens, state: &SettingsState, query: &mut String) {
+    let dark = ui.visuals().dark_mode;
+    let rect = egui::Frame::new()
+        .fill(t.head_band())
+        .inner_margin(Margin::symmetric(24, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let size = vec2(ui.available_width(), crate::sidebar::BAND_H);
+            ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+                ui.label(RichText::new("Settings").font(semibold(18.0)).color(t.fg));
+                ui.add_space(16.0);
+                let room = SEARCH_W.min(ui.available_width() * 0.5);
+                ui.allocate_ui(vec2(room, 32.0), |ui| {
+                    crate::widgets::search_field(ui, query, "Search settings");
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let (text, colour) = match &state.save {
+                        SaveIndicator::Idle => {
+                            ("Changes apply immediately".to_string(), t.band_ink2())
+                        }
+                        SaveIndicator::Saving => ("Saving…".to_string(), t.band_ink2()),
+                        SaveIndicator::Saved { .. } => ("Saved".to_string(), t.ok),
+                        SaveIndicator::Failed(e) => {
+                            (format!("Could not save settings: {e}"), bad(dark))
+                        }
+                    };
+                    ui.add(
+                        egui::Label::new(RichText::new(text).size(12.5).color(colour)).truncate(),
+                    );
+                });
+            });
+        })
+        .response
+        .rect;
+    ui.painter()
+        .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, t.line));
 }
 
 // ---- scaffold: cards and rows ----
 
-/// A bordered card with an uppercase heading band; `body` adds the rows.
+/// A section: a heading with a thin rule in the theme colour, then its rows.
+/// While searching the heading waits for the first row that matches.
 fn card(
     ui: &mut egui::Ui,
     cx: &mut Cx,
@@ -244,42 +373,39 @@ fn card(
     width: f32,
     body: impl FnOnce(&mut egui::Ui, &mut Cx),
 ) {
-    let r = egui::Frame::new()
-        .fill(cx.t.surface)
-        .stroke(Stroke::new(1.0, cx.t.line))
-        .corner_radius(CARD_RADIUS)
-        .show(ui, |ui| {
-            ui.set_width(width - 2.0);
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let (band, _) = ui.allocate_exact_size(vec2(width - 2.0, HEAD_H), Sense::hover());
-            let top_round = CARD_RADIUS as u8 - 1;
-            ui.painter().rect_filled(
-                band,
-                CornerRadius {
-                    nw: top_round,
-                    ne: top_round,
-                    sw: 0,
-                    se: 0,
-                },
-                cx.t.surface2,
+    cx.heading_drawn = false;
+    let start = ui.cursor().top();
+    if cx.searching() {
+        cx.pending = Some(title.to_string());
+    } else {
+        heading(ui, cx, title, width);
+    }
+    ui.spacing_mut().item_spacing.y = 0.0;
+    body(ui, cx);
+    cx.pending = None;
+    if cx.heading_drawn {
+        #[cfg(test)]
+        {
+            let rect = Rect::from_min_max(
+                egui::pos2(ui.max_rect().left(), start),
+                egui::pos2(ui.max_rect().left() + width, ui.cursor().top()),
             );
-            ui.painter()
-                .hline(band.x_range(), band.bottom(), Stroke::new(1.0, cx.t.line));
-            ui.painter().text(
-                egui::pos2(band.left() + ROW_PAD_X, band.center().y),
-                Align2::LEFT_CENTER,
-                title.to_uppercase(),
-                semibold(12.0),
-                cx.t.fg2,
-            );
-            body(ui, cx);
-        })
-        .response
-        .rect;
-    #[cfg(test)]
-    cx.probe.cards.push((title.to_string(), r));
-    let _ = r;
-    ui.add_space(CARDS_GAP);
+            cx.probe.cards.push((title.to_string(), rect));
+        }
+        ui.add_space(CARDS_GAP);
+    }
+    let _ = start;
+}
+
+fn heading(ui: &mut egui::Ui, cx: &mut Cx, title: &str, width: f32) {
+    cx.heading_drawn = true;
+    cx.sections
+        .push((title.to_string(), ui.cursor().top() - cx.content_top));
+    ui.label(RichText::new(title).font(semibold(16.0)).color(cx.t.fg));
+    ui.add_space(4.0);
+    let (rule, _) = ui.allocate_exact_size(vec2(width, 2.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rule, 1.0, cx.t.accent.gamma_multiply(0.3));
 }
 
 /// One settings row: label and help on the left, the control on the right.
@@ -294,6 +420,13 @@ fn row(
     last: bool,
     control: impl FnOnce(&mut egui::Ui, &mut Cx, f32),
 ) {
+    if !cx.matches(label, help) {
+        return;
+    }
+    if let Some(title) = cx.pending.take() {
+        let w = ui.available_width().min(CARD_MAX_W);
+        heading(ui, cx, &title, w);
+    }
     let width = ui.available_width();
     let ctrl_w = CTRL_W.min((width - 2.0 * ROW_PAD_X - COL_GAP - LABEL_MIN_W).max(160.0));
     let left_w = width - 2.0 * ROW_PAD_X - COL_GAP - ctrl_w;
@@ -587,31 +720,35 @@ fn downloads_card(
 
 fn cached_card(ui: &mut egui::Ui, cx: &mut Cx, state: &mut SettingsState, width: f32) {
     card(ui, cx, "Cached files", width, |ui, cx| {
-        match &state.cached {
-            CachedStatus::Loading => {
-                ui.label(
-                    RichText::new("Reading the staging folder…")
-                        .size(13.0)
-                        .color(cx.t.fg3),
-                );
-            }
-            CachedStatus::Error(e) => {
-                ui.label(
-                    RichText::new(format!("Could not read the cached files. {e}"))
-                        .size(13.0)
-                        .color(bad(cx.dark)),
-                );
-            }
-            CachedStatus::Loaded(rows) => {
-                for r in rows.iter().take(CACHED_LISTED) {
-                    cached_row(ui, cx, r);
-                }
-                if rows.len() > CACHED_LISTED {
+        if cx.searching() {
+            // Only the Clear row can match a search.
+        } else {
+            match &state.cached {
+                CachedStatus::Loading => {
                     ui.label(
-                        RichText::new(format!("and {} more", rows.len() - CACHED_LISTED))
-                            .size(12.0)
+                        RichText::new("Reading the staging folder…")
+                            .size(13.0)
                             .color(cx.t.fg3),
                     );
+                }
+                CachedStatus::Error(e) => {
+                    ui.label(
+                        RichText::new(format!("Could not read the cached files. {e}"))
+                            .size(13.0)
+                            .color(bad(cx.dark)),
+                    );
+                }
+                CachedStatus::Loaded(rows) => {
+                    for r in rows.iter().take(CACHED_LISTED) {
+                        cached_row(ui, cx, r);
+                    }
+                    if rows.len() > CACHED_LISTED {
+                        ui.label(
+                            RichText::new(format!("and {} more", rows.len() - CACHED_LISTED))
+                                .size(12.0)
+                                .color(cx.t.fg3),
+                        );
+                    }
                 }
             }
         }
