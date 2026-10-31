@@ -803,14 +803,33 @@ fn the_disk_display_is_on_a_white_strip() {
     let list = app.state_mut().browse.probe.list.unwrap();
     let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
     let shapes = painted(&mut app, &mut h, size);
-    let strip = shapes.iter().any(|s| match s {
-        egui::epaint::Shape::Rect(r) => {
-            r.fill == t.surface
+    let strip = shapes.iter().find_map(|s| match s {
+        egui::epaint::Shape::Rect(r)
+            if r.fill == t.surface
                 && r.rect.width() >= list.width() - 30.0
                 && r.rect.height() > 70.0
-                && list.contains_rect(r.rect.shrink(1.0))
+                && list.contains_rect(r.rect.shrink(1.0)) =>
+        {
+            Some(r.rect)
         }
-        _ => false,
+        _ => None,
     });
-    assert!(strip, "no white strip behind the disk display");
+    let strip = strip.expect("no white strip behind the disk display");
+    // It starts right under the band, with no strip of the list's tint between.
+    let band = shapes
+        .iter()
+        .find_map(|s| match s {
+            egui::epaint::Shape::Rect(r)
+                if r.fill == t.side_band() && (r.rect.top() - list.top()).abs() < 2.0 =>
+            {
+                Some(r.rect)
+            }
+            _ => None,
+        })
+        .expect("the band");
+    assert!(
+        (strip.top() - band.bottom()).abs() < 1.0,
+        "a gap of {} px between the band and the strip",
+        strip.top() - band.bottom()
+    );
 }

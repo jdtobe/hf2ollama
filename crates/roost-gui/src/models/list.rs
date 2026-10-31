@@ -19,6 +19,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
     let frame = egui::Frame::new().fill(t.side_list());
     let wanted = app.settings.sidebar_width;
     let (rect, width) = crate::sidebar::show(ui, wanted, frame, t.side_edge(), |ui| {
+        // The band, the disk strip and the list meet with no gap between them.
+        ui.spacing_mut().item_spacing.y = 0.0;
         egui::Frame::new()
             .fill(t.side_band())
             .inner_margin(Margin::same(12))
