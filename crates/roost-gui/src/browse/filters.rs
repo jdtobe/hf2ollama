@@ -296,18 +296,9 @@ pub fn sort_button(ui: &mut egui::Ui, app: &mut AppState) {
     let resp = resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!("Sort: {}", sort_label(f.sort)));
-    let fill = if resp.hovered() {
-        t.surface2
-    } else {
-        t.surface
-    };
-    ui.painter().rect(
-        rect,
-        8.0,
-        fill,
-        egui::Stroke::new(1.0, t.line),
-        egui::StrokeKind::Inside,
-    );
+    let (fill, stroke) = crate::widgets::icon_button_look(&t, resp.hovered());
+    ui.painter()
+        .rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
     crate::icons::paint(ui.painter(), rect, crate::icons::Icon::Sort, t.fg2);
     egui::Popup::from_toggle_button_response(&resp)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
@@ -350,20 +341,15 @@ pub fn filter_button(ui: &mut egui::Ui, app: &mut AppState) {
             } else {
                 format!("Filters ({n} on)")
             });
-        let fill = if n > 0 {
-            t.accent_soft
-        } else if resp.hovered() {
-            t.surface2
+        // With filters on it keeps its theme-colour look; otherwise it is the
+        // same as the sort button and the buttons in Chat and Work.
+        let (fill, stroke) = if n > 0 {
+            (t.accent_soft, egui::Stroke::new(1.0, t.accent))
         } else {
-            t.surface
+            crate::widgets::icon_button_look(&t, resp.hovered())
         };
-        ui.painter().rect(
-            rect,
-            8.0,
-            fill,
-            egui::Stroke::new(1.0, if n > 0 { t.accent } else { t.line }),
-            egui::StrokeKind::Inside,
-        );
+        ui.painter()
+            .rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
         crate::icons::paint(
             ui.painter(),
             rect,

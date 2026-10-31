@@ -147,6 +147,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - Installed models are two lines: the name with its size at the right, then where it came from, its parameters and its quantisation (`unsloth · 27.3B · Q4_K_M`). The monospace names and the pills are gone.
 - An installed model's page has the same header as a chat: a 44 px tile (with a small neural-net icon), the name and facts in the deeper tint, and Chat, Work and delete at the right. Work is outlined and delete is a quiet icon that turns red when pointed at. The details sit on the page background and About stays on white.
 
+### Same hover on the icon buttons
+
+- The sort and filter buttons on the Models tab now get the same hover as the new-chat buttons in Chat and Work: a faint outline in the theme colour. The look is one shared function, so they stay the same.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

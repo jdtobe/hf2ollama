@@ -833,3 +833,41 @@ fn the_disk_display_is_on_a_white_strip() {
         strip.top() - band.bottom()
     );
 }
+
+#[test]
+fn the_sort_and_filter_buttons_get_the_same_hover_as_the_chat_buttons() {
+    let size = (1180.0, 820.0);
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    let want = crate::widgets::icon_button_look(&t, true);
+    for which in ["sort", "filter"] {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().browse.probe.clone();
+        let rect = if which == "sort" {
+            p.sort_button
+        } else {
+            p.filters_chip
+        }
+        .unwrap();
+        // Pointed at: the fill and outline of the Chat and Work buttons.
+        h.frame(
+            vec2(size.0, size.1),
+            vec![egui::Event::PointerMoved(rect.center())],
+            |ui| app.show(ui),
+        );
+        let shapes = painted(&mut app, &mut h, size);
+        let hot = shapes.iter().any(|s| match s {
+            egui::epaint::Shape::Rect(r) => {
+                (r.rect.center() - rect.center()).length() < 1.0
+                    && r.fill == want.0
+                    && r.stroke.color == want.1.color
+            }
+            _ => false,
+        });
+        assert!(
+            hot,
+            "{which}: not drawn like the Chat buttons when pointed at"
+        );
+    }
+}
