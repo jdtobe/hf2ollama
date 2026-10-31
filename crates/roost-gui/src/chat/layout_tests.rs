@@ -4026,5 +4026,20 @@ fn the_session_kind_glyph_is_larger_than_the_header_buttons_icons() {
             })
             .fold(0.0_f32, f32::max);
         assert!(widest >= 17.0, "{size:?}: the glyph is {widest} px wide");
+        // And its box is bigger than the buttons beside the title.
+        let tile = shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::epaint::Shape::Rect(r) if r.rect.right() <= title.left() => {
+                    Some(r.rect.width())
+                }
+                _ => None,
+            })
+            .fold(0.0_f32, f32::max);
+        let button = p.delete_button.clone().unwrap().0.width();
+        assert!(
+            tile >= button + 6.0,
+            "{size:?}: the tile is {tile} px, the buttons {button} px"
+        );
     }
 }

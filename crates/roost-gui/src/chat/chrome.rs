@@ -72,7 +72,9 @@ pub(super) enum StatusKind {
 /// Side of the rename pencil beside the title.
 const PENCIL_W: f32 = 24.0;
 /// How much larger than the usual 16 px the session kind's glyph is drawn.
-const TILE_ICON_SCALE: f32 = 1.5;
+const TILE_ICON_SCALE: f32 = 1.6;
+/// The session kind's tile in the header: bigger than the buttons beside it.
+const TILE_SIZE: f32 = 40.0;
 /// How far the folder under the title is set in from the title's left edge.
 const PATH_INSET: f32 = 6.0;
 
@@ -135,9 +137,8 @@ pub(super) fn header(
         start - 8.0
     };
     // Pull the row up so the padding is the same above and below it in the
-    // band (an agent's row is taller: it has the folder under the title).
-    let tall = s.mode == SessionMode::Agent && s.workspace.is_some();
-    let row_h = if tall { HEADER_ROW_H } else { 32.0 };
+    // band.
+    let row_h = HEADER_ROW_H;
     ui.add_space(band_top + (super::view::BAND_H - row_h) / 2.0 - start);
     // A row of a set height, so the buttons and status are centred on it.
     // The row reaches out over the pane's margin, so the buttons sit as far
@@ -226,11 +227,11 @@ fn title_block(
     shown: &str,
 ) {
     let agent = s.mode == SessionMode::Agent;
-    let (tile, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+    let (tile, _) = ui.allocate_exact_size(egui::vec2(TILE_SIZE, TILE_SIZE), egui::Sense::hover());
     // A quiet tile: the theme colour is kept for the one thing selected.
     ui.painter().rect(
         tile,
-        9.0,
+        11.0,
         t.surface,
         egui::Stroke::new(1.0, t.line),
         egui::StrokeKind::Inside,
