@@ -118,6 +118,10 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - In the "Let agents run commands?" warning, the "Keep it off" button was filled with the theme colour, which is also the colour of an ON switch, so it read like "on". It is now a neutral button (still the default one, so Enter never turns commands on), and "Turn on" keeps its red outline.
 
+### Flatter edges
+
+- The sidebar (Chat, Work and Models) no longer has a border on all four sides, and the top bar, the status bar, the downloads dock and the menu bar no longer outline themselves. Each bar keeps the single line the panel draws along the edge that faces the content, and the sidebar keeps one divider on its right, so the top and bottom edges no longer double up with the bars above and below.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

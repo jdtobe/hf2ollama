@@ -469,11 +469,11 @@ pub(crate) fn bad(dark: bool) -> Color32 {
     }
 }
 
-pub(crate) fn panel_frame(fill: Color32, line: Color32, margin: Margin) -> egui::Frame {
-    egui::Frame::new()
-        .fill(fill)
-        .inner_margin(margin)
-        .stroke(Stroke::new(1.0, line))
+/// A bar's frame: flat, with no outline. The panel itself draws one line
+/// along the edge that faces the content, so stacked bars and the sidebar
+/// beside them never double up.
+pub(crate) fn panel_frame(fill: Color32, margin: Margin) -> egui::Frame {
+    egui::Frame::new().fill(fill).inner_margin(margin)
 }
 
 /// What Ollama holds in memory, opened from the status pill.
@@ -814,7 +814,7 @@ impl App {
         let mut pill_requests: Vec<BackendRequest> = Vec::new();
         let mut theme_actions: Vec<crate::menu::MenuAction> = Vec::new();
         egui::Panel::top("top")
-            .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 10)))
+            .frame(panel_frame(t.surface, Margin::symmetric(16, 10)))
             .show(ui, |ui| {
                 // A fixed-height row: items are centred on one line instead
                 // of on the height of whatever was added before them.
@@ -931,7 +931,7 @@ impl App {
         // status bar leaves it out. The Ollama store path is omitted until the
         // server reports it.
         egui::Panel::bottom("status")
-            .frame(panel_frame(t.surface, t.line, Margin::symmetric(16, 6)))
+            .frame(panel_frame(t.surface, Margin::symmetric(16, 6)))
             .show(ui, |ui| {
                 let row = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;

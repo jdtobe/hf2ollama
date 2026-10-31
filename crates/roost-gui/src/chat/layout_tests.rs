@@ -3680,3 +3680,105 @@ fn a_tool_call_written_as_text_gets_a_banner_without_a_button() {
         );
     }
 }
+
+// ------------------------------------------------------ a flat sidebar
+
+/// Every shape drawn in one frame, with groups flattened.
+fn painted(app: &mut App, h: &mut Harness, size: (f32, f32)) -> Vec<egui::epaint::Shape> {
+    fn flat(shape: &egui::epaint::Shape, into: &mut Vec<egui::epaint::Shape>) {
+        match shape {
+            egui::epaint::Shape::Vec(items) => items.iter().for_each(|s| flat(s, into)),
+            other => into.push(other.clone()),
+        }
+    }
+    let input = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(size.0, size.1))),
+        ..Default::default()
+    };
+    let out = h.ctx().run_ui(input, |ui| app.show(ui));
+    let mut shapes = Vec::new();
+    for clipped in &out.shapes {
+        flat(&clipped.shape, &mut shapes);
+    }
+    out.drop_without_applying_deltas();
+    shapes
+}
+
+#[test]
+fn the_sidebar_has_no_outline_to_double_up_with_the_bars_and_one_divider_on_its_right() {
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        // The panel is the rail plus the frame's 12 px margin on every side.
+        let rail = f.app.state_mut().chat_ui.probe.rail.unwrap();
+        let panel = rail.expand(12.0);
+        let shapes = painted(&mut f.app, &mut h, size);
+        let outlined = shapes.iter().any(|s| match s {
+            egui::epaint::Shape::Rect(r) => {
+                r.stroke.width > 0.0
+                    && r.stroke.color.a() > 0
+                    && (r.rect.min - panel.min).length() < 2.0
+                    && (r.rect.max - panel.max).length() < 2.0
+            }
+            _ => false,
+        });
+        assert!(!outlined, "{size:?}: the sidebar draws its own outline");
+        // One vertical divider along its right edge.
+        let divider = shapes.iter().any(|s| match s {
+            egui::epaint::Shape::LineSegment { points, stroke } => {
+                stroke.width > 0.0
+                    && (points[0].x - panel.right()).abs() < 2.0
+                    && (points[1].x - panel.right()).abs() < 2.0
+                    && (points[1].y - points[0].y).abs() > panel.height() * 0.5
+            }
+            _ => false,
+        });
+        assert!(divider, "{size:?}: no divider on the sidebar's right edge");
+    }
+}
+
+#[test]
+fn no_two_lines_run_side_by_side_across_the_window() {
+    // A bar's border next to another bar's, or next to the sidebar's, read as
+    // one thick double line. Every long horizontal line is at least 4 px from
+    // the next one.
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        let mut ys: Vec<f32> = Vec::new();
+        for shape in painted(&mut f.app, &mut h, size) {
+            match shape {
+                egui::epaint::Shape::LineSegment { points, stroke }
+                    if stroke.width > 0.0
+                        && (points[1].y - points[0].y).abs() < 0.5
+                        && (points[1].x - points[0].x).abs() > size.0 * 0.6 =>
+                {
+                    ys.push(points[0].y);
+                }
+                // The top and bottom edges of an outlined bar count as lines.
+                egui::epaint::Shape::Rect(r)
+                    if r.stroke.width > 0.0
+                        && r.stroke.color.a() > 0
+                        && r.rect.width() > size.0 * 0.6 =>
+                {
+                    ys.push(r.rect.top());
+                    ys.push(r.rect.bottom());
+                }
+                _ => {}
+            }
+        }
+        ys.sort_by(f32::total_cmp);
+        assert!(
+            ys.len() >= 2,
+            "{size:?}: the bars still have their lines: {ys:?}"
+        );
+        for pair in ys.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= 4.0,
+                "{size:?}: doubled lines at {pair:?}"
+            );
+        }
+    }
+}
