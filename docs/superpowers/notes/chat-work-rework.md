@@ -117,3 +117,5 @@ Rows, as built: `IndexRow` gains `last` (the start of the last user or assistant
 ## A flat theme (user, 2026-10-30)
 
 "We should expect that everything is shown with a flat theme and not bordered everywhere." Done so far (`fix/flat-sidebar`): the sidebar frame and the bars have no outline of their own; each bar keeps the one line the panel draws along its inner edge. Still bordered, for a later pass if wanted: message cards, tool cards, the settings cards and pills, the header band's bottom line. The user also floated giving the top bar the main theme colour (comps to be shown before building).
+
+**Top bar (2026-10-30):** built as comp C (a 4 px theme-colour strip along the top edge, flat tabs, an underline under the active one; `segmented_nav_rect` in `widgets.rs`, the strip in `app.rs`). The user will look at it on a real screen and **fall back to comp B (a soft tint of the theme colour for the whole bar, the active tab as a filled theme-colour pill) if they do not like it**. Comp A (a solid theme-colour bar) was set aside: the theme colour is also the colour of an ON switch and the primary buttons, so a solid bar would blunt them.

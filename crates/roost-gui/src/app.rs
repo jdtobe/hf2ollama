@@ -816,6 +816,18 @@ impl App {
         egui::Panel::top("top")
             .frame(panel_frame(t.surface, Margin::symmetric(16, 10)))
             .show(ui, |ui| {
+                // A strip of the theme colour along the top edge, drawn in the
+                // bar's own top padding so the bar keeps its height.
+                let top = ui.max_rect().top() - 10.0;
+                let screen = ui.ctx().content_rect();
+                ui.ctx().layer_painter(ui.layer_id()).rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(screen.left(), top),
+                        egui::pos2(screen.right(), top + 4.0),
+                    ),
+                    0.0,
+                    t.accent,
+                );
                 // A fixed-height row: items are centred on one line instead
                 // of on the height of whatever was added before them.
                 let row = egui::Layout::left_to_right(egui::Align::Center);
@@ -2144,6 +2156,129 @@ mod tests {
             h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
         }
         (app, h)
+    }
+
+    /// The shapes painted in one more frame, with groups flattened.
+    fn painted_now(
+        app: &mut App,
+        h: &mut crate::browse::test_util::Harness,
+    ) -> Vec<egui::epaint::Shape> {
+        fn flat(shape: &egui::epaint::Shape, into: &mut Vec<egui::epaint::Shape>) {
+            match shape {
+                egui::epaint::Shape::Vec(items) => items.iter().for_each(|s| flat(s, into)),
+                other => into.push(other.clone()),
+            }
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                vec2(1180.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let out = h.ctx().run_ui(input, |ui| app.show(ui));
+        let mut shapes = Vec::new();
+        for clipped in &out.shapes {
+            flat(&clipped.shape, &mut shapes);
+        }
+        out.drop_without_applying_deltas();
+        shapes
+    }
+
+    fn near(a: egui::Color32, b: egui::Color32) -> bool {
+        (a.r() as i32 - b.r() as i32).abs() < 4
+            && (a.g() as i32 - b.g() as i32).abs() < 4
+            && (a.b() as i32 - b.b() as i32).abs() < 4
+    }
+
+    #[test]
+    fn the_top_bar_has_a_strip_of_the_theme_colour_along_its_top_edge() {
+        let (mut app, mut h) = nav_app(View::Chat);
+        let accent =
+            crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false).accent;
+        let logo = app
+            .state
+            .top_bar
+            .iter()
+            .find(|(n, _)| *n == "logo")
+            .map(|(_, r)| *r)
+            .unwrap();
+        let strip = painted_now(&mut app, &mut h)
+            .into_iter()
+            .find_map(|s| match s {
+                egui::epaint::Shape::Rect(r)
+                    if near(r.fill, accent)
+                        && r.rect.width() >= 1179.0
+                        && (r.rect.height() - 4.0).abs() < 0.5 =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            });
+        let strip = strip.expect("a strip of the theme colour across the window");
+        assert!(strip.top() <= 1.0, "at the top edge: {strip:?}");
+        assert!(
+            strip.bottom() <= logo.top(),
+            "above the logo: {strip:?} {logo:?}"
+        );
+    }
+
+    #[test]
+    fn the_active_tab_has_one_underline_in_the_theme_colour_and_it_follows_the_tab() {
+        let accent =
+            crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false).accent;
+        let underline_x = |app: &mut App, h: &mut crate::browse::test_util::Harness| {
+            let lines: Vec<f32> = painted_now(app, h)
+                .into_iter()
+                .filter_map(|s| match s {
+                    egui::epaint::Shape::LineSegment { points, stroke }
+                        if stroke.width == 2.0
+                            && near(stroke.color, accent)
+                            && (points[0].y - points[1].y).abs() < 0.1
+                            && points[0].y < 60.0 =>
+                    {
+                        Some((points[0].x + points[1].x) / 2.0)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(lines.len(), 1, "one underline: {lines:?}");
+            lines[0]
+        };
+        let (mut app, mut h) = nav_app(View::Chat);
+        let nav = app
+            .state
+            .top_bar
+            .iter()
+            .find(|(n, _)| *n == "nav")
+            .map(|(_, r)| *r)
+            .unwrap();
+        let chat_x = underline_x(&mut app, &mut h);
+        assert!(
+            nav.contains(egui::pos2(chat_x, nav.center().y)),
+            "under a tab"
+        );
+        app.state.select(View::Models);
+        for _ in 0..3 {
+            h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
+        }
+        let models_x = underline_x(&mut app, &mut h);
+        assert!(
+            models_x > chat_x + 60.0,
+            "moved right: {chat_x} -> {models_x}"
+        );
+        // The gear is not a tab: no underline under the tabs on Settings.
+        app.state.select(View::Settings);
+        for _ in 0..3 {
+            h.frame(vec2(1180.0, 820.0), vec![], |ui| app.show(ui));
+        }
+        let none = painted_now(&mut app, &mut h).into_iter().any(|s| {
+            matches!(&s, egui::epaint::Shape::LineSegment { points, stroke }
+                if stroke.width == 2.0
+                    && near(stroke.color, accent)
+                    && nav.contains(points[0]))
+        });
+        assert!(!none, "Settings is not a tab");
     }
 
     fn click_at(app: &mut App, h: &mut crate::browse::test_util::Harness, at: egui::Pos2) {
