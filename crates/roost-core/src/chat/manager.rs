@@ -156,6 +156,8 @@ pub(super) struct Live {
     pub(super) allowed_files: std::collections::HashSet<String>,
     /// Command prefixes the user allowed for as long as this chat is open.
     pub(super) allowed_prefixes: std::collections::HashSet<String>,
+    /// Hosts the user allowed web fetches from, for this chat only.
+    pub(super) allowed_hosts: std::collections::HashSet<String>,
 }
 
 impl Live {
@@ -169,6 +171,7 @@ impl Live {
             agent: None,
             allowed_files: Default::default(),
             allowed_prefixes: Default::default(),
+            allowed_hosts: Default::default(),
         }
     }
 }

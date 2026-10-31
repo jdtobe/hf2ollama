@@ -38,6 +38,8 @@ pub enum Family {
     Shell,
     /// Asking the user questions.
     Ask,
+    /// Reading the web.
+    Web,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +49,8 @@ pub enum Capability {
     Run,
     /// Asking the user a question. Always allowed: it changes nothing.
     Ask,
+    /// Fetching a page from the internet: the one thing that leaves the machine.
+    Fetch,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +69,7 @@ impl Family {
             Family::Files => "Files",
             Family::Shell => "Shell",
             Family::Ask => "Ask you",
+            Family::Web => "Web",
         }
     }
 }
@@ -76,6 +81,7 @@ impl Capability {
             Capability::Write => "Write",
             Capability::Run => "Run",
             Capability::Ask => "Ask",
+            Capability::Fetch => "Web",
         }
     }
 }
@@ -86,12 +92,14 @@ pub fn capability_key(family: Family, capability: Capability) -> String {
         Family::Files => "files",
         Family::Shell => "shell",
         Family::Ask => "ask",
+        Family::Web => "web",
     };
     let c = match capability {
         Capability::Read => "read",
         Capability::Write => "write",
         Capability::Run => "run",
         Capability::Ask => "ask",
+        Capability::Fetch => "fetch",
     };
     format!("{f}.{c}")
 }
@@ -101,9 +109,11 @@ pub fn capability_key(family: Family, capability: Capability) -> String {
 /// Whatever a session's file says, `permission_of` never goes above this.
 pub fn max_permission(_family: Family, capability: Capability) -> Permission {
     match capability {
-        Capability::Read | Capability::Write | Capability::Run | Capability::Ask => {
-            Permission::Auto
-        }
+        Capability::Read
+        | Capability::Write
+        | Capability::Run
+        | Capability::Ask
+        | Capability::Fetch => Permission::Auto,
     }
 }
 
@@ -117,6 +127,8 @@ pub fn default_permission(_family: Family, capability: Capability) -> Permission
         Capability::Run => Permission::Off,
         // Asking changes nothing, so it needs no permission.
         Capability::Ask => Permission::Auto,
+        // The web is off until the user turns it on for an agent.
+        Capability::Fetch => Permission::Off,
     }
 }
 
@@ -273,6 +285,13 @@ pub fn specs() -> Vec<ToolSpec> {
             description: super::ask::description(),
             parameters: super::ask::parameters(),
         },
+        ToolSpec {
+            name: super::web::TOOL,
+            family: Family::Web,
+            capability: Capability::Fetch,
+            description: super::web::description(),
+            parameters: super::web::parameters(),
+        },
     ]
 }
 
@@ -394,6 +413,23 @@ pub fn call_tracked(
     run(ws, config, name, args, limits, opts)
 }
 
+/// Whether a call to `name` may run now: the tool exists, is on, and its
+/// capability allows it (or asks, and the user said yes).
+pub fn authorize(
+    config: &EffectiveToolConfig,
+    name: &str,
+    approved: bool,
+) -> Result<(), ToolError> {
+    let spec = specs()
+        .into_iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
+    match check(config, &spec) {
+        Err(ToolError::NeedsApproval(_)) if approved => Ok(()),
+        other => other,
+    }
+}
+
 fn run(
     ws: &Workspace,
     config: &EffectiveToolConfig,
@@ -432,6 +468,13 @@ fn run(
         "search_bytes" => (tools::search_bytes(ws, args, limits), None),
         "write_file" | "edit_file" => write(ws, name, args, undo_room, limits),
         "run_command" => (run_command(ws, args, limits, cancel), None),
+        // Fetched by the chat manager, which can wait for the network.
+        super::web::TOOL => (
+            Err(ToolError::InvalidArguments(
+                "this tool is handled by the app, not run here".into(),
+            )),
+            None,
+        ),
         // Asked through the chat manager, which waits for the user.
         super::ask::TOOL => (
             Err(ToolError::InvalidArguments(
@@ -503,7 +546,8 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_has_six_read_tools_two_write_tools_one_command_tool_and_the_question_tool() {
+    fn the_registry_has_six_read_tools_two_write_tools_a_command_tool_a_web_tool_and_the_question_tool(
+    ) {
         let all = specs();
         assert_eq!(
             names(&all),
@@ -517,13 +561,25 @@ mod tests {
                 "write_file",
                 "edit_file",
                 "run_command",
-                "ask_user"
+                "ask_user",
+                "fetch_url"
             ]
         );
         assert!(all
             .iter()
-            .filter(|s| s.name != "run_command" && s.name != "ask_user")
+            .filter(|s| !["run_command", "ask_user", "fetch_url"].contains(&s.name))
             .all(|s| s.family == Family::Files));
+        let web = all.iter().find(|s| s.name == "fetch_url").unwrap();
+        assert_eq!(
+            (web.family, web.capability),
+            (Family::Web, Capability::Fetch)
+        );
+        assert_eq!(
+            default_permission(Family::Web, Capability::Fetch),
+            Permission::Off,
+            "the web is off until the user turns it on"
+        );
+        assert_eq!(capability_key(Family::Web, Capability::Fetch), "web.fetch");
         let ask = all.iter().find(|s| s.name == "ask_user").unwrap();
         assert_eq!((ask.family, ask.capability), (Family::Ask, Capability::Ask));
         assert_eq!(

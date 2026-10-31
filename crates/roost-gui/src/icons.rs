@@ -29,6 +29,7 @@ pub enum Icon {
     Download,
     Sort,
     Model,
+    Web,
 }
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
@@ -299,6 +300,19 @@ pub fn paint_scaled(painter: &egui::Painter, rect: Rect, icon: Icon, color: Colo
                 stroke,
             ));
             painter.line_segment([p(7.0, 9.0), p(13.5, 2.5)], Stroke::new(2.0, color));
+        }
+        Icon::Web => {
+            // A globe: a circle, the equator and two meridians.
+            painter.circle_stroke(p(8.0, 8.0), 6.0 * scale, stroke);
+            painter.line_segment([p(2.0, 8.0), p(14.0, 8.0)], stroke);
+            painter.add(egui::Shape::line(
+                vec![p(8.0, 2.0), p(10.4, 5.0), p(10.4, 11.0), p(8.0, 14.0)],
+                stroke,
+            ));
+            painter.add(egui::Shape::line(
+                vec![p(8.0, 2.0), p(5.6, 5.0), p(5.6, 11.0), p(8.0, 14.0)],
+                stroke,
+            ));
         }
         Icon::Model => {
             // A small neural net: two nodes, three nodes, two nodes, every

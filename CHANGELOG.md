@@ -161,6 +161,13 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - Each row in the Installed and Hugging Face lists started partway down the one above it, so the dividers and the selected or pointed-at tint were drawn over the row's own text and the spacing looked uneven (the first row was fine and the ones below were not). Rows now follow each other exactly, and the two lines in an installed row are centred in it.
 
+### Agents can read web pages
+
+- A new tool, `fetch_url`, lets an agent fetch one web page and read its text. It is a fourth permission beside R, W and X: a globe pill under the input (off by default, drawn dashed), also in the agent's tools list under "Fetch web pages". The pill steps only between Off and Ask; letting every page through is chosen in the tools list.
+- With Ask, a card shows the exact address and offers Fetch, "Allow <host> in this chat" (that host only, for this chat only; another host, even after a redirect, asks again) and Deny.
+- It fetches over https only, with no user name or password in the address, 20 seconds at most, up to five redirects and a size cap, and returns readable text (no scripts or styles) that is marked as untrusted text from the web. Pages that are not text are refused.
+- Addresses on this computer or the local network are always refused, whatever you answer: `localhost`, private and link-local numbers, names like `.local` or `.lan`, and a name that resolves to one. The check is repeated after every redirect, and the request goes to the address that was checked, so a page cannot steer an agent at Ollama or a router.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

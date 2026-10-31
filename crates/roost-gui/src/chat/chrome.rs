@@ -701,7 +701,7 @@ fn press_of(ui: &egui::Ui, resp: &egui::Response) -> Press {
 pub(super) fn next_permission(cap: Capability, current: Permission) -> Permission {
     match (current, cap) {
         (Permission::Off, _) => Permission::Ask,
-        (Permission::Ask, Capability::Run) => Permission::Off,
+        (Permission::Ask, Capability::Run | Capability::Fetch) => Permission::Off,
         (Permission::Ask, _) => Permission::Auto,
         (Permission::Auto, _) => Permission::Off,
     }
@@ -893,6 +893,9 @@ pub(super) fn permission_pills(
     }
     // Right-to-left: X is placed first, so W and then R end up on its left.
     let mut chips = Vec::new();
+    // The web: always there, off until turned on. It cycles Off and Ask only;
+    // letting every page through is for the tools list.
+    chips.push((Capability::Fetch, Family::Web, 'N', "Fetching web pages"));
     if app.settings.agents_can_run {
         chips.push((Capability::Run, Family::Shell, 'X', "Running commands"));
     }
@@ -936,13 +939,18 @@ pub(super) fn permission_pills(
                 egui::StrokeKind::Inside,
             );
         }
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            letter,
-            semibold(12.0),
-            fg,
-        );
+        if cap == Capability::Fetch {
+            // A globe, not a letter.
+            crate::icons::paint(ui.painter(), rect, Icon::Web, fg);
+        } else {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                letter,
+                semibold(12.0),
+                fg,
+            );
+        }
         let state = match perm {
             Permission::Auto => "allowed without asking",
             Permission::Ask => "asks first",
@@ -950,6 +958,8 @@ pub(super) fn permission_pills(
         };
         let how = if running {
             "locked while a run is active"
+        } else if cap == Capability::Fetch {
+            "click to switch off or ask"
         } else if cap == Capability::Run {
             "click to switch off or ask, hold to allow without asking"
         } else {
@@ -988,6 +998,8 @@ pub(super) fn permission_pills(
                     app.chat_ui.run_allow_from_pill = true;
                 }
             }
+            // The web is never allowed wholesale from the pill.
+            Press::Long if cap == Capability::Fetch => {}
             Press::Long => {
                 if perm != Permission::Auto {
                     out.push(BackendRequest::Chat(ChatCommand::SetCapability(
@@ -1127,7 +1139,7 @@ pub(super) fn agent_settings(
                         app.chat_ui.probe.run_confirm = None;
                         app.chat_ui.probe.tools_heads.clear();
                     }
-                    for family in [Family::Files, Family::Shell, Family::Ask] {
+                    for family in [Family::Files, Family::Shell, Family::Web, Family::Ask] {
                         if family == Family::Shell && !app.settings.agents_can_run {
                             continue;
                         }
@@ -1176,7 +1188,12 @@ fn family_card(
     let note = format!("{on_count} of {} tools on", specs.len());
     settings_card(ui, t, family.label(), &note, |ui| {
         ui.add_enabled_ui(!running, |ui| {
-            for cap in [Capability::Read, Capability::Write, Capability::Run] {
+            for cap in [
+                Capability::Read,
+                Capability::Write,
+                Capability::Run,
+                Capability::Fetch,
+            ] {
                 if !specs.iter().any(|sp| sp.capability == cap) {
                     continue;
                 }
@@ -1216,6 +1233,18 @@ fn family_card(
                             ),
                         ],
                     ),
+                    Capability::Fetch => (
+                        "Fetch web pages",
+                        "reads a page from the internet",
+                        &[
+                            ("Off", "The agent cannot use the web"),
+                            ("Ask", "Ask before each page, showing the address"),
+                            (
+                                "Allow",
+                                "Fetch pages without asking. The text of each page goes to the model; addresses on this computer or your network are always refused",
+                            ),
+                        ],
+                    ),
                 };
                 ui.label(RichText::new(title).font(semibold(13.0)).color(t.fg));
                 ui.label(RichText::new(sub).size(11.5).color(t.fg3));
@@ -1233,7 +1262,7 @@ fn family_card(
                         Capability::Read => app.chat_ui.probe.permission_buttons = rects.clone(),
                         Capability::Write => app.chat_ui.probe.write_buttons = rects.clone(),
                         Capability::Run => app.chat_ui.probe.run_buttons = rects.clone(),
-                        Capability::Ask => {}
+                        Capability::Ask | Capability::Fetch => {}
                     }
                 }
                 let _ = rects;
@@ -1295,6 +1324,7 @@ fn family_card(
                         Capability::Write => 'W',
                         Capability::Run => 'X',
                         Capability::Ask => 'Q',
+                        Capability::Fetch => 'N',
                     };
                     let was_on = on;
                     ui.horizontal(|ui| {
