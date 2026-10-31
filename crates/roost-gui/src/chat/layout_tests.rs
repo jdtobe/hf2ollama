@@ -4058,3 +4058,33 @@ fn the_session_kind_glyph_is_larger_than_the_header_buttons_icons() {
         );
     }
 }
+
+#[test]
+fn the_landing_text_is_centred_in_the_pane_on_chat_and_on_work() {
+    for size in SIZES {
+        for view in [View::Chat, View::Work] {
+            let mut f = fixture_with(0);
+            f.app.state_mut().chat.open = None;
+            f.app.state_mut().view = view;
+            let mut h = Harness::new(false);
+            run(&mut f.app, &mut h, size, 4);
+            let p = f.app.state_mut().chat_ui.probe.clone();
+            let landing = p.landing.expect("the landing panel");
+            let rail = p.rail.unwrap().expand(12.0);
+            let pane = Rect::from_min_max(
+                egui::pos2(rail.right(), rail.top()),
+                egui::pos2(size.0, size.1),
+            );
+            assert!(
+                (landing.center().x - pane.center().x).abs() <= 12.0,
+                "{size:?} {view:?}: {landing:?} is not centred across {pane:?}"
+            );
+            let middle = landing.center().y;
+            assert!(
+                middle > pane.top() + pane.height() * 0.25
+                    && middle < pane.top() + pane.height() * 0.6,
+                "{size:?} {view:?}: {landing:?} is not about the middle of {pane:?}"
+            );
+        }
+    }
+}

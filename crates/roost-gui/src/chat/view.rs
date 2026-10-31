@@ -24,6 +24,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Margins of the conversation pane (a header band reaches over them).
 pub(super) const PANE_MARGIN_X: f32 = 20.0;
 pub(super) const PANE_MARGIN_Y: f32 = 16.0;
+const LANDING_W: f32 = 460.0;
 pub(super) const BAND_H: f32 = crate::sidebar::BAND_H;
 const ROW_H: f32 = 46.0;
 /// The tallest the input grows before it scrolls.
@@ -186,6 +187,8 @@ pub struct ChatProbe {
     /// Where the status text and the title were painted in the header.
     pub status_rect: Option<egui::Rect>,
     pub title_rect: Option<egui::Rect>,
+    /// The title and text of the landing panel, when it is showing.
+    pub landing: Option<egui::Rect>,
     pub path_rect: Option<egui::Rect>,
     pub rows: Vec<(SessionId, egui::Rect)>,
     pub send_button: Option<(egui::Rect, &'static str)>,
@@ -1108,10 +1111,24 @@ fn pane(
                     "Choose a conversation on the left, or start a new one. Incognito chats are never saved.",
                 )
             };
-            ui.add_space(24.0);
-            ui.label(RichText::new(title).font(semibold(18.0)));
-            ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new(text).color(t.fg2)).wrap());
+            // Centred in the pane, a little above the middle.
+            let wide = ui.available_width().min(LANDING_W);
+            ui.add_space((ui.available_height() * 0.5 - 70.0).max(24.0));
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(wide);
+                let head = ui.label(RichText::new(title).font(semibold(18.0)));
+                ui.add_space(6.0);
+                let body = ui.add(
+                    egui::Label::new(RichText::new(text).color(t.fg2))
+                        .wrap()
+                        .halign(Align::Center),
+                );
+                #[cfg(test)]
+                {
+                    app.chat_ui.probe.landing = Some(head.rect.union(body.rect));
+                }
+                let _ = (head, body);
+            });
         }
         return;
     };

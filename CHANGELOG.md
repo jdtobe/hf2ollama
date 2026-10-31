@@ -138,6 +138,7 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 - The session tile in the header is neutral. The R, W and X permission pills stay one colour and change shape instead: solid means allowed, outlined means asks first, dashed means off. Running commands, when allowed, is solid red.
 - A reply that only thought, with no words, is one quiet "Thinking" line instead of an empty card, and it no longer reserves the empty row of icons beneath it.
 - The downloads dock is out of the way when nothing is running: it slides down and fades a few seconds after the last job is dismissed. A downloads button at the right of the status bar (with the number of running jobs) opens it by hand and folds it away again, even while jobs are running; a new job brings it back.
+- The "Start a chat" and "Start an agent" text shown when nothing is open is centred in the pane, a little above the middle, instead of sitting in the top-left corner.
 
 ### Quitting with work in progress
 
