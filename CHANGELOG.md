@@ -132,10 +132,12 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 ### A calmer Work and Chat page
 
-- The page header now uses the same tint as the sidebar's search band, and both bands are the same height, so they read as one strip across the top. The pink-against-purple clash is gone in every theme, and Models and Browse headers use the same tint.
+- The page header uses the same tint as the sidebar's search band, and both bands are the same, shorter height (56 px), so they read as one strip across the top. The title is a little smaller and the folder under it is set in a few pixels. The pink-against-purple clash is gone in every theme, and the Models and Browse headers use the same tint.
 - The sidebar list is a lighter tint, and the strip at the top of the window is 3 px.
-- The session tile in the header and the R, W and X permission pills are neutral. A small dot on each pill says what it allows (green, amber, or red for running commands); an empty ring means off.
+- The two buttons beside the search field are both outlined, with the new-chat plus in the theme colour; either one gets a faint theme-colour outline when you point at it.
+- The session tile in the header is neutral. The R, W and X permission pills stay one colour and change shape instead: solid means allowed, outlined means asks first, dashed means off. Running commands, when allowed, is solid red.
 - A reply that only thought, with no words, is one quiet "Thinking" line instead of an empty card, and it no longer reserves the empty row of icons beneath it.
+- The downloads dock is out of the way when nothing is running: it slides down and fades a few seconds after the last job is dismissed. A downloads button at the right of the status bar (with the number of running jobs) opens it by hand and folds it away again, even while jobs are running; a new job brings it back.
 
 ### Quitting with work in progress
 

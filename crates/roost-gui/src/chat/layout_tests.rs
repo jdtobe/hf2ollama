@@ -2221,8 +2221,8 @@ fn the_header_names_the_session_kind_and_shows_where_an_agent_works() {
             "{size:?}: {path:?} under {title:?}"
         );
         assert!(
-            (path.left() - title.left()).abs() < 0.5,
-            "{size:?}: same left edge"
+            (path.left() - title.left() - 6.0).abs() < 0.5,
+            "{size:?}: the folder is set in a little from the title"
         );
         assert!(inside(path, header), "{size:?}: {path:?} in {header:?}");
     }
@@ -3927,7 +3927,7 @@ fn a_reply_that_only_thought_is_a_line_not_an_empty_card() {
 }
 
 #[test]
-fn the_permission_pills_are_neutral_with_a_dot_that_says_what_they_allow() {
+fn the_permission_pills_keep_one_colour_and_change_shape_with_what_they_allow() {
     let size = (1180.0, 820.0);
     let (mut app, _sent, _s) = agent_fixture();
     let mut h = Harness::new(false);
@@ -3935,20 +3935,38 @@ fn the_permission_pills_are_neutral_with_a_dot_that_says_what_they_allow() {
     let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
     let chips = app.state_mut().chat_ui.probe.chips.clone();
     let shapes = painted(&mut app, &mut h, size);
-    // Read is allowed (a green dot), write asks (an amber one); neither pill
-    // is filled with the theme colour.
-    for ((letter, rect, _), want) in chips.iter().zip([t.ok, t.warn]) {
-        let dot = shapes.iter().any(|s| match s {
-            egui::epaint::Shape::Circle(c) => rect.contains(c.center) && close(c.fill, want),
-            _ => false,
-        });
-        assert!(dot, "{letter}: no dot of the expected colour in {rect:?}");
-        let tinted = shapes.iter().any(|s| match s {
-            egui::epaint::Shape::Rect(r) => {
-                close(r.fill, t.accent_soft) && r.rect.contains_rect(rect.shrink(1.0))
-            }
-            _ => false,
-        });
-        assert!(!tinted, "{letter}: the pill is filled with the theme tint");
-    }
+    // The smallest rectangle that holds the pill is the pill itself.
+    let rect_of = |chip: egui::Rect| {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::epaint::Shape::Rect(r)
+                    if r.fill.a() > 0 && r.rect.contains_rect(chip.shrink(2.0)) =>
+                {
+                    Some(r.clone())
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+    };
+    // Read is allowed: solid in the theme colour. Write asks: the same colour
+    // as an outline on the plain surface.
+    let read = rect_of(chips[0].1).expect("the read pill");
+    assert!(close(read.fill, t.accent), "read is solid: {:?}", read.fill);
+    let write_fill = shapes.iter().any(|s| match s {
+        egui::epaint::Shape::Rect(r) => {
+            close(r.fill, t.accent) && r.rect.contains_rect(chips[1].1.shrink(2.0))
+        }
+        _ => false,
+    });
+    assert!(!write_fill, "write asks, so it is not solid");
+    let outlined = shapes.iter().any(|s| match s {
+        egui::epaint::Shape::Rect(r) => {
+            close(r.stroke.color, t.accent)
+                && r.stroke.width > 0.0
+                && chips[1].1.expand(1.0).contains_rect(r.rect)
+        }
+        _ => false,
+    });
+    assert!(outlined, "write has an outline in the theme colour");
 }

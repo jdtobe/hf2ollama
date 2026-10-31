@@ -45,7 +45,7 @@ pub fn show<R>(
 
 /// Height of the tinted band across the top of the sidebar, and of the page
 /// header beside it, so the two read as one strip.
-pub const BAND_H: f32 = 70.0;
+pub const BAND_H: f32 = 56.0;
 
 /// How far the search field sits below the band's own padding, so it is
 /// centred in the band.

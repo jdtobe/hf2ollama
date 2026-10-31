@@ -26,6 +26,7 @@ pub enum Icon {
     Folder,
     NewChat,
     Incognito,
+    Download,
 }
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
@@ -290,6 +291,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 stroke,
             ));
             painter.line_segment([p(7.0, 9.0), p(13.5, 2.5)], Stroke::new(2.0, color));
+        }
+        Icon::Download => {
+            // An arrow down into a tray.
+            painter.line_segment([p(8.0, 2.0), p(8.0, 10.0)], stroke);
+            painter.line_segment([p(4.5, 6.5), p(8.0, 10.0)], stroke);
+            painter.line_segment([p(11.5, 6.5), p(8.0, 10.0)], stroke);
+            painter.line_segment([p(2.5, 13.5), p(13.5, 13.5)], stroke);
         }
         Icon::Incognito => {
             // An eye with a line through it.

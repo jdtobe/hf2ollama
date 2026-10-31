@@ -71,6 +71,8 @@ pub(super) enum StatusKind {
 
 /// Side of the rename pencil beside the title.
 const PENCIL_W: f32 = 24.0;
+/// How far the folder under the title is set in from the title's left edge.
+const PATH_INSET: f32 = 6.0;
 
 /// The folder under an agent's title: smaller than body text so it stays
 /// quiet and fits more of the path.
@@ -102,6 +104,9 @@ fn icon_button(ui: &mut egui::Ui, t: &Tokens, icon: Icon, tip: &str) -> egui::Re
     resp
 }
 
+/// Height of the row of title, status and buttons in the page header.
+const HEADER_ROW_H: f32 = 40.0;
+
 pub(super) fn header(
     ui: &mut egui::Ui,
     app: &mut AppState,
@@ -121,7 +126,17 @@ pub(super) fn header(
     let band = ui.painter().add(egui::Shape::Noop);
     let pane = ui.max_rect();
     let start = ui.cursor().min.y;
-    ui.add_space(2.0);
+    let first = start - pane.top() < 1.0;
+    let band_top = if first {
+        pane.top() - super::view::PANE_MARGIN_Y
+    } else {
+        start - 8.0
+    };
+    // Pull the row up so the padding is the same above and below it in the
+    // band (an agent's row is taller: it has the folder under the title).
+    let tall = s.mode == SessionMode::Agent && s.workspace.is_some();
+    let row_h = if tall { HEADER_ROW_H } else { 32.0 };
+    ui.add_space(band_top + (super::view::BAND_H - row_h) / 2.0 - start);
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             header_actions(ui, app, out, t, s, pinned, incognito, now);
@@ -157,18 +172,12 @@ pub(super) fn header(
     {
         app.chat_ui.probe.status_label = Some(status.clone());
     }
-    ui.add_space(10.0);
-    // At least as tall as the sidebar's band, so the two line up.
-    let band_top = start - super::view::PANE_MARGIN_Y;
-    let bottom = ui.cursor().min.y.max(band_top + super::view::BAND_H);
-    ui.add_space(bottom - ui.cursor().min.y);
+    // As tall as the sidebar's band, so the two line up.
+    let bottom = band_top + super::view::BAND_H;
+    ui.add_space((bottom - ui.cursor().min.y).max(0.0));
     // Reach over the pane's margins; with nothing above the header the band
     // starts at the top edge of the pane.
-    let top = if start - pane.top() < 1.0 {
-        pane.top() - super::view::PANE_MARGIN_Y
-    } else {
-        start - 8.0
-    };
+    let top = band_top;
     let rect = egui::Rect::from_min_max(
         egui::pos2(pane.left() - super::view::PANE_MARGIN_X, top),
         egui::pos2(pane.right() + super::view::PANE_MARGIN_X, bottom),
@@ -233,7 +242,7 @@ fn title_block(
     } else {
         shown.to_string()
     };
-    let font = semibold(21.0);
+    let font = semibold(18.0);
     let natural = ui
         .painter()
         .layout_no_wrap(text.clone(), font.clone(), t.fg)
@@ -298,7 +307,12 @@ fn title_block(
             let room = ui.available_width().max(0.0);
             let cut_to = crate::widgets::ellipsize_middle(ui, &short, mono(PATH_FONT), room);
             let cut = cut_to != short;
-            let r = ui.label(RichText::new(cut_to).font(mono(PATH_FONT)).color(t.fg2));
+            let r = ui
+                .horizontal(|ui| {
+                    ui.add_space(PATH_INSET);
+                    ui.label(RichText::new(cut_to).font(mono(PATH_FONT)).color(t.fg2))
+                })
+                .inner;
             #[cfg(test)]
             {
                 app.chat_ui.probe.path_rect = Some(r.rect);
@@ -864,24 +878,19 @@ pub(super) fn permission_pills(
     chips.push((Capability::Read, Family::Files, 'R', "Reading files"));
     for (cap, family, letter, what) in chips {
         let perm = cap_permission(&s.effective_tools, cap);
-        // Running commands is never drawn in the calm colour. The pill itself
-        // stays neutral; a small dot says what the permission is.
+        // One hue for every state, told apart by the shape: solid is allowed,
+        // outlined asks first, dashed is off. Running commands is red when it
+        // is allowed, never the calm colour.
         let danger = cap == Capability::Run && perm == Permission::Auto;
-        let dot = match perm {
-            Permission::Auto if danger => Some(crate::app::bad(dark)),
-            Permission::Auto => Some(t.ok),
-            Permission::Ask => Some(t.warn),
-            Permission::Off => None,
-        };
-        let fg = if perm == Permission::Off {
-            t.fg3
+        let hue = if danger {
+            crate::app::bad(dark)
         } else {
-            t.fg2
+            t.accent
         };
-        let (fill, stroke) = if danger {
-            (t.surface2, crate::app::bad(dark).gamma_multiply(0.6))
-        } else {
-            (t.surface2, t.line)
+        let (fg, fill, stroke) = match perm {
+            Permission::Auto => (if danger { t.surface } else { t.accent_fg }, hue, hue),
+            Permission::Ask => (hue, t.surface, hue),
+            Permission::Off => (t.fg3, t.surface, t.line),
         };
         let sense = if running {
             egui::Sense::hover()
@@ -889,27 +898,27 @@ pub(super) fn permission_pills(
             egui::Sense::click()
         };
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, PILL_H), sense);
-        ui.painter().rect(
-            rect,
-            PILL_H / 2.0,
-            fill,
-            egui::Stroke::new(1.0, stroke),
-            egui::StrokeKind::Inside,
-        );
+        let width = 1.5;
+        ui.painter().rect_filled(rect, PILL_H / 2.0, fill);
+        let outline = rect.shrink(width / 2.0);
+        if perm == Permission::Off {
+            // Dashes round the pill: short strokes along a circle-ended rect.
+            dashed_pill(ui.painter(), outline, stroke, width);
+        } else {
+            ui.painter().rect_stroke(
+                outline,
+                PILL_H / 2.0,
+                egui::Stroke::new(width, stroke),
+                egui::StrokeKind::Inside,
+            );
+        }
         ui.painter().text(
-            rect.center() - egui::vec2(3.0, 0.0),
+            rect.center(),
             egui::Align2::CENTER_CENTER,
             letter,
             semibold(12.0),
             fg,
         );
-        let dot_at = egui::pos2(rect.right() - 8.0, rect.center().y);
-        match dot {
-            Some(c) => ui.painter().circle_filled(dot_at, 3.0, c),
-            None => ui
-                .painter()
-                .circle_stroke(dot_at, 2.5, egui::Stroke::new(1.0, t.fg3)),
-        };
         let state = match perm {
             Permission::Auto => "allowed without asking",
             Permission::Ask => "asks first",
@@ -1629,4 +1638,25 @@ pub(super) fn tool_group(ui: &mut egui::Ui, t: &Tokens, msgs: &[Message], app: &
 #[allow(dead_code)]
 fn _id(id: roost_core::session::SessionId) -> egui::Id {
     composer_id(id)
+}
+
+/// A dashed outline for a pill: the straight sides in dashes and the round
+/// ends in dots along the arc.
+fn dashed_pill(p: &egui::Painter, r: egui::Rect, colour: egui::Color32, width: f32) {
+    let radius = r.height() / 2.0;
+    let stroke = egui::Stroke::new(width, colour);
+    let mut path = Vec::new();
+    let steps = 10;
+    let right = egui::pos2(r.right() - radius, r.center().y);
+    let left = egui::pos2(r.left() + radius, r.center().y);
+    for i in 0..=steps {
+        let a = std::f32::consts::PI * (-0.5 + i as f32 / steps as f32);
+        path.push(right + egui::vec2(a.cos(), a.sin()) * radius);
+    }
+    for i in 0..=steps {
+        let a = std::f32::consts::PI * (0.5 + i as f32 / steps as f32);
+        path.push(left + egui::vec2(a.cos(), a.sin()) * radius);
+    }
+    path.push(path[0]);
+    p.extend(egui::Shape::dashed_line(&path, stroke, 3.0, 2.5));
 }

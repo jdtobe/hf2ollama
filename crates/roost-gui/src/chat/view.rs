@@ -608,24 +608,19 @@ fn rail_icon_button(
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(tip),
     };
-    let (fill, stroke, ink) = if primary {
-        let fill = if enabled { t.accent } else { t.line };
-        (
-            fill,
-            Stroke::NONE,
-            if enabled { t.accent_fg } else { t.fg3 },
-        )
+    // Both buttons are outlined. The new-chat one has its icon in the theme
+    // colour, and either takes a faint outline of it when pointed at.
+    let hot = resp.hovered() && enabled;
+    let fill = if hot { t.surface2 } else { t.surface };
+    let stroke = if hot {
+        Stroke::new(1.0, t.accent.gamma_multiply(0.5))
     } else {
-        let fill = if resp.hovered() && enabled {
-            t.surface2
-        } else {
-            t.surface
-        };
-        (
-            fill,
-            Stroke::new(1.0, t.line),
-            if enabled { t.fg2 } else { t.fg3 },
-        )
+        Stroke::new(1.0, t.line)
+    };
+    let ink = match (enabled, primary) {
+        (false, _) => t.fg3,
+        (true, true) => t.accent,
+        (true, false) => t.fg2,
     };
     ui.painter()
         .rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);

@@ -58,8 +58,58 @@ pub struct DockUi {
     /// Panel height of the last frame; a change needs one more frame so the
     /// panels above it (laid out from this frame's size) catch up.
     last_height: f32,
+    /// The user opened the dock from the status bar while nothing was running.
+    pub open: bool,
+    /// The user folded the dock away while jobs were running (until a new job).
+    pub collapsed: bool,
+    /// When a job was last on show, so the dock lingers a moment after.
+    last_busy: Option<f64>,
+    last_rows: usize,
+    /// Whether the dock is meant to be on screen this frame.
+    shown: bool,
     #[cfg(test)]
     pub probe: DockProbe,
+}
+
+/// How long the dock stays after its last job is dismissed, in seconds.
+const IDLE_HOLD: f64 = 4.0;
+
+impl DockUi {
+    /// Whether the dock is (heading to be) on screen.
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    /// Decides whether the dock is shown: while there are jobs, for a moment
+    /// after the last one, and when opened by hand; never while folded away.
+    fn tick(&mut self, ctx: &egui::Context, jobs: &JobsState) -> bool {
+        let now = ctx.input(|i| i.time);
+        let rows = jobs.rows().len();
+        if rows > self.last_rows {
+            self.collapsed = false;
+        }
+        self.last_rows = rows;
+        if rows > 0 {
+            self.last_busy = Some(now);
+        }
+        let lingering = rows == 0 && self.last_busy.is_some_and(|b| now - b < IDLE_HOLD);
+        if lingering {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        self.shown = !self.collapsed && (rows > 0 || self.open || lingering);
+        self.shown
+    }
+
+    /// The status bar's button: fold the dock away or bring it back.
+    pub fn toggle(&mut self) {
+        if self.shown {
+            self.collapsed = true;
+            self.open = false;
+        } else {
+            self.collapsed = false;
+            self.open = true;
+        }
+    }
 }
 
 /// A job is two lines: name, size, pill and buttons; then bar and numbers.
@@ -106,6 +156,7 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
     let mut actions = Vec::new();
     #[cfg(test)]
     {
+        st.probe.panel = None;
         st.probe.buttons.clear();
         st.probe.clear_button = None;
         st.probe.rows.clear();
@@ -117,14 +168,19 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
         st.probe.log_close = None;
         st.probe.log_copy = None;
     }
-    let resp = egui::Panel::bottom("dock")
+    let mut expanded = st.tick(ui.ctx(), jobs);
+    let fade = ui
+        .ctx()
+        .animate_bool(ui.scope_id().with("dock_fade"), expanded);
+    let Some(resp) = egui::Panel::bottom("dock")
         .frame(crate::app::panel_frame(
             t.surface2,
             Margin::symmetric(16, FRAME_V as i8),
         ))
         .resizable(false)
         .max_size(cap)
-        .show(ui, |ui| {
+        .show_collapsible(ui, &mut expanded, |ui| {
+            ui.set_opacity(fade);
             // Let content grow to the cap; the scroll area bounds it.
             ui.set_max_height(cap - 2.0 * FRAME_V);
             if jobs.rows().is_empty() {
@@ -134,7 +190,12 @@ pub fn show(ui: &mut egui::Ui, jobs: &JobsState, st: &mut DockUi) -> Vec<DockAct
                 header(ui, &t, jobs, st, &mut actions);
                 rows(ui, cap, &t, jobs, st, &mut actions);
             }
-        });
+        })
+    else {
+        st.last_height = 0.0;
+        st.open_log = None;
+        return actions;
+    };
     let height = resp.response.rect.height();
     if height_changed(st.last_height, height) {
         st.last_height = height;
