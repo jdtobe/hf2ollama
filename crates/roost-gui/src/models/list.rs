@@ -23,6 +23,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                ui.add_space(crate::sidebar::SEARCH_DROP);
                 let search = crate::widgets::search_field(
                     ui,
                     &mut app.query,

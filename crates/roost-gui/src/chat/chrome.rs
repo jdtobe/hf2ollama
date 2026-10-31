@@ -158,7 +158,10 @@ pub(super) fn header(
         app.chat_ui.probe.status_label = Some(status.clone());
     }
     ui.add_space(10.0);
-    let bottom = ui.cursor().min.y;
+    // At least as tall as the sidebar's band, so the two line up.
+    let band_top = start - super::view::PANE_MARGIN_Y;
+    let bottom = ui.cursor().min.y.max(band_top + super::view::BAND_H);
+    ui.add_space(bottom - ui.cursor().min.y);
     // Reach over the pane's margins; with nothing above the header the band
     // starts at the top edge of the pane.
     let top = if start - pane.top() < 1.0 {
@@ -173,7 +176,7 @@ pub(super) fn header(
     ui.painter().set(
         band,
         egui::Shape::Vec(vec![
-            egui::Shape::rect_filled(rect, 0.0, t.header),
+            egui::Shape::rect_filled(rect, 0.0, t.side_band()),
             egui::Shape::hline(
                 rect.x_range(),
                 rect.bottom(),
@@ -200,12 +203,19 @@ fn title_block(
 ) {
     let agent = s.mode == SessionMode::Agent;
     let (tile, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-    ui.painter().rect_filled(tile, 9.0, t.accent);
+    // A quiet tile: the theme colour is kept for the one thing selected.
+    ui.painter().rect(
+        tile,
+        9.0,
+        t.surface,
+        egui::Stroke::new(1.0, t.line),
+        egui::StrokeKind::Inside,
+    );
     crate::icons::paint(
         ui.painter(),
         tile,
         if agent { Icon::Agent } else { Icon::Chat },
-        t.accent_fg,
+        t.fg2,
     );
     ui.add_space(4.0);
     if app
@@ -854,15 +864,24 @@ pub(super) fn permission_pills(
     chips.push((Capability::Read, Family::Files, 'R', "Reading files"));
     for (cap, family, letter, what) in chips {
         let perm = cap_permission(&s.effective_tools, cap);
-        // Running commands is never drawn in the calm accent colour.
+        // Running commands is never drawn in the calm colour. The pill itself
+        // stays neutral; a small dot says what the permission is.
         let danger = cap == Capability::Run && perm == Permission::Auto;
-        let (fg, fill, stroke) = match perm {
-            Permission::Auto if danger => {
-                (crate::app::bad(dark), t.surface2, crate::app::bad(dark))
-            }
-            Permission::Auto => (t.accent, t.accent_soft, t.accent),
-            Permission::Ask => (t.warn, t.warn_soft, t.warn),
-            Permission::Off => (t.fg3, t.surface2, t.line),
+        let dot = match perm {
+            Permission::Auto if danger => Some(crate::app::bad(dark)),
+            Permission::Auto => Some(t.ok),
+            Permission::Ask => Some(t.warn),
+            Permission::Off => None,
+        };
+        let fg = if perm == Permission::Off {
+            t.fg3
+        } else {
+            t.fg2
+        };
+        let (fill, stroke) = if danger {
+            (t.surface2, crate::app::bad(dark).gamma_multiply(0.6))
+        } else {
+            (t.surface2, t.line)
         };
         let sense = if running {
             egui::Sense::hover()
@@ -874,16 +893,23 @@ pub(super) fn permission_pills(
             rect,
             PILL_H / 2.0,
             fill,
-            egui::Stroke::new(1.0, stroke.gamma_multiply(0.6)),
+            egui::Stroke::new(1.0, stroke),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
-            rect.center(),
+            rect.center() - egui::vec2(3.0, 0.0),
             egui::Align2::CENTER_CENTER,
             letter,
             semibold(12.0),
             fg,
         );
+        let dot_at = egui::pos2(rect.right() - 8.0, rect.center().y);
+        match dot {
+            Some(c) => ui.painter().circle_filled(dot_at, 3.0, c),
+            None => ui
+                .painter()
+                .circle_stroke(dot_at, 2.5, egui::Stroke::new(1.0, t.fg3)),
+        };
         let state = match perm {
             Permission::Auto => "allowed without asking",
             Permission::Ask => "asks first",

@@ -3862,3 +3862,93 @@ fn the_sidebar_list_is_half_tinted_with_a_full_tint_band_a_white_selection_and_a
         assert!(divider, "{size:?}: no dark divider on the right");
     }
 }
+
+#[test]
+fn the_page_header_is_the_sidebars_band_in_height_and_tint_so_they_form_one_strip() {
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let header = p.header.unwrap();
+        let panel = p.rail.unwrap().expand(12.0);
+        let shapes = painted(&mut f.app, &mut h, size);
+        let rects = || {
+            shapes.iter().filter_map(|s| match s {
+                egui::epaint::Shape::Rect(r) => Some((r.rect, r.fill)),
+                _ => None,
+            })
+        };
+        let side = rects()
+            .find(|(r, c)| {
+                close(*c, t.side_band())
+                    && (r.left() - panel.left()).abs() < 2.0
+                    && (r.top() - panel.top()).abs() < 2.0
+            })
+            .map(|(r, _)| r)
+            .expect("the sidebar's band");
+        assert!(
+            (side.top() - header.top()).abs() < 1.0
+                && (side.bottom() - header.bottom()).abs() < 1.0,
+            "{size:?}: sidebar band {side:?} and header {header:?} do not line up"
+        );
+        assert!(
+            rects().any(|(r, c)| close(c, t.side_band()) && (r.min - header.min).length() < 1.0),
+            "{size:?}: the header is not in the sidebar band's tint"
+        );
+    }
+}
+
+#[test]
+fn a_reply_that_only_thought_is_a_line_not_an_empty_card() {
+    let size = (1180.0, 820.0);
+    let mut f = fixture_with(1);
+    let mut h = Harness::new(false);
+    let now = now_ms();
+    let mut s = Session::new_chat("llama3.2:3b", SessionLifetime::Persisted, now);
+    s.push_user("Hello", now);
+    let a = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(a, "", "Let me think about that.");
+    s.finish_assistant(a, AssistantStatus::Complete, None, now);
+    let b = s.begin_assistant(RunId::new(), TurnId::new(), now);
+    s.append_assistant(b, "An answer.", "");
+    s.finish_assistant(b, AssistantStatus::Complete, None, now);
+    f.app.state_mut().chat.fold(ChatEvent::Opened(Box::new(s)));
+    run(&mut f.app, &mut h, size, 4);
+    let cards = f.app.state_mut().chat_ui.probe.cards.clone();
+    assert_eq!(cards.len(), 3, "{cards:?}");
+    assert!(
+        cards[1].height() < 34.0 && cards[0].height() > 40.0 && cards[2].height() > 40.0,
+        "the thinking-only reply is one line: {cards:?}"
+    );
+    let gap = cards[2].top() - cards[1].bottom();
+    assert!(gap < 24.0, "no empty row of actions under it: gap {gap}");
+}
+
+#[test]
+fn the_permission_pills_are_neutral_with_a_dot_that_says_what_they_allow() {
+    let size = (1180.0, 820.0);
+    let (mut app, _sent, _s) = agent_fixture();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    let chips = app.state_mut().chat_ui.probe.chips.clone();
+    let shapes = painted(&mut app, &mut h, size);
+    // Read is allowed (a green dot), write asks (an amber one); neither pill
+    // is filled with the theme colour.
+    for ((letter, rect, _), want) in chips.iter().zip([t.ok, t.warn]) {
+        let dot = shapes.iter().any(|s| match s {
+            egui::epaint::Shape::Circle(c) => rect.contains(c.center) && close(c.fill, want),
+            _ => false,
+        });
+        assert!(dot, "{letter}: no dot of the expected colour in {rect:?}");
+        let tinted = shapes.iter().any(|s| match s {
+            egui::epaint::Shape::Rect(r) => {
+                close(r.fill, t.accent_soft) && r.rect.contains_rect(rect.shrink(1.0))
+            }
+            _ => false,
+        });
+        assert!(!tinted, "{letter}: the pill is filled with the theme tint");
+    }
+}

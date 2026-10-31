@@ -24,6 +24,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Margins of the conversation pane (a header band reaches over them).
 pub(super) const PANE_MARGIN_X: f32 = 20.0;
 pub(super) const PANE_MARGIN_Y: f32 = 16.0;
+pub(super) const BAND_H: f32 = crate::sidebar::BAND_H;
 const ROW_H: f32 = 46.0;
 /// The tallest the input grows before it scrolls.
 const COMPOSER_MAX_H: f32 = 160.0;
@@ -395,7 +396,8 @@ fn rail(
     } else {
         ("New chat", "New incognito chat")
     };
-    // Search with the two ways to start something beside it.
+    // Search with the two ways to start something beside it, centred in the band.
+    ui.add_space(crate::sidebar::SEARCH_DROP);
     let field = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -458,7 +460,7 @@ fn rail(
             }));
         }
     }
-    ui.add_space(10.0);
+    ui.add_space((band_top + BAND_H - ui.cursor().min.y).max(0.0));
     ui.painter().set(
         band,
         egui::Shape::rect_filled(
@@ -2064,6 +2066,28 @@ fn message_card(
             None,
         ),
     };
+    // A reply that only thought (no words, no error, not still coming) is one
+    // quiet line, not an empty card.
+    if is_assistant
+        && body.is_empty()
+        && error.is_none()
+        && status != Some(AssistantStatus::Streaming)
+        && thinking.as_ref().is_some_and(|x| !x.is_empty())
+    {
+        let th = thinking.unwrap_or_default();
+        let line = ui.scope(|ui| {
+            egui::CollapsingHeader::new(RichText::new("Thinking").size(12.0).color(t.fg3))
+                .id_salt(("thinking", m.id))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(th).size(12.5).color(t.fg2))
+                            .selectable(true)
+                            .wrap(),
+                    );
+                });
+        });
+        return line.response.rect;
+    }
     let card = egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, t.line))
@@ -2173,7 +2197,6 @@ fn message_actions(
     card: egui::Rect,
 ) {
     use crate::icons::{slot, Icon};
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ACTION_H), Sense::hover());
     let (text, status, stats) = match &m.content {
         MessageContent::User { text, .. } => (text, None, None),
         MessageContent::Assistant {
@@ -2184,6 +2207,12 @@ fn message_actions(
         } => (text, Some(*status), *stats),
         MessageContent::Tool { .. } => return,
     };
+    // Nothing to put in the row (an empty reply that is done): no room for it.
+    if text.is_empty() && status != Some(AssistantStatus::Streaming) && s.version_of(m.id).is_none()
+    {
+        return;
+    }
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ACTION_H), Sense::hover());
     if let Some((n, total)) = s.version_of(m.id) {
         let after = index.checked_sub(1).map(|i| s.messages[i].id);
         let idle = !app.chat.is_running(s.id);

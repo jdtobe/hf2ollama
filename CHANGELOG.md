@@ -130,6 +130,13 @@ Pre-release. The core library and the desktop app (Browse, model card, downloads
 
 - The sidebar (Chat, Work and Models) takes colour from the theme: the list is a half-strength tint of the theme's light colour, the search field and buttons (and, on Models, the filters) sit on a band of the full tint, the selected row is white with a dark 3 px edge on its left, and the divider on the sidebar's right is a darker tint. The tints are worked out from each theme's own colours, so all four families and both modes get a matching sidebar.
 
+### A calmer Work and Chat page
+
+- The page header now uses the same tint as the sidebar's search band, and both bands are the same height, so they read as one strip across the top. The pink-against-purple clash is gone in every theme, and Models and Browse headers use the same tint.
+- The sidebar list is a lighter tint, and the strip at the top of the window is 3 px.
+- The session tile in the header and the R, W and X permission pills are neutral. A small dot on each pill says what it allows (green, amber, or red for running commands); an empty ring means off.
+- A reply that only thought, with no words, is one quiet "Thinking" line instead of an empty card, and it no longer reserves the empty row of icons beneath it.
+
 ### Quitting with work in progress
 
 - Closing the window while a chat reply or an agent run is in progress now asks first, like it does for downloads, and says what is running. Quitting stops those runs and keeps what they had written so far.

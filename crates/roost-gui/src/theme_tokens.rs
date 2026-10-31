@@ -18,8 +18,6 @@ pub struct Tokens {
     /// for everything. `accent2_soft` is its background.
     pub accent2: Color32,
     pub accent2_soft: Color32,
-    /// Background of page header bands.
-    pub header: Color32,
     pub ok: Color32,
     pub ok_soft: Color32,
     pub warn: Color32,
@@ -29,12 +27,13 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// The sidebar's list: half way from the surface to the theme's light tint.
+    /// The sidebar's list: a third of the way from the surface to the theme's light tint.
     pub fn side_list(&self) -> Color32 {
-        self.surface.lerp_to_gamma(self.accent_soft, 0.5)
+        self.surface.lerp_to_gamma(self.accent_soft, 0.35)
     }
 
-    /// The band behind the sidebar's search field and buttons: the full tint.
+    /// The band behind the sidebar's search field and buttons, and behind the
+    /// header of every page beside it: the full tint.
     pub fn side_band(&self) -> Color32 {
         self.accent_soft
     }
@@ -50,8 +49,8 @@ const fn hex(rgb: u32) -> Color32 {
 }
 
 /// The family-specific colours, in table order: bg, surface, surface2, line,
-/// fg, fg2, fg3, accent, accent_fg, accent_soft, accent2, accent2_soft, header.
-struct Base([u32; 13]);
+/// fg, fg2, fg3, accent, accent_fg, accent_soft, accent2, accent2_soft.
+struct Base([u32; 12]);
 
 const fn tokens_from(b: Base, dark: bool) -> Tokens {
     let c = b.0;
@@ -73,7 +72,6 @@ const fn tokens_from(b: Base, dark: bool) -> Tokens {
         accent_soft: hex(c[9]),
         accent2: hex(c[10]),
         accent2_soft: hex(c[11]),
-        header: hex(c[12]),
         ok: hex(ok),
         ok_soft: hex(ok_soft),
         warn: hex(warn),
@@ -86,56 +84,56 @@ const fn tokens_from(b: Base, dark: bool) -> Tokens {
 pub const MEADOW_LIGHT: Tokens = tokens_from(
     Base([
         0xEEF0F2, 0xFFFFFF, 0xF5F6F8, 0xDDE0E5, 0x16191D, 0x535A64, 0x6F7782, 0x0B6E66, 0xFFFFFF,
-        0xDFF1EE, 0x3D5AA8, 0xE3E9F6, 0xE8ECF5,
+        0xDFF1EE, 0x3D5AA8, 0xE3E9F6,
     ]),
     false,
 );
 pub const MEADOW_DARK: Tokens = tokens_from(
     Base([
         0x101316, 0x171B1F, 0x1D2227, 0x2A3036, 0xE7EAEE, 0xA3ABB5, 0x7E8793, 0x3CC2B3, 0x06201D,
-        0x14312E, 0x8DA7F0, 0x1F2842, 0x171C2A,
+        0x14312E, 0x8DA7F0, 0x1F2842,
     ]),
     true,
 );
 pub const EMBER_LIGHT: Tokens = tokens_from(
     Base([
         0xF3EFEA, 0xFFFFFF, 0xF8F4F0, 0xE3DAD1, 0x211813, 0x6B5A50, 0x7B675B, 0xC2410C, 0xFFFFFF,
-        0xFBE4D8, 0x0F766E, 0xD9F0EC, 0xE4EFED,
+        0xFBE4D8, 0x0F766E, 0xD9F0EC,
     ]),
     false,
 );
 pub const EMBER_DARK: Tokens = tokens_from(
     Base([
         0x15100D, 0x1F1814, 0x281F1A, 0x352821, 0xF4EDE6, 0xB8A69A, 0x938175, 0xFB923C, 0x2A0F03,
-        0x3A2418, 0x5EEAD4, 0x123430, 0x12201F,
+        0x3A2418, 0x5EEAD4, 0x123430,
     ]),
     true,
 );
 pub const PLUM_LIGHT: Tokens = tokens_from(
     Base([
         0xF2EFF4, 0xFFFFFF, 0xF7F3F9, 0xDED7E4, 0x19131F, 0x63586B, 0x74657E, 0x7E22CE, 0xFFFFFF,
-        0xF0E3FA, 0xBE185D, 0xFBE1EC, 0xF6E8EE,
+        0xF0E3FA, 0xBE185D, 0xFBE1EC,
     ]),
     false,
 );
 pub const PLUM_DARK: Tokens = tokens_from(
     Base([
         0x120E18, 0x1B1522, 0x241C2C, 0x30263B, 0xEFE9F5, 0xB3A6C0, 0x9183A0, 0xC084FC, 0x24112F,
-        0x2E1D3E, 0xF472B6, 0x3A1A2A, 0x241621,
+        0x2E1D3E, 0xF472B6, 0x3A1A2A,
     ]),
     true,
 );
 pub const TIDE_LIGHT: Tokens = tokens_from(
     Base([
         0xEDF1F4, 0xFFFFFF, 0xF4F7F9, 0xD8E0E7, 0x121A20, 0x52636F, 0x647783, 0x0369A1, 0xFFFFFF,
-        0xDCEEF8, 0x6D4AD1, 0xECE6FA, 0xEAE6F6,
+        0xDCEEF8, 0x6D4AD1, 0xECE6FA,
     ]),
     false,
 );
 pub const TIDE_DARK: Tokens = tokens_from(
     Base([
         0x0D1216, 0x141B21, 0x1B252C, 0x26323B, 0xE6EDF3, 0x9AAAB7, 0x8194A1, 0x38BDF8, 0x08202D,
-        0x112D3D, 0xA99BF5, 0x272046, 0x1B1830,
+        0x112D3D, 0xA99BF5, 0x272046,
     ]),
     true,
 );
@@ -191,22 +189,13 @@ mod tests {
     }
 
     #[test]
-    fn the_second_hue_and_the_header_differ_from_the_accent_in_every_palette() {
+    fn the_second_hue_differs_from_the_accent_in_every_palette() {
         for family in ALL_FAMILIES {
             for dark in [false, true] {
                 let t = palette(family, dark);
                 let tag = format!("{family:?} dark={dark}");
                 assert_ne!(t.accent2, t.accent, "{tag}");
                 assert_ne!(t.accent2_soft, t.accent_soft, "{tag}");
-                assert_ne!(
-                    t.header, t.accent_soft,
-                    "{tag}: the header is not the selection tint"
-                );
-                assert_ne!(
-                    t.header, t.bg,
-                    "{tag}: the header is visible against the page"
-                );
-                assert_ne!(t.header, t.surface, "{tag}");
             }
         }
     }
@@ -247,9 +236,8 @@ mod tests {
                     ("fg3/surface", t.fg3, t.surface),
                     ("accent-fg/accent", t.accent_fg, t.accent),
                     // The roles added with the second hue.
-                    ("fg/header", t.fg, t.header),
-                    ("fg2/header", t.fg2, t.header),
-                    // Muted text on a header band is fg2; fg3 is for plain surfaces.
+                    // Muted text on a band is fg2; fg3 is for plain surfaces.
+                    ("fg2/accent-soft", t.fg2, t.accent_soft),
                     ("accent2/surface", t.accent2, t.surface),
                     ("accent2/surface2", t.accent2, t.surface2),
                     ("accent2/accent2-soft", t.accent2, t.accent2_soft),

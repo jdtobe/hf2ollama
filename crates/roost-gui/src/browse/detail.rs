@@ -508,7 +508,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let info = app.browse.info_for(&id).cloned();
-                    let (_, top) = band(ui, t.header, Some(t.line), 0.0, |ui| {
+                    let (_, top) = band(ui, t.side_band(), Some(t.line), 0.0, |ui| {
                         header(
                             ui,
                             &id,

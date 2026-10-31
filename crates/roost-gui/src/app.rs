@@ -823,7 +823,7 @@ impl App {
                 ui.ctx().layer_painter(ui.layer_id()).rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(screen.left(), top),
-                        egui::pos2(screen.right(), top + 4.0),
+                        egui::pos2(screen.right(), top + 3.0),
                     ),
                     0.0,
                     t.accent,
@@ -2209,7 +2209,7 @@ mod tests {
                 egui::epaint::Shape::Rect(r)
                     if near(r.fill, accent)
                         && r.rect.width() >= 1179.0
-                        && (r.rect.height() - 4.0).abs() < 0.5 =>
+                        && (r.rect.height() - 3.0).abs() < 0.5 =>
                 {
                     Some(r.rect)
                 }
