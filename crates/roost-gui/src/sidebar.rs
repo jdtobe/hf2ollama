@@ -17,14 +17,15 @@ pub fn max_width(avail: f32) -> f32 {
     (avail - MIN_CONTENT).clamp(MIN_W, MAX_W)
 }
 
-/// Draws the sidebar with `frame` around `add`, starting at `wanted` wide
-/// (the saved width). The panel has one id for all tabs, so a width chosen
+/// Draws the sidebar with `frame` around `add` and a divider of colour `edge`
+/// on its right, starting at `wanted` wide (the saved width). The panel has one id for all tabs, so a width chosen
 /// on one is the width on the others. Returns what `add` returned and the
 /// width drawn; hand that to `finish`.
 pub fn show<R>(
     ui: &mut egui::Ui,
     wanted: f32,
     frame: egui::Frame,
+    edge: egui::Color32,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, f32) {
     let max = max_width(ui.available_width());
@@ -32,9 +33,14 @@ pub fn show<R>(
         .resizable(true)
         .default_size(wanted.clamp(MIN_W, max))
         .size_range(MIN_W..=max)
+        .show_separator_line(false)
         .frame(frame)
         .show(ui, add);
-    (panel.inner, panel.response.rect.width())
+    // One divider on the right edge, in a darker tint than the sidebar.
+    let r = panel.response.rect;
+    ui.painter()
+        .vline(r.right() - 0.5, r.y_range(), egui::Stroke::new(1.0, edge));
+    (panel.inner, r.width())
 }
 
 /// Call after `show` with the width it returned.

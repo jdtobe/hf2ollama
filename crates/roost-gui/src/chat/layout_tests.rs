@@ -3782,3 +3782,83 @@ fn no_two_lines_run_side_by_side_across_the_window() {
         }
     }
 }
+
+// ------------------------------------------------------ a tinted sidebar
+
+fn close(a: egui::Color32, b: egui::Color32) -> bool {
+    a.a() > 200
+        && (a.r() as i32 - b.r() as i32).abs() < 4
+        && (a.g() as i32 - b.g() as i32).abs() < 4
+        && (a.b() as i32 - b.b() as i32).abs() < 4
+}
+
+#[test]
+fn the_sidebar_list_is_half_tinted_with_a_full_tint_band_a_white_selection_and_a_dark_divider() {
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    for size in SIZES {
+        let mut f = fixture();
+        let mut h = Harness::new(false);
+        run(&mut f.app, &mut h, size, 4);
+        let p = f.app.state_mut().chat_ui.probe.clone();
+        let panel = p.rail.unwrap().expand(12.0);
+        let row = p
+            .rows
+            .iter()
+            .find(|(id, _)| *id == f.open.id)
+            .map(|(_, r)| *r)
+            .expect("the open chat's row");
+        let shapes = painted(&mut f.app, &mut h, size);
+        let rects = || {
+            shapes.iter().filter_map(|s| match s {
+                egui::epaint::Shape::Rect(r) => Some((r.rect, r.fill)),
+                _ => None,
+            })
+        };
+        // The list behind everything.
+        assert!(
+            rects().any(|(r, c)| close(c, t.side_list())
+                && (r.min - panel.min).length() < 2.0
+                && (r.max - panel.max).length() < 2.0),
+            "{size:?}: the list is not in the half tint"
+        );
+        // The band behind the search field and buttons: the full tint, from
+        // the top of the sidebar, edge to edge.
+        let band = rects()
+            .find(|(r, c)| {
+                close(*c, t.side_band())
+                    && (r.left() - panel.left()).abs() < 2.0
+                    && (r.right() - panel.right()).abs() < 2.0
+                    && (r.top() - panel.top()).abs() < 2.0
+            })
+            .map(|(r, _)| r)
+            .expect("a band of the full tint");
+        let search = p.rail_search.unwrap();
+        assert!(
+            band.height() > 40.0 && band.height() < 90.0 && band.bottom() >= search.bottom(),
+            "{size:?}: the band holds the search row: {band:?} {search:?}"
+        );
+        // The selected row is white with a dark 3 px edge on its left.
+        assert!(
+            rects().any(|(r, c)| close(c, t.surface)
+                && (r.min - row.min).length() < 1.5
+                && (r.max - row.max).length() < 1.5),
+            "{size:?}: the selected row is not white"
+        );
+        assert!(
+            rects().any(|(r, c)| close(c, t.accent)
+                && (r.width() - 3.0).abs() < 0.5
+                && (r.left() - row.left()).abs() < 1.5),
+            "{size:?}: no edge on the selected row"
+        );
+        // One divider on the right in the darker tint.
+        let divider = shapes.iter().any(|s| match s {
+            egui::epaint::Shape::LineSegment { points, stroke } => {
+                close(stroke.color, t.side_edge())
+                    && (points[0].x - panel.right()).abs() < 2.0
+                    && (points[1].y - points[0].y).abs() > panel.height() * 0.5
+            }
+            _ => false,
+        });
+        assert!(divider, "{size:?}: no dark divider on the right");
+    }
+}

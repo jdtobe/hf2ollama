@@ -593,3 +593,61 @@ fn the_models_list_has_no_outline_of_its_own_either() {
         assert!(!any, "{size:?}: the list draws its own outline");
     }
 }
+
+#[test]
+fn the_models_list_is_tinted_like_the_chat_sidebar_with_a_band_and_a_dark_divider() {
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    let close = |a: egui::Color32, b: egui::Color32| {
+        a.a() > 200
+            && (a.r() as i32 - b.r() as i32).abs() < 4
+            && (a.g() as i32 - b.g() as i32).abs() < 4
+            && (a.b() as i32 - b.b() as i32).abs() < 4
+    };
+    for size in SIZES {
+        let (mut app, _sent) = models_app();
+        let mut h = crate::browse::test_util::Harness::new(false);
+        for _ in 0..4 {
+            h.frame(vec2(size.0, size.1), vec![], |ui| app.show(ui));
+        }
+        let list = app.state_mut().browse.probe.list.unwrap();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1))),
+            ..Default::default()
+        };
+        let out = h.ctx().run_ui(input, |ui| app.show(ui));
+        let mut shapes = Vec::new();
+        fn flat(s: &egui::epaint::Shape, into: &mut Vec<egui::epaint::Shape>) {
+            match s {
+                egui::epaint::Shape::Vec(v) => v.iter().for_each(|x| flat(x, into)),
+                other => into.push(other.clone()),
+            }
+        }
+        for c in &out.shapes {
+            flat(&c.shape, &mut shapes);
+        }
+        out.drop_without_applying_deltas();
+        let wide = |r: Rect| (r.left() - list.left()).abs() < 3.0 && r.width() > list.width() - 4.0;
+        assert!(
+            shapes.iter().any(|s| matches!(s, egui::epaint::Shape::Rect(r)
+                if close(r.fill, t.side_list()) && wide(r.rect) && r.rect.height() > list.height() * 0.8)),
+            "{size:?}: the list is not in the half tint"
+        );
+        assert!(
+            shapes
+                .iter()
+                .any(|s| matches!(s, egui::epaint::Shape::Rect(r)
+                if close(r.fill, t.side_band()) && wide(r.rect)
+                    && r.rect.height() > 40.0 && r.rect.height() < 140.0
+                    && (r.rect.top() - list.top()).abs() < 3.0)),
+            "{size:?}: no band of the full tint behind the search and filters"
+        );
+        assert!(
+            shapes.iter().any(
+                |s| matches!(s, egui::epaint::Shape::LineSegment { points, stroke }
+                if close(stroke.color, t.side_edge())
+                    && (points[1].y - points[0].y).abs() > list.height() * 0.5)
+            ),
+            "{size:?}: no dark divider"
+        );
+    }
+}

@@ -206,14 +206,14 @@ fn rows(ui: &mut egui::Ui, app: &mut AppState) {
                 app.browse.probe.result_rows.push(rect);
                 let on = selected.as_deref() == Some(m.id.as_str());
                 if on {
-                    ui.painter().rect_filled(rect, 0.0, t.accent_soft);
+                    ui.painter().rect_filled(rect, 0.0, t.surface);
                     ui.painter().rect_filled(
                         Rect::from_min_size(rect.min, vec2(3.0, rect.height())),
                         0.0,
                         t.accent,
                     );
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(rect, 0.0, t.surface2);
+                    ui.painter().rect_filled(rect, 0.0, t.side_band());
                 }
                 ui.painter()
                     .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, t.line));
