@@ -150,7 +150,8 @@ pub(super) fn header(
             .max_rect(wide)
             .layout(Layout::right_to_left(Align::Center)),
     );
-    (|ui: &mut egui::Ui| {
+    {
+        let ui = &mut row_ui;
         header_actions(ui, app, out, t, s, pinned, incognito, now);
         if incognito {
             tag(ui, "Incognito", t.accent, t.accent_soft);
@@ -178,7 +179,7 @@ pub(super) fn header(
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             title_block(ui, app, out, t, s, &shown);
         });
-    })(&mut row_ui);
+    }
     ui.add_space(row_h);
     #[cfg(test)]
     {
