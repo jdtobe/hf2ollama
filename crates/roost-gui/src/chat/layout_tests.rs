@@ -3864,7 +3864,7 @@ fn the_sidebar_list_is_half_tinted_with_a_full_tint_band_a_white_selection_and_a
 }
 
 #[test]
-fn the_page_header_is_the_sidebars_band_in_height_and_tint_so_they_form_one_strip() {
+fn the_page_header_is_as_tall_as_the_sidebars_band_but_in_a_deeper_tint() {
     for size in SIZES {
         let mut f = fixture();
         let mut h = Harness::new(false);
@@ -3894,8 +3894,12 @@ fn the_page_header_is_the_sidebars_band_in_height_and_tint_so_they_form_one_stri
             "{size:?}: sidebar band {side:?} and header {header:?} do not line up"
         );
         assert!(
-            rects().any(|(r, c)| close(c, t.side_band()) && (r.min - header.min).length() < 1.0),
-            "{size:?}: the header is not in the sidebar band's tint"
+            rects().any(|(r, c)| close(c, t.head_band()) && (r.min - header.min).length() < 1.0),
+            "{size:?}: the header is not in the deeper tint"
+        );
+        assert!(
+            !close(t.head_band(), t.side_band()),
+            "{size:?}: the header and the sidebar band must differ"
         );
     }
 }
@@ -3969,4 +3973,25 @@ fn the_permission_pills_keep_one_colour_and_change_shape_with_what_they_allow() 
         _ => false,
     });
     assert!(outlined, "write has an outline in the theme colour");
+}
+
+#[test]
+fn the_header_buttons_and_title_are_centred_in_the_band() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let header = p.header.unwrap();
+        let trash = p.delete_button.clone().unwrap().0;
+        let (title, path) = (p.title_rect.unwrap(), p.path_rect.unwrap());
+        let block = title.union(path);
+        for (name, r) in [("buttons", trash), ("title and folder", block)] {
+            let (above, below) = (r.top() - header.top(), header.bottom() - r.bottom());
+            assert!(
+                (above - below).abs() <= 3.0 && above >= 6.0,
+                "{size:?}: {name} sit {above} below the top and {below} above the bottom of {header:?}"
+            );
+        }
+    }
 }

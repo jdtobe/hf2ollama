@@ -32,15 +32,26 @@ impl Tokens {
         self.surface.lerp_to_gamma(self.accent_soft, 0.35)
     }
 
-    /// The band behind the sidebar's search field and buttons, and behind the
-    /// header of every page beside it: the full tint.
+    /// The band behind the sidebar's search field and buttons: the light tint.
     pub fn side_band(&self) -> Color32 {
         self.accent_soft
     }
 
-    /// The sidebar's divider on its right edge: a darker tint.
+    /// The header band of the page beside the sidebar: a deeper tint than the
+    /// sidebar's band, so the two read as two things.
+    pub fn head_band(&self) -> Color32 {
+        self.accent_soft.lerp_to_gamma(self.accent, 0.28)
+    }
+
+    /// Muted text on the header band: `fg2` pulled toward `fg`, since the
+    /// deeper tint leaves plain `fg2` a little short of AA.
+    pub fn band_ink2(&self) -> Color32 {
+        self.fg2.lerp_to_gamma(self.fg, 0.5)
+    }
+
+    /// The sidebar's divider on its right edge: darker than the band.
     pub fn side_edge(&self) -> Color32 {
-        self.accent_soft.lerp_to_gamma(self.accent, 0.3)
+        self.accent_soft.lerp_to_gamma(self.accent, 0.5)
     }
 }
 
@@ -238,6 +249,8 @@ mod tests {
                     // The roles added with the second hue.
                     // Muted text on a band is fg2; fg3 is for plain surfaces.
                     ("fg2/accent-soft", t.fg2, t.accent_soft),
+                    ("fg/head-band", t.fg, t.head_band()),
+                    ("band-ink2/head-band", t.band_ink2(), t.head_band()),
                     ("accent2/surface", t.accent2, t.surface),
                     ("accent2/surface2", t.accent2, t.surface2),
                     ("accent2/accent2-soft", t.accent2, t.accent2_soft),

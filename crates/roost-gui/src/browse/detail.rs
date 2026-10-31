@@ -50,7 +50,7 @@ pub fn meta_strip(ui: &mut egui::Ui, items: &[(&str, String)]) -> Vec<(String, R
                 .iter()
                 .map(|(k, _)| {
                     ui.painter()
-                        .layout_no_wrap(k.to_uppercase(), semibold(11.0), t.fg2)
+                        .layout_no_wrap(k.to_uppercase(), semibold(11.0), t.band_ink2())
                 })
                 .collect();
             let vals: Vec<_> = items
@@ -508,7 +508,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut AppState, out: &mut Vec<BackendRequest>
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let info = app.browse.info_for(&id).cloned();
-                    let (_, top) = band(ui, t.side_band(), Some(t.line), 0.0, |ui| {
+                    let (_, top) = band(ui, t.head_band(), Some(t.line), 0.0, |ui| {
                         header(
                             ui,
                             &id,
@@ -621,7 +621,7 @@ fn header(ui: &mut egui::Ui, id: &str, info: Option<&ModelInfo>) {
                 relative_age(&i.updated, now_unix())
             ));
         }
-        ui.label(RichText::new(line).color(t.fg2));
+        ui.label(RichText::new(line).color(t.band_ink2()));
         ui.hyperlink_to(
             RichText::new("Open on huggingface.co ↗").size(12.0),
             format!("https://huggingface.co/{id}"),

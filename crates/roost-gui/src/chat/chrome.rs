@@ -137,35 +137,35 @@ pub(super) fn header(
     let tall = s.mode == SessionMode::Agent && s.workspace.is_some();
     let row_h = if tall { HEADER_ROW_H } else { 32.0 };
     ui.add_space(band_top + (super::view::BAND_H - row_h) / 2.0 - start);
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            header_actions(ui, app, out, t, s, pinned, incognito, now);
-            if incognito {
-                tag(ui, "Incognito", t.accent, t.accent_soft);
-            }
-            let (colour, glow) = match kind {
-                StatusKind::Idle => (t.fg3, false),
-                StatusKind::Working => (t.accent, true),
-                StatusKind::Waiting => (t.warn, true),
-            };
-            let label = ui.label(RichText::new(&status).size(12.5).color(t.fg2));
-            #[cfg(test)]
-            {
-                app.chat_ui.probe.status_rect = Some(label.rect);
-            }
-            let dot = egui::Rect::from_center_size(
-                egui::pos2(label.rect.left() - 10.0, label.rect.center().y),
-                egui::vec2(9.0, 9.0),
-            );
-            ui.add_space(14.0);
-            if glow {
-                ui.painter()
-                    .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
-            }
-            ui.painter().circle_filled(dot.center(), 4.5, colour);
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                title_block(ui, app, out, t, s, &shown);
-            });
+    // A row of a set height, so the buttons and status are centred on it.
+    let size = egui::vec2(ui.available_width(), row_h);
+    ui.allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
+        header_actions(ui, app, out, t, s, pinned, incognito, now);
+        if incognito {
+            tag(ui, "Incognito", t.accent, t.accent_soft);
+        }
+        let (colour, glow) = match kind {
+            StatusKind::Idle => (t.fg3, false),
+            StatusKind::Working => (t.accent, true),
+            StatusKind::Waiting => (t.warn, true),
+        };
+        let label = ui.label(RichText::new(&status).size(12.5).color(t.band_ink2()));
+        #[cfg(test)]
+        {
+            app.chat_ui.probe.status_rect = Some(label.rect);
+        }
+        let dot = egui::Rect::from_center_size(
+            egui::pos2(label.rect.left() - 10.0, label.rect.center().y),
+            egui::vec2(9.0, 9.0),
+        );
+        ui.add_space(14.0);
+        if glow {
+            ui.painter()
+                .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
+        }
+        ui.painter().circle_filled(dot.center(), 4.5, colour);
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            title_block(ui, app, out, t, s, &shown);
         });
     });
     #[cfg(test)]
@@ -185,7 +185,7 @@ pub(super) fn header(
     ui.painter().set(
         band,
         egui::Shape::Vec(vec![
-            egui::Shape::rect_filled(rect, 0.0, t.side_band()),
+            egui::Shape::rect_filled(rect, 0.0, t.head_band()),
             egui::Shape::hline(
                 rect.x_range(),
                 rect.bottom(),
@@ -310,7 +310,11 @@ fn title_block(
             let r = ui
                 .horizontal(|ui| {
                     ui.add_space(PATH_INSET);
-                    ui.label(RichText::new(cut_to).font(mono(PATH_FONT)).color(t.fg2))
+                    ui.label(
+                        RichText::new(cut_to)
+                            .font(mono(PATH_FONT))
+                            .color(t.band_ink2()),
+                    )
                 })
                 .inner;
             #[cfg(test)]
