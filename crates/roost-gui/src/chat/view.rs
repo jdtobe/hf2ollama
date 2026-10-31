@@ -1689,6 +1689,34 @@ fn approval_card(
                         Some("Allow edits to this file this session".to_string()),
                     )
                 }
+                (None, None) if ask.name == roost_core::agent::web::TOOL => {
+                    // The exact address and its host, in plain text.
+                    ui.label(RichText::new("Fetch a web page?").font(semibold(14.0)));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("The agent wants to read this address. The page's text goes to the model you chose.")
+                                .size(12.5)
+                                .color(t.fg2),
+                        )
+                        .wrap(),
+                    );
+                    let url = ask
+                        .arguments
+                        .get("url")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("(no address)");
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(truncate_chars(url, 300)).font(mono(12.5)).color(t.fg),
+                        )
+                        .wrap(),
+                    );
+                    let host = roost_core::agent::web::host_of(&ask.arguments);
+                    (
+                        "Fetch",
+                        host.map(|h| format!("Allow {h} in this chat")),
+                    )
+                }
                 (None, None) => {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("The agent wants to run").color(t.fg2));

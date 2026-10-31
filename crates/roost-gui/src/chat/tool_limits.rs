@@ -6,6 +6,7 @@
 use crate::settings::{size_text, time_text};
 use roost_core::agent::ask;
 use roost_core::agent::tools::{Limits, BINARY_MAX_BYTES};
+use roost_core::agent::web;
 
 fn bytes(n: usize) -> String {
     size_text(n as u64)
@@ -24,6 +25,7 @@ pub fn summary(name: &str, l: &Limits) -> Option<String> {
         "edit_file" => format!("{} per file", bytes(l.edit_file_bytes)),
         "run_command" => time_text(l.run_timeout.as_secs()),
         "ask_user" => format!("{} per run", ask::MAX_PER_RUN),
+        "fetch_url" => format!("{} per page", bytes(l.output_bytes)),
         _ => return None,
     })
 }
@@ -78,6 +80,11 @@ pub fn facts(name: &str, l: &Limits) -> Vec<(&'static str, String)> {
         "run_command" => vec![
             ("Stopped after", time_text(l.run_timeout.as_secs())),
             ("Output kept", bytes(l.run_output_bytes)),
+        ],
+        "fetch_url" => vec![
+            ("Stopped after", time_text(web::TIMEOUT.as_secs())),
+            ("Redirects followed", n(web::MAX_REDIRECTS)),
+            ("Text per call", bytes(l.output_bytes)),
         ],
         "ask_user" => vec![
             ("Questions per run", ask::MAX_PER_RUN.to_string()),

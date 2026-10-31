@@ -14,6 +14,7 @@ use crate::agent::change::{self, ChangePreview};
 use crate::agent::command::{self, RunPreview};
 use crate::agent::registry;
 use crate::agent::tools::Limits;
+use crate::agent::web;
 use crate::agent::{ToolError, Workspace};
 use crate::ollama::ChatRequestBody;
 use crate::session::{
@@ -526,6 +527,15 @@ impl Manager {
                 ask = false;
             }
         }
+        if ask && call.name == web::TOOL {
+            // An allowed host is fetched without asking, and a call without a
+            // usable address runs to fail so the model can read why.
+            match web::host_of(&call.arguments) {
+                Some(host) if live.allowed_hosts.contains(&host) => ask = false,
+                None => ask = false,
+                Some(_) => {}
+            }
+        }
         if ask {
             // Ask the user first; the run waits in this slot.
             live.slot = Slot::Tools(Box::new(ToolRun {
@@ -588,27 +598,42 @@ impl Manager {
         );
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&cancel);
-        let join = tokio::task::spawn_blocking(move || {
-            let (result, change) = registry::call_tracked(
-                &workspace,
-                &config,
-                &name,
-                &args,
-                &lim,
-                &registry::Options {
-                    approved,
-                    undo_room: room,
-                    cancel: &stop,
-                },
-            );
-            let _ = tx.send(RunMsg::ToolDone {
-                session: id,
-                run,
-                call_id,
-                result,
-                change,
-            });
-        });
+        let join = if name == web::TOOL {
+            // The network is awaited, not run on the blocking pool.
+            let max = lim.output_bytes;
+            tokio::spawn(async move {
+                let result = fetch_for_agent(&config, &args, approved, &stop, max).await;
+                let _ = tx.send(RunMsg::ToolDone {
+                    session: id,
+                    run,
+                    call_id,
+                    result,
+                    change: None,
+                });
+            })
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let (result, change) = registry::call_tracked(
+                    &workspace,
+                    &config,
+                    &name,
+                    &args,
+                    &lim,
+                    &registry::Options {
+                        approved,
+                        undo_room: room,
+                        cancel: &stop,
+                    },
+                );
+                let _ = tx.send(RunMsg::ToolDone {
+                    session: id,
+                    run,
+                    call_id,
+                    result,
+                    change,
+                });
+            })
+        };
         live.slot = Slot::Tools(Box::new(ToolRun {
             join: Some(join),
             call_id: call.call_id.clone(),
@@ -661,6 +686,18 @@ impl Manager {
                         .and_then(Value::as_str)
                         .and_then(command::allow_prefix);
                     live.allowed_prefixes.extend(prefix);
+                }
+                self.start_tool_call(id, call, true);
+            }
+            ApprovalDecision::AllowForSession
+                if registry::capability_of(&call.name).as_deref() == Some("web.fetch") =>
+            {
+                // The web never becomes automatic: only this host is allowed,
+                // for this chat.
+                if let (Some(host), Some(live)) =
+                    (web::host_of(&call.arguments), self.sessions.get_mut(&id))
+                {
+                    live.allowed_hosts.insert(host);
                 }
                 self.start_tool_call(id, call, true);
             }
@@ -1106,5 +1143,32 @@ impl Manager {
             self.save(&s);
         }
         self.end_run(id, RunOutcome::Cancelled, None).await;
+    }
+}
+
+/// Runs one `fetch_url` call: checks it may run, fetches the page, and turns
+/// it into the text the model gets. Ends early when `cancel` is set.
+async fn fetch_for_agent(
+    config: &crate::session::EffectiveToolConfig,
+    args: &Value,
+    approved: bool,
+    cancel: &AtomicBool,
+    max_bytes: usize,
+) -> Result<String, ToolError> {
+    registry::authorize(config, web::TOOL, approved)?;
+    let url = web::parse(args).map_err(ToolError::InvalidArguments)?;
+    let work = web::fetch(url, web::Rules::STRICT);
+    let stopped = async {
+        while !cancel.load(Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+    tokio::select! {
+        page = work => match page {
+            Ok(p) => Ok(web::result_text(&p, max_bytes)),
+            Err(web::FetchError::Refused(why)) => Err(ToolError::Denied(why)),
+            Err(web::FetchError::Failed(why)) => Err(ToolError::Unreadable(why)),
+        },
+        () = stopped => Err(ToolError::Unreadable("the fetch was stopped".into())),
     }
 }

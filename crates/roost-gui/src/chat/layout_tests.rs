@@ -1291,7 +1291,7 @@ fn the_agent_chip_holds_the_folder_steps_and_tools_and_locks_while_running() {
     open_menu(&mut app, &mut h, size, chip);
     // The tool lists start closed; the heading opens one.
     let heads = app.state_mut().chat_ui.probe.tools_heads.clone();
-    assert_eq!(heads.len(), 2, "Files and Ask you, without commands");
+    assert_eq!(heads.len(), 3, "Files, Web and Ask you, without commands");
     click(&mut app, &mut h, size, heads[0].center());
     let texts = texts_of(&mut app, &mut h, size);
     let upper = texts.to_uppercase();
@@ -2344,7 +2344,11 @@ fn the_header_has_a_chip_per_capability_and_the_write_chip_goes_with_the_switch(
         let composer = p.composer.unwrap();
         let model = p.model_chip.unwrap();
         let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
-        assert_eq!(letters, ['R', 'W'], "{size:?}: no X until commands exist");
+        assert_eq!(
+            letters,
+            ['R', 'W', 'N'],
+            "{size:?}: no X until commands exist"
+        );
         for (_, r, _) in &p.chips {
             assert!(inside(*r, composer), "{size:?}: chip {r:?}");
             assert!(r.right() <= model.left(), "{size:?}: left of the model");
@@ -2369,7 +2373,7 @@ fn the_header_has_a_chip_per_capability_and_the_write_chip_goes_with_the_switch(
             .iter()
             .map(|c| c.0)
             .collect();
-        assert_eq!(letters, ['R'], "{size:?}");
+        assert_eq!(letters, ['R', 'N'], "{size:?}");
         let _ = s;
     }
 }
@@ -2583,7 +2587,8 @@ fn an_undone_change_says_so_and_offers_no_second_undo() {
 
 #[test]
 fn changes_made_lists_every_change_with_undo_all_in_the_agent_settings() {
-    let size = (1180.0, 820.0);
+    // Tall enough to show the whole settings list without scrolling it.
+    let size = (1180.0, 1000.0);
     let (mut app, sent, mut s) = agent_fixture();
     with_a_change(&mut app, &mut s, false);
     let mut h = Harness::new(false);
@@ -2660,7 +2665,7 @@ fn commands_are_nowhere_in_the_chat_until_switched_on_in_settings() {
     open_agent_settings(&mut app, &mut h, size);
     let p = app.state_mut().chat_ui.probe.clone();
     let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
-    assert_eq!(letters, ['R', 'W']);
+    assert_eq!(letters, ['R', 'W', 'N']);
     assert!(p.run_buttons.is_empty(), "a Run row without the switch");
     let texts = texts_of(&mut app, &mut h, size);
     assert!(
@@ -2680,7 +2685,7 @@ fn with_commands_on_there_is_an_x_chip_and_a_run_row_that_starts_off() {
         open_agent_settings(&mut app, &mut h, size);
         let p = app.state_mut().chat_ui.probe.clone();
         let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
-        assert_eq!(letters, ['R', 'W', 'X'], "{size:?}");
+        assert_eq!(letters, ['R', 'W', 'X', 'N'], "{size:?}");
         assert_eq!(
             p.chips[2].2,
             Permission::Off,
@@ -2818,7 +2823,7 @@ fn the_shell_family_lists_run_command_when_commands_are_on() {
     let mut h = Harness::new(false);
     open_agent_settings(&mut app, &mut h, size);
     let heads = app.state_mut().chat_ui.probe.tools_heads.clone();
-    assert_eq!(heads.len(), 3, "Files, Shell and Ask you");
+    assert_eq!(heads.len(), 4, "Files, Shell, Web and Ask you");
     click(&mut app, &mut h, size, heads[1].center());
     let texts = texts_of(&mut app, &mut h, size);
     assert!(texts.contains("X   run_command"), "{texts}");
@@ -3170,7 +3175,7 @@ fn the_input_is_one_bubble_with_send_inside_and_the_pills_under_it() {
         assert!(plus.right() <= tools.left(), "{size:?}");
         assert!(tools.right() <= folder.left(), "{size:?}");
         let letters: Vec<_> = p.chips.iter().map(|c| c.0).collect();
-        assert_eq!(letters, ['R', 'W', 'X'], "{size:?}");
+        assert_eq!(letters, ['R', 'W', 'X', 'N'], "{size:?}");
         assert!(
             p.chips[0].1.left() >= folder.right(),
             "{size:?}: chips right of folder"
@@ -4086,5 +4091,83 @@ fn the_landing_text_is_centred_in_the_pane_on_chat_and_on_work() {
                 "{size:?} {view:?}: {landing:?} is not about the middle of {pane:?}"
             );
         }
+    }
+}
+
+#[test]
+fn the_web_pill_is_a_globe_that_starts_off_and_only_steps_between_off_and_ask() {
+    use super::chrome::next_permission;
+    use roost_core::agent::registry::{self, Capability, Family};
+    use roost_core::session::Permission::{self, Ask, Auto, Off};
+    // Never Allow from the pill, whatever the state.
+    assert_eq!(next_permission(Capability::Fetch, Off), Ask);
+    assert_eq!(next_permission(Capability::Fetch, Ask), Off);
+    assert_eq!(next_permission(Capability::Fetch, Auto), Off);
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (letter, rect, perm) = *p.chips.last().expect("a pill");
+        assert_eq!(
+            (letter, perm),
+            ('N', Permission::Off),
+            "{size:?}: off by default"
+        );
+        assert!(
+            inside(rect, p.composer.unwrap()),
+            "{size:?}: the web pill {rect:?} is inside the composer"
+        );
+        // It is an icon, not a letter.
+        let texts = texts_of(&mut app, &mut h, size);
+        assert!(!texts.lines().any(|l| l == "N"), "{size:?}: {texts}");
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, rect.center());
+        let cmds = sent_chat_commands(&sent);
+        let key = registry::capability_key(Family::Web, Capability::Fetch);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::SetCapability(id, k, Ask)]
+                if *id == s.id && *k == key),
+            "{size:?}: {cmds:?}"
+        );
+    }
+}
+
+#[test]
+fn a_fetch_asks_with_the_exact_address_and_offers_to_allow_the_host_for_the_chat() {
+    use roost_core::chat::ApprovalDecision;
+    for size in SIZES {
+        let (mut app, sent, s) = agent_fixture();
+        let mut h = Harness::new(false);
+        app.state_mut().chat.fold(ChatEvent::ApprovalRequested {
+            session: s.id,
+            call_id: "call_w".into(),
+            name: "fetch_url".into(),
+            arguments: serde_json::json!({"url": "https://Docs.rs/egui/0.37/egui/"}),
+            preview: None,
+            run: None,
+        });
+        run(&mut app, &mut h, size, 4);
+        let texts = texts_of(&mut app, &mut h, size);
+        for want in [
+            "Fetch a web page?",
+            "https://Docs.rs/egui/0.37/egui/",
+            "Allow docs.rs in this chat",
+        ] {
+            assert!(
+                texts.contains(want),
+                "{size:?}: {want:?} missing in:\n{texts}"
+            );
+        }
+        let p = app.state_mut().chat_ui.probe.clone();
+        assert_eq!(p.approval_buttons.len(), 3, "{size:?}");
+        let _ = sent_chat_commands(&sent);
+        click(&mut app, &mut h, size, p.approval_buttons[1].center());
+        let cmds = sent_chat_commands(&sent);
+        assert!(
+            matches!(cmds.as_slice(), [ChatCommand::ResolveApproval { decision, .. }]
+                if *decision == ApprovalDecision::AllowForSession),
+            "{size:?}: {cmds:?}"
+        );
     }
 }
