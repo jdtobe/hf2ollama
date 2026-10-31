@@ -26,7 +26,7 @@ use std::time::Instant;
 const CARD_MAX_W: f32 = 760.0;
 const ROW_PAD_X: f32 = 2.0;
 /// The narrow column of heading links at the left of the page.
-const NAV_W: f32 = 180.0;
+const NAV_W: f32 = 220.0;
 const SEARCH_W: f32 = 280.0;
 const ROW_PAD_Y: f32 = 14.0;
 const COL_GAP: f32 = 24.0;
