@@ -71,6 +71,8 @@ pub(super) enum StatusKind {
 
 /// Side of the rename pencil beside the title.
 const PENCIL_W: f32 = 24.0;
+/// How much larger than the usual 16 px the session kind's glyph is drawn.
+const TILE_ICON_SCALE: f32 = 1.5;
 /// How far the folder under the title is set in from the title's left edge.
 const PATH_INSET: f32 = 6.0;
 
@@ -233,11 +235,13 @@ fn title_block(
         egui::Stroke::new(1.0, t.line),
         egui::StrokeKind::Inside,
     );
-    crate::icons::paint(
+    // The glyph is large in its tile, with little margin round it.
+    crate::icons::paint_scaled(
         ui.painter(),
         tile,
         if agent { Icon::Agent } else { Icon::Chat },
         t.fg2,
+        TILE_ICON_SCALE,
     );
     ui.add_space(4.0);
     if app

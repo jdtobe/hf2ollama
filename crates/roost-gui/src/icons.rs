@@ -31,9 +31,15 @@ pub enum Icon {
 
 /// Paints `icon` centred in `rect`, drawn on a 16 x 16 grid.
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
-    let origin = rect.center() - vec2(8.0, 8.0);
-    let p = |x: f32, y: f32| origin + vec2(x, y);
-    let stroke = Stroke::new(1.5, color);
+    paint_scaled(painter, rect, icon, color, 1.0);
+}
+
+/// Like `paint`, with the 16 x 16 grid drawn `scale` times as large. Meant
+/// for the icons made of lines (the line width grows with it, a little less).
+pub fn paint_scaled(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32, scale: f32) {
+    let centre = rect.center();
+    let p = |x: f32, y: f32| centre + vec2(x - 8.0, y - 8.0) * scale;
+    let stroke = Stroke::new(1.5 * (1.0 + (scale - 1.0) * 0.6), color);
     match icon {
         Icon::Copy => {
             painter.rect_stroke(

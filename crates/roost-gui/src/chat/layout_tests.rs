@@ -4001,3 +4001,30 @@ fn the_header_buttons_and_title_are_centred_in_the_band() {
         }
     }
 }
+
+#[test]
+fn the_session_kind_glyph_is_larger_than_the_header_buttons_icons() {
+    for size in SIZES {
+        let (mut app, _sent, _s) = agent_fixture();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        let p = app.state_mut().chat_ui.probe.clone();
+        let (header, title) = (p.header.unwrap(), p.title_rect.unwrap());
+        let shapes = painted(&mut app, &mut h, size);
+        // The bubble is the largest line drawing left of the title.
+        let widest = shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::epaint::Shape::Path(path) => {
+                    let r = Rect::from_points(&path.points);
+                    (r.right() <= title.left()
+                        && r.top() >= header.top()
+                        && r.bottom() <= header.bottom())
+                    .then_some(r.width())
+                }
+                _ => None,
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(widest >= 17.0, "{size:?}: the glyph is {widest} px wide");
+    }
+}
