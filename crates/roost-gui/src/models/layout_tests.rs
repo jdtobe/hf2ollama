@@ -793,3 +793,24 @@ fn the_disk_display_is_above_the_installed_heading() {
         "the disk display comes first:\n{t}"
     );
 }
+
+#[test]
+fn the_disk_display_is_on_a_white_strip() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let list = app.state_mut().browse.probe.list.unwrap();
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    let shapes = painted(&mut app, &mut h, size);
+    let strip = shapes.iter().any(|s| match s {
+        egui::epaint::Shape::Rect(r) => {
+            r.fill == t.surface
+                && r.rect.width() >= list.width() - 30.0
+                && r.rect.height() > 70.0
+                && list.contains_rect(r.rect.shrink(1.0))
+        }
+        _ => false,
+    });
+    assert!(strip, "no white strip behind the disk display");
+}

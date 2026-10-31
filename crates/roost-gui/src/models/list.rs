@@ -212,8 +212,10 @@ fn usage(ui: &mut egui::Ui, app: &AppState, t: &Tokens) {
     let library = app.installed.rows().len() - imported;
     // Two clearly different shades of the theme's accent.
     let (c_roost, c_ollama) = (t.accent, t.accent.gamma_multiply(0.35));
-    egui::Frame::new()
-        .inner_margin(Margin::symmetric(12, 10))
+    // A white strip (the theme's surface) with a line under it.
+    let strip = egui::Frame::new()
+        .fill(t.surface)
+        .inner_margin(Margin::symmetric(14, 10))
         .show(ui, |ui| {
             let outer = ui.available_width();
             ui.set_width(outer);
@@ -248,7 +250,7 @@ fn usage(ui: &mut egui::Ui, app: &AppState, t: &Tokens) {
                     }
                     // A hairline keeps the two shades apart.
                     if split.imported > 0 && split.library > 0 {
-                        p.vline(cut, bar.y_range(), Stroke::new(1.5, t.side_list()));
+                        p.vline(cut, bar.y_range(), Stroke::new(1.5, t.surface));
                     }
                 }
                 ui.vertical(|ui| {
@@ -273,5 +275,9 @@ fn usage(ui: &mut egui::Ui, app: &AppState, t: &Tokens) {
                     }
                 });
             });
-        });
+        })
+        .response
+        .rect;
+    ui.painter()
+        .hline(strip.x_range(), strip.bottom(), Stroke::new(1.0, t.line));
 }
