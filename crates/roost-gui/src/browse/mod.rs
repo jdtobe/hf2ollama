@@ -27,6 +27,8 @@ pub struct Probe {
     pub installed_rows: Vec<(String, egui::Rect)>,
     /// The Filters chip above the Models list.
     pub filters_chip: Option<egui::Rect>,
+    /// The sort button beside the search field.
+    pub sort_button: Option<egui::Rect>,
     /// Rectangles of the import step chips.
     pub chips: Vec<egui::Rect>,
     pub card: Option<egui::Rect>,

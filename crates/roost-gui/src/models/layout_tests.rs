@@ -434,7 +434,7 @@ fn a_library_model_says_it_has_no_hugging_face_description() {
 }
 
 #[test]
-fn installed_rows_have_room_and_show_their_facts_as_pills() {
+fn installed_rows_are_a_name_with_its_size_and_one_line_about_where_it_came_from() {
     for size in SIZES {
         let (mut app, _rx) = models_app();
         let mut h = Harness::new(false);
@@ -442,22 +442,23 @@ fn installed_rows_have_room_and_show_their_facts_as_pills() {
         let rows = app.state_mut().browse.probe.installed_rows.clone();
         for (name, r) in &rows {
             assert!(
-                r.height() >= 76.0,
-                "{size:?}: {name} only {} px",
+                r.height() >= 50.0 && r.height() <= 64.0,
+                "{size:?}: {name} is {} px",
                 r.height()
             );
         }
         let t = texts(&mut app, &mut h, size);
         let lines: Vec<&str> = t.lines().collect();
-        for pill in ["7B", "Q4_K_M", "4.68 GB"] {
-            assert!(lines.contains(&pill), "{pill} pill missing in:\n{t}");
-        }
-        assert!(t.contains("Pulled from the Ollama library"), "{t}");
+        assert!(lines.contains(&"4.68 GB"), "the size is missing in:\n{t}");
+        assert!(
+            lines.iter().any(|l| l.starts_with("Ollama library · 7B")),
+            "the source line is missing in:\n{t}"
+        );
     }
 }
 
 #[test]
-fn the_filter_bar_is_a_full_width_sort_and_a_filter_button_that_never_moves() {
+fn the_sort_and_filter_buttons_sit_beside_the_search_and_never_move() {
     for size in SIZES {
         let (mut app, _rx) = models_app();
         let mut h = Harness::new(false);
@@ -648,6 +649,129 @@ fn the_models_list_is_tinted_like_the_chat_sidebar_with_a_band_and_a_dark_divide
                     && (points[1].y - points[0].y).abs() > list.height() * 0.5)
             ),
             "{size:?}: no dark divider"
+        );
+    }
+}
+
+#[test]
+fn the_sort_button_opens_the_four_orders_and_the_band_is_as_tall_as_chats() {
+    let size = (1180.0, 820.0);
+    let (mut app, _rx) = models_app();
+    let mut h = Harness::new(false);
+    run(&mut app, &mut h, size, 4);
+    let p = app.state_mut().browse.probe.clone();
+    let (sort, filter, list) = (
+        p.sort_button.expect("a sort button"),
+        p.filters_chip.expect("a filter button"),
+        p.list.unwrap(),
+    );
+    assert!(sort.right() <= filter.left(), "{sort:?} left of {filter:?}");
+    // The band across the top of the list is the same height as Chat's.
+    let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+    let band = {
+        let shapes = painted(&mut app, &mut h, size);
+        shapes
+            .iter()
+            .find_map(|s| match s {
+                egui::epaint::Shape::Rect(r)
+                    if r.fill == t.side_band() && (r.rect.top() - list.top()).abs() < 2.0 =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("the band")
+    };
+    assert!(
+        (band.height() - crate::sidebar::BAND_H).abs() < 1.5,
+        "the band is {} px",
+        band.height()
+    );
+    click(&mut app, &mut h, size, sort.center());
+    let texts = texts(&mut app, &mut h, size);
+    for want in [
+        "Most downloads",
+        "Trending",
+        "Recently updated",
+        "Most likes",
+    ] {
+        assert!(texts.contains(want), "{want:?} missing in:\n{texts}");
+    }
+}
+
+/// Every shape drawn in one frame, with groups flattened.
+fn painted(app: &mut App, h: &mut Harness, size: (f32, f32)) -> Vec<egui::epaint::Shape> {
+    fn flat(shape: &egui::epaint::Shape, into: &mut Vec<egui::epaint::Shape>) {
+        match shape {
+            egui::epaint::Shape::Vec(items) => items.iter().for_each(|s| flat(s, into)),
+            other => into.push(other.clone()),
+        }
+    }
+    let input = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(size.0, size.1))),
+        ..Default::default()
+    };
+    let out = h.ctx().run_ui(input, |ui| app.show(ui));
+    let mut shapes = Vec::new();
+    for clipped in &out.shapes {
+        flat(&clipped.shape, &mut shapes);
+    }
+    out.drop_without_applying_deltas();
+    shapes
+}
+
+#[test]
+fn the_models_header_matches_chats_and_about_stays_on_white() {
+    for size in SIZES {
+        let (mut app, _rx) = models_app();
+        let mut h = Harness::new(false);
+        run(&mut app, &mut h, size, 4);
+        select_first(&mut app, &mut h, size);
+        run(&mut app, &mut h, size, 2);
+        let p = app.state_mut().browse.probe.clone();
+        let top = p.bands[0];
+        assert!(
+            (top.height() - crate::sidebar::BAND_H).abs() < 1.5,
+            "{size:?}: the header is {} px",
+            top.height()
+        );
+        let (chat, work, delete) = (
+            p.chat_button.unwrap(),
+            p.work_button.unwrap(),
+            p.delete_button.unwrap(),
+        );
+        assert!(
+            chat.right() <= work.left() && work.right() <= delete.left(),
+            "{size:?}: Chat, Work, then delete"
+        );
+        for (name, r) in [("Chat", chat), ("Work", work), ("delete", delete)] {
+            assert!(
+                (r.center().y - top.center().y).abs() <= 2.0,
+                "{size:?}: {name} is not centred in the header"
+            );
+        }
+        // The deeper tint on the header, plain page for the details and white
+        // for About.
+        let t = crate::theme_tokens::palette(roost_core::config::ThemeFamily::Meadow, false);
+        let shapes = painted(&mut app, &mut h, size);
+        let fill_of = |band: Rect| {
+            // The last one painted over the band is the one that shows.
+            shapes.iter().rev().find_map(|s| match s {
+                egui::epaint::Shape::Rect(r)
+                    if r.fill.a() > 0
+                        && r.rect.contains(band.center())
+                        && r.rect.width() >= band.width() - 2.0 =>
+                {
+                    Some(r.fill)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(fill_of(p.bands[0]), Some(t.head_band()), "{size:?}: header");
+        assert_eq!(
+            fill_of(p.bands[2]),
+            Some(t.surface),
+            "{size:?}: About is white"
         );
     }
 }
